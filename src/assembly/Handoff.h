@@ -116,6 +116,13 @@ struct Address {
 std::string       QrText(const Address& address);
 Expected<Address> ParseQr(std::string_view text);
 
+/// What goes over the network: `bytes` encrypted and signed with the key
+/// from the QR (XChaCha20-Poly1305, Monocypher), bound to the session — a
+/// package for another project does not open. Layout: nonce (24) | MAC (16) | data.
+Expected<std::string> Seal(std::string_view bytes, const std::string& keyHex, const std::string& session);
+/// The bytes back; an error if the key or session differs or a byte was changed.
+Expected<std::string> Open(std::string_view sealed, const std::string& keyHex, const std::string& session);
+
 /// Lowercase hex SHA-256 (FIPS 180-4).
 std::string Sha256Hex(std::string_view bytes);
 

@@ -63,6 +63,28 @@ TEST_CASE("SHA-256 matches the standard's examples") {
     CHECK(RandomHex(16) != RandomHex(16));
 }
 
+TEST_CASE("what goes over the network opens only with its key and for its project") {
+    const std::string key = RandomHex(32), session = RandomHex(16);
+    const std::string data = std::string("пакет\0с нулём", 22) + std::string(100000, 'x');
+    Expected<std::string> sealed = Seal(data, key, session);
+    REQUIRE(sealed);
+    CHECK(sealed->size() == data.size() + 40);
+    CHECK(sealed->find("пакет") == std::string::npos);   // not readable on the way
+    Expected<std::string> opened = Open(*sealed, key, session);
+    REQUIRE(opened);
+    CHECK(*opened == data);
+    CHECK(*Seal(data, key, session) != *sealed);   // a new nonce each time
+
+    CHECK_FALSE(Open(*sealed, RandomHex(32), session));   // another key
+    CHECK_FALSE(Open(*sealed, key, RandomHex(16)));       // another project
+    std::string tampered = *sealed;
+    tampered[tampered.size() / 2] ^= 1;
+    CHECK_FALSE(Open(tampered, key, session));
+    CHECK_FALSE(Open("short", key, session));
+    CHECK_FALSE(Seal(data, "not a key", session));
+    REQUIRE(Open(*Seal("", key, session), key, session));
+}
+
 TEST_CASE("the QR carries the address and the session, and nothing broken passes") {
     const Address a{"192.168.1.5", 50213, RandomHex(16), RandomHex(32)};
     Expected<Address> back = ParseQr(QrText(a));

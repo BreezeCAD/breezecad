@@ -6,6 +6,7 @@
 #include "document/BzcFile.h"
 
 #include <miniz.h>
+#include <monocypher.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -132,6 +133,22 @@ fs::path BesideName(const fs::path& target) {
         if (!fs::exists(candidate, ec)) return candidate;
     }
 }
+
+constexpr std::size_t kNonce = 24, kMac = 16, kKey = 32;
+
+/// 64 hex digits → the 32-byte key; false when it is not one.
+bool KeyBytes(const std::string& hex, std::array<std::uint8_t, kKey>& key) {
+    if (!IsHex(hex, kKey * 2)) return false;
+    for (std::size_t i = 0; i < kKey; ++i) {
+        unsigned value = 0;
+        std::from_chars(hex.data() + i * 2, hex.data() + i * 2 + 2, value, 16);
+        key[i] = static_cast<std::uint8_t>(value);
+    }
+    return true;
+}
+
+const std::uint8_t* Raw(std::string_view s) { return reinterpret_cast<const std::uint8_t*>(s.data()); }
+std::uint8_t*       Raw(std::string& s) { return reinterpret_cast<std::uint8_t*>(s.data()); }
 
 Json SessionToJson(const Session& s) {
     Json files = Json::array();
@@ -447,6 +464,31 @@ Expected<ApplyReport> ApplyReturn(const Session& session, const fs::path& return
         report.written.push_back(target);
     }
     return report;
+}
+
+Expected<std::string> Seal(std::string_view bytes, const std::string& keyHex, const std::string& session) {
+    std::array<std::uint8_t, kKey> key{};
+    if (!KeyBytes(keyHex, key)) return Error{"Неверный ключ передачи"};
+    std::string out(kNonce + kMac + bytes.size(), '\0');
+    // A fresh random nonce for every message: XChaCha20's 24 bytes make a repeat practically impossible.
+    std::random_device device;
+    for (std::size_t i = 0; i < kNonce; ++i) out[i] = static_cast<char>(device() & 0xFFu);
+    crypto_aead_lock(Raw(out) + kNonce + kMac, Raw(out) + kNonce, key.data(), Raw(out), Raw(session), session.size(), Raw(bytes),
+                     bytes.size());
+    crypto_wipe(key.data(), key.size());
+    return out;
+}
+
+Expected<std::string> Open(std::string_view sealed, const std::string& keyHex, const std::string& session) {
+    if (sealed.size() < kNonce + kMac) return Error{"Передача повреждена"};
+    std::array<std::uint8_t, kKey> key{};
+    if (!KeyBytes(keyHex, key)) return Error{"Неверный ключ передачи"};
+    std::string out(sealed.size() - kNonce - kMac, '\0');
+    const int failed = crypto_aead_unlock(Raw(out), Raw(sealed) + kNonce, key.data(), Raw(sealed), Raw(session), session.size(),
+                                          Raw(sealed) + kNonce + kMac, out.size());
+    crypto_wipe(key.data(), key.size());
+    if (failed) return Error{"Передача не прошла проверку: другой ключ или проект, или данные повреждены"};
+    return out;
 }
 
 std::string QrText(const Address& a) {

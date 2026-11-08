@@ -134,7 +134,7 @@ need. Every module, what it does and its file for each system are on the
 
 | Module | What it does |
 | --- | --- |
-| [MCP server for Claude](modules/mcp/README.md) | Claude builds in the open BreezeCAD: sketches, features, assemblies, a picture of the model — 65 tools |
+| [MCP server for Claude](https://github.com/BreezeCAD/bz-module-mcp#readme) | Claude builds in the open BreezeCAD: sketches, features, assemblies, a picture of the model — 65 tools |
 
 ## Build from source
 

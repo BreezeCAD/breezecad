@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-11
 - **Decision makers:** MikeVerx
-- **Related:** блок 4 (модули), `src/modules/bz_module.h`, `modules/mcp`
+- **Related:** блок 4 (модули), `src/modules/bz_module.h`, `modules/mcp` (с 2026-11-08 — репозиторий `BreezeCAD/bz-module-mcp`, ADR-0010)
 
 ## Контекст
 

@@ -5,7 +5,7 @@ its download for each system, made from the module.json inside each package.
     python3 scripts/modules-page.py <release tag> <folder with .bzmod files> > notes.md
 
 The links point at the release's files (GITHUB_REPOSITORY, or BreezeCAD/breezecad).
-A module with a README in modules/<id>/ gets a link to it.
+A module listed in modules/list.txt gets a link to its repository's README.
 """
 import json
 import os
@@ -39,6 +39,13 @@ def main() -> None:
     repo = os.environ.get("GITHUB_REPOSITORY", "BreezeCAD/breezecad")
     root = Path(__file__).resolve().parent.parent
 
+    # Each module's own repository (modules/list.txt): BreezeCAD/bz-module-<id>.
+    module_repos: dict[str, str] = {}
+    for line in (root / "modules" / "list.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line and "/bz-module-" in line:
+            module_repos[line.split("/bz-module-", 1)[1]] = line
+
     modules: dict[str, dict] = {}
     for package in sorted(folder.glob("*.bzmod")):
         m = manifest(package)
@@ -67,8 +74,9 @@ def main() -> None:
             name = entry["files"].get(system)
             if name:
                 out.append(f"| {title} | [{name}](https://github.com/{repo}/releases/download/{tag}/{name}) |")
-        if (root / "modules" / module_id / "README.md").is_file():
-            out += ["", f"Подробно, как подключить и пользоваться, — [README модуля](https://github.com/{repo}/blob/next/modules/{module_id}/README.md)."]
+        home = module_repos.get(module_id)
+        if home:
+            out += ["", f"Подробно, как подключить и пользоваться, — [README модуля](https://github.com/{home}#readme)."]
         out.append("")
     print("\n".join(out).rstrip() + "\n")
 

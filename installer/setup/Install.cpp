@@ -455,7 +455,7 @@ bool Register(const Choices& c, const std::string& version, std::uint64_t sizeBy
               SetString(HKEY_CURRENT_USER, key, L"QuietUninstallString", Quoted(uninstaller) + L" --uninstall --quiet") &&
               SetString(HKEY_CURRENT_USER, key, L"ModifyPath", Quoted(uninstaller)) &&
               SetString(HKEY_CURRENT_USER, key, L"URLInfoAbout", L"https://breezecad.ru") &&
-              SetString(HKEY_CURRENT_USER, key, L"HelpLink", L"https://github.com/MikeVerx/breezecad/issues") &&
+              SetString(HKEY_CURRENT_USER, key, L"HelpLink", L"https://github.com/BreezeCAD/breezecad/issues") &&
               SetDword(HKEY_CURRENT_USER, key, L"NoRepair", 1) &&
               SetDword(HKEY_CURRENT_USER, key, L"EstimatedSize", static_cast<DWORD>(sizeBytes / 1024));
     if (!ok) {

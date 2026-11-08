@@ -67,8 +67,8 @@ ui_tools() {
 fetch_prebuilt() {
     [ -f "$DEPS/occt.done" ] && return 0
     log "Пробую готовые зависимости из релиза dev-deps"
-    local url="https://github.com/MikeVerx/breezecad/releases/download/dev-deps/$ARCHIVE"
-    { command -v gh >/dev/null && gh release download dev-deps -R MikeVerx/breezecad -p "$ARCHIVE" -D "$DEPS" --clobber 2>/dev/null; } ||
+    local url="https://github.com/BreezeCAD/breezecad/releases/download/dev-deps/$ARCHIVE"
+    { command -v gh >/dev/null && gh release download dev-deps -R BreezeCAD/breezecad -p "$ARCHIVE" -D "$DEPS" --clobber 2>/dev/null; } ||
         curl -fsSL -o "$DEPS/$ARCHIVE" "$url" 2>/dev/null || { rm -f "$DEPS/$ARCHIVE"; return 1; }
     tar -C "$DEPS" -xJf "$DEPS/$ARCHIVE" && rm -f "$DEPS/$ARCHIVE"
     touch "$DEPS/glfw.done" "$DEPS/occt.done"
@@ -111,7 +111,7 @@ build_occt() {
 pack() {
     log "Упаковка $ARCHIVE"
     tar -C "$DEPS" -I 'xz -6 -T0' -cf "$DEPS/$ARCHIVE" prefix bin pylib
-    if gh release upload dev-deps -R MikeVerx/breezecad "$DEPS/$ARCHIVE" --clobber 2>/dev/null; then
+    if gh release upload dev-deps -R BreezeCAD/breezecad "$DEPS/$ARCHIVE" --clobber 2>/dev/null; then
         echo "Загружено в релиз dev-deps."
     else
         echo "Загрузить не удалось (сессии Claude не могут менять релизы)."

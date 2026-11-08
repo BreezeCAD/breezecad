@@ -38,7 +38,7 @@ APK — пре-релиз `android-build`. Снимок версии ещё не
    компиляции изменённых файлов (полная сборка на 2 ядрах ~40 мин, не нужна). Десктоп/Windows — CI.
    Юнит-тесты без OCCT можно гонять хост-g++ (пример — DimensionArrangeTests, команда в MOBILE-PORT).
 8. Ждать CI фоновой командой (`gh run view <id>` в цикле), итог — аннотация «APK on the emulator»:
-   `gh api repos/MikeVerx/breezecad/check-runs/<job>/annotations`.
+   `gh api repos/BreezeCAD/breezecad/check-runs/<job>/annotations`.
 
 ## Открытые ошибки (найдены 17.10, не исправлены)
 

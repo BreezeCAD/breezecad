@@ -19,7 +19,7 @@
 6. `docs/TECH_DEBT.md` — открытые баги.
 7. `docs/UI_ISSUES.md` — визуальные баги.
 
-Репо публичный: https://github.com/MikeVerx/breezecad
+Репо публичный: https://github.com/BreezeCAD/breezecad
 
 Если ссылки недоступны — скажи, я скину содержимое каждого файла
 отдельным сообщением.

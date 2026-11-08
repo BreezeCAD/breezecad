@@ -4,7 +4,7 @@ its download for each system, made from the module.json inside each package.
 
     python3 scripts/modules-page.py <release tag> <folder with .bzmod files> > notes.md
 
-The links point at the release's files (GITHUB_REPOSITORY, or MikeVerx/breezecad).
+The links point at the release's files (GITHUB_REPOSITORY, or BreezeCAD/breezecad).
 A module with a README in modules/<id>/ gets a link to it.
 """
 import json
@@ -36,7 +36,7 @@ def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
     tag, folder = sys.argv[1], Path(sys.argv[2])
-    repo = os.environ.get("GITHUB_REPOSITORY", "MikeVerx/breezecad")
+    repo = os.environ.get("GITHUB_REPOSITORY", "BreezeCAD/breezecad")
     root = Path(__file__).resolve().parent.parent
 
     modules: dict[str, dict] = {}

@@ -2104,7 +2104,7 @@ void DrawDialogs(AppContext& app) {
 #if defined(__ANDROID__)
             ImGui::Dummy({0, ui.S(4)});
             if (ui::LinkButton(ui, "##privacy", Tr("Политика конфиденциальности")))
-                platform::OpenUrl("https://mikeverx.github.io/breezecad/privacy.html");
+                platform::OpenUrl("https://breezecad.ru/privacy.html");
 #endif
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();

@@ -4,6 +4,7 @@
 
 #include "assembly/AssemblyFile.h"
 #include "assembly/Handoff.h"
+#include "assembly/HandoffNet.h"
 #include "assembly/ProjectPack.h"
 #include "core/PathText.h"
 #include "document/BzcFile.h"
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <thread>
 
 using namespace bz;
 using namespace bz::assembly;
@@ -247,4 +249,48 @@ TEST_CASE("a file changed on the PC too is a conflict; changes for another proje
     Session other = *s;
     other.id = RandomHex(16);
     CHECK_FALSE(PlanReturn(other, back));
+}
+
+TEST_CASE("over the network: the device takes the project and gives the changes back; strangers get nothing") {
+    const fs::path root = Fresh("bz_handoff_net");
+    const fs::path part = root / PathFromUtf8("Вал.bzc");
+    WritePart(part);
+    const fs::path package = root / PathFromUtf8("send.bzp");
+    Expected<Session> s = Send(part, package, "test");
+    REQUIRE(s);
+    Expected<Server> server = Server::Start(*s, Bytes(package));
+    REQUIRE(server);
+    CHECK(server->GetAddress().port > 0);
+    Address here = server->GetAddress();
+    here.host = "127.0.0.1";   // the test machine may be in no network at all
+
+    // The device takes the project.
+    Server::Event event;
+    std::thread serving([&] { event = server->Serve(5000); });
+    Expected<std::string> got = Fetch(here, 5000);
+    serving.join();
+    REQUIRE(got);
+    CHECK(*got == Bytes(package));
+    CHECK(event.kind == Server::Event::Kind::Sent);
+
+    // A QR of another project (or an old one): refused.
+    Address stranger = here;
+    stranger.key = RandomHex(32);
+    serving = std::thread([&] { event = server->Serve(5000); });
+    CHECK_FALSE(Fetch(stranger, 5000));
+    serving.join();
+    CHECK(event.kind == Server::Event::Kind::Refused);
+
+    // The changes come back.
+    const std::string changes = std::string(300000, 'z') + "конец";
+    serving = std::thread([&] { event = server->Serve(5000); });
+    CHECK(Give(here, changes, 5000));
+    serving.join();
+    CHECK(event.kind == Server::Event::Kind::Returned);
+    CHECK(event.data == changes);
+
+    // Nobody: the wait ends; stopped: nothing answers.
+    CHECK(server->Serve(50).kind == Server::Event::Kind::None);
+    server->Stop();
+    CHECK_FALSE(Fetch(here, 2000));
 }

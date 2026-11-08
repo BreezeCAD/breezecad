@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <format>
+#include <set>
 #include <utility>
 
 #if defined(_WIN32)
@@ -208,6 +209,9 @@ struct Server::Impl {
     std::string package;
     Address     address;
     Socket      listener;
+    /// The nonce of every request already served: a request caught in the
+    /// network and sent again is refused, not taken twice.
+    std::set<std::string> seen;
 };
 
 Server::Server(std::unique_ptr<Impl> impl) : myImpl(std::move(impl)) {}
@@ -263,6 +267,8 @@ Server::Event Server::Serve(int timeoutMs) {
     Frame request;
     Expected<std::string> body = Error{""};
     if (ReadFrame(c, request)) body = Open(request.body, key, id);
+    const std::string nonce = request.body.substr(0, 24);
+    if (body && !myImpl->seen.insert(nonce).second) body = Error{"repeat"};
     if (!body) {
         // Not this project's device: it learns nothing, not even why.
         WriteFrame(c, kRefused, {});
@@ -297,6 +303,13 @@ Status Give(const Address& address, const std::string& returned, int timeoutMs) 
     Expected<Frame> answer = Ask(address, kReturn, returned, timeoutMs);
     if (!answer) return answer.GetError();
     if (answer->type != kOk || answer->body != "ok") return Error{"Компьютер не подтвердил приём"};
+    return {};
+}
+
+Status DropCopy(const std::filesystem::path& folder) {
+    std::error_code ec;
+    std::filesystem::remove_all(folder, ec);
+    if (ec) return Error{std::format("Не удалось удалить копию проекта на устройстве: {}", ec.message())};
     return {};
 }
 

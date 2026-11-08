@@ -16,6 +16,13 @@
 #include <iterator>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 using namespace bz;
 using namespace bz::assembly;
 using namespace bz::assembly::handoff;
@@ -289,8 +296,61 @@ TEST_CASE("over the network: the device takes the project and gives the changes 
     CHECK(event.kind == Server::Event::Kind::Returned);
     CHECK(event.data == changes);
 
+    // The device does not keep its copy after giving the changes back.
+    const fs::path device = root / PathFromUtf8("Устройство");
+    REQUIRE(UnpackProject(package, device));
+    CHECK(DropCopy(device));
+    CHECK_FALSE(fs::exists(device));
+
     // Nobody: the wait ends; stopped: nothing answers.
     CHECK(server->Serve(50).kind == Server::Event::Kind::None);
     server->Stop();
     CHECK_FALSE(Fetch(here, 2000));
 }
+
+#if !defined(_WIN32)
+namespace {
+
+/// One raw frame to 127.0.0.1:port (the documented layout), the first answer byte back.
+char SendFrame(int port, const std::string& frame) {
+    const int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(static_cast<std::uint16_t>(port));
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(::connect(s, reinterpret_cast<const sockaddr*>(&a), sizeof a) == 0);
+    REQUIRE(::send(s, frame.data(), frame.size(), 0) == static_cast<ssize_t>(frame.size()));
+    char header[9] = {};
+    const auto n = ::recv(s, header, sizeof header, MSG_WAITALL);
+    ::close(s);
+    return n == 9 ? header[4] : '\0';
+}
+
+} // namespace
+
+TEST_CASE("a request caught in the network and sent again is refused") {
+    Session s;
+    s.id = RandomHex(16);
+    s.key = RandomHex(32);
+    s.files.push_back({"Вал.bzc", {}, {}, {}, {}});
+    Expected<Server> server = Server::Start(s, "пакет");
+    REQUIRE(server);
+    Expected<std::string> sealed = Seal("изменения", s.key, s.id);
+    REQUIRE(sealed);
+    std::string frame = "BZH1R";
+    const auto size = static_cast<std::uint32_t>(sealed->size());
+    for (int shift = 24; shift >= 0; shift -= 8) frame.push_back(static_cast<char>((size >> shift) & 0xFFu));
+    frame += *sealed;
+
+    Server::Event event;
+    std::thread serving([&] { event = server->Serve(5000); });
+    CHECK(SendFrame(server->GetAddress().port, frame) == 'K');
+    serving.join();
+    CHECK(event.kind == Server::Event::Kind::Returned);
+
+    serving = std::thread([&] { event = server->Serve(5000); });
+    CHECK(SendFrame(server->GetAddress().port, frame) == 'E');
+    serving.join();
+    CHECK(event.kind == Server::Event::Kind::Refused);
+}
+#endif

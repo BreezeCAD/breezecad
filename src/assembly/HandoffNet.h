@@ -12,6 +12,7 @@
 #include "core/Expected.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -48,7 +49,9 @@ public:
     /// program calls it from a worker thread (the server holds its own copies).
     Event Serve(int timeoutMs);
 
-    /// Stops listening (also done when the server is destroyed).
+    /// Stops listening (also done when the server is destroyed). Call it
+    /// from the thread that calls Serve, between two calls: closing a socket
+    /// another thread waits on is not safe everywhere.
     void Stop();
 
 private:
@@ -63,6 +66,10 @@ Expected<std::string> Fetch(const Address& address, int timeoutMs = 15000);
 
 /// The device: gives the changes (PackReturn's file, as bytes) back to the PC.
 Status Give(const Address& address, const std::string& returned, int timeoutMs = 15000);
+
+/// The device, after Give succeeded: the copy is not kept (decided
+/// 08.11.2026). Removes `folder` — the one the package was unpacked to.
+Status DropCopy(const std::filesystem::path& folder);
 
 /// The PC's address in the local network (the one its default route uses),
 /// empty when there is none. No packet is sent to find it.

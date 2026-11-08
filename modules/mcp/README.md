@@ -8,7 +8,7 @@
 ## Установить
 
 1. Скачайте файл модуля для своей системы со страницы
-   [«Модули BreezeCAD»](https://github.com/MikeVerx/breezecad/releases/tag/modules):
+   [«Модули BreezeCAD»](https://github.com/BreezeCAD/breezecad/releases/tag/modules):
    `bz-mcp-<версия>-windows-x64.bzmod` (Linux — `…-linux-x64.bzmod`, macOS — `…-macos-arm64.bzmod`).
    Нужен BreezeCAD 0.2.1 или новее.
 2. BreezeCAD → **Настройки → Модули → «Установить модуль…»** и выберите файл —

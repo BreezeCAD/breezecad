@@ -2,7 +2,7 @@
 
 **Версия:** 0.1.x
 **Дата обновления:** 2026-09-22 (вечер)
-**Репозиторий:** https://github.com/MikeVerx/breezecad
+**Репозиторий:** https://github.com/BreezeCAD/breezecad
 
 **Точки входа (читать первыми):**
 - `docs/HANDOFF.md` — инструкция для нового чата

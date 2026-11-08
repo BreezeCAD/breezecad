@@ -2,11 +2,11 @@
 
 <p align="center">
   <b>Download:</b>
-  <a href="https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-windows.zip"><b>Windows</b></a> ·
-  <a href="https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-macos.zip"><b>macOS</b></a> ·
-  <a href="https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-linux.tar.gz"><b>Linux</b></a> ·
-  <a href="https://github.com/MikeVerx/breezecad/releases/download/android-build/BreezeCAD-android.apk"><b>Android</b></a> ·
-  <a href="https://github.com/MikeVerx/breezecad/releases/tag/modules"><b>Modules</b></a> ·
+  <a href="https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-windows.zip"><b>Windows</b></a> ·
+  <a href="https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-macos.zip"><b>macOS</b></a> ·
+  <a href="https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-linux.tar.gz"><b>Linux</b></a> ·
+  <a href="https://github.com/BreezeCAD/breezecad/releases/download/android-build/BreezeCAD-android.apk"><b>Android</b></a> ·
+  <a href="https://github.com/BreezeCAD/breezecad/releases/tag/modules"><b>Modules</b></a> ·
   <a href="#build-from-source">Build from source</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="README.ru.md">Русский</a>
@@ -56,7 +56,7 @@ integrated graphics.
 
 **Status.** Early preview: the part modeller is usable, assemblies and
 drawings are not there yet. Expect rough edges — and please
-[report them](https://github.com/MikeVerx/breezecad/issues).
+[report them](https://github.com/BreezeCAD/breezecad/issues).
 
 **Languages.** The interface is Russian today; translations are plain JSON
 catalogs — see [`translations/`](translations/README.md).
@@ -70,7 +70,7 @@ catalogs — see [`translations/`](translations/README.md).
 The whole modeller on an Android phone, laid out for the thumbs: commands on the
 right, the tree and the tool's settings on the left, a drop-shaped cursor whose tip
 never hides the point you work on, and a numpad for values. Get
-[`BreezeCAD-android.apk`](https://github.com/MikeVerx/breezecad/releases/download/android-build/BreezeCAD-android.apk) (ARM 64-bit, Android 9+): open the link on the
+[`BreezeCAD-android.apk`](https://github.com/BreezeCAD/breezecad/releases/download/android-build/BreezeCAD-android.apk) (ARM 64-bit, Android 9+): open the link on the
 phone, allow installing from that source; a new build installs over the old one.
 
 <p align="center"><img src="docs/images/android-model.png" alt="BreezeCAD on an Android phone: a flange in the 3D view" width="100%"></p>
@@ -85,15 +85,15 @@ phone, allow installing from that source; a new build installs over the old one.
 ## Download
 
 The freshest build of the `next` branch, rebuilt after every change that
-passes the tests on all systems ([all files](https://github.com/MikeVerx/breezecad/releases/tag/next-build)).
+passes the tests on all systems ([all files](https://github.com/BreezeCAD/breezecad/releases/tag/next-build)).
 Unpack and run — nothing to install.
 
 | System | Download | Status |
 | --- | --- | --- |
-| Windows 10/11, 64-bit | [BreezeCAD-windows.zip](https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-windows.zip) | main platform, in beta test |
-| macOS 15+ on Apple silicon (M1 and newer) | [BreezeCAD-macos.zip](https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-macos.zip) | new: built and tested in CI, first runs on real Macs now |
-| Linux x86_64 (Ubuntu 20.04+, Debian 10+, Fedora and other distributions from 2019 on) | [BreezeCAD-linux.tar.gz](https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-linux.tar.gz) | built, tested and started in CI |
-| Android 9+, ARM 64-bit (phones and tablets) | [BreezeCAD-android.apk](https://github.com/MikeVerx/breezecad/releases/download/android-build/BreezeCAD-android.apk) | beta: stability checked on a OnePlus Nord CE5 (over 60 fps) — ready for new challenges |
+| Windows 10/11, 64-bit | [BreezeCAD-windows.zip](https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-windows.zip) | main platform, in beta test |
+| macOS 15+ on Apple silicon (M1 and newer) | [BreezeCAD-macos.zip](https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-macos.zip) | new: built and tested in CI, first runs on real Macs now |
+| Linux x86_64 (Ubuntu 20.04+, Debian 10+, Fedora and other distributions from 2019 on) | [BreezeCAD-linux.tar.gz](https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-linux.tar.gz) | built, tested and started in CI |
+| Android 9+, ARM 64-bit (phones and tablets) | [BreezeCAD-android.apk](https://github.com/BreezeCAD/breezecad/releases/download/android-build/BreezeCAD-android.apk) | beta: stability checked on a OnePlus Nord CE5 (over 60 fps) — ready for new challenges |
 
 **macOS, first start:** the app is not signed by a paid Apple certificate
 yet, so macOS stops it once. Right-click `BreezeCAD.app` → **Open** → **Open**;
@@ -123,13 +123,13 @@ The weakest computer a tester has run BreezeCAD on stably:
 No discrete graphics card needed. If BreezeCAD runs for you on something
 weaker, tell us and it goes in the table.
 
-The latest numbered release with its notes is on the [Releases](https://github.com/MikeVerx/breezecad/releases/latest) page.
+The latest numbered release with its notes is on the [Releases](https://github.com/BreezeCAD/breezecad/releases/latest) page.
 
 ### Modules
 
 Modules add features and are downloaded separately — only the ones you
 need. Every module, what it does and its file for each system are on the
-**[BreezeCAD modules](https://github.com/MikeVerx/breezecad/releases/tag/modules)** page. Install one in **Settings → Модули →
+**[BreezeCAD modules](https://github.com/BreezeCAD/breezecad/releases/tag/modules)** page. Install one in **Settings → Модули →
 «Установить модуль…»** or drop the `.bzmod` file onto the program's window.
 
 | Module | What it does |
@@ -168,7 +168,7 @@ Windows builds use MSYS2 / MinGW64; the packages for all three systems
 Start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — modules, data flow
 and step-by-step recipes for adding a sketch tool, a model operation or a
 setting. Then [`CONTRIBUTING.md`](CONTRIBUTING.md) for the rules and the commit
-format. Bugs and ideas: [issues](https://github.com/MikeVerx/breezecad/issues).
+format. Bugs and ideas: [issues](https://github.com/BreezeCAD/breezecad/issues).
 
 ## License
 

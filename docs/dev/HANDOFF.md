@@ -282,7 +282,7 @@ WORKLOG 2026-10-11). Остаток пункта:
   параметры, МЦХ, эскиз: create/add/constrain/remove/get, выдавливание, вращение, экспорт,
   undo), модуль `modules/mcp` (HTTP 127.0.0.1:47321 + ключ) и мост `bz-mcp-bridge` (stdio,
   Claude Desktop). `enabledByDefault: false` в манифесте. Проверено вживую на Xvfb: фланец
-  через мост, экспорт STEP/STL. Тесты: `tests/modules/McpProtocolTests.cpp`, ModuleTests.
+  через мост, экспорт STEP/STL. Тесты: в репозитории модуля (с 2026-11-08 модуль — `BreezeCAD/bz-module-mcp`, ADR-0010), ModuleTests.
   Резьба (`feature.thread`, цилиндр по оси+диаметру) — СДЕЛАНА.
   **Полный набор команд СДЕЛАН 2026-10-12** (65 инструментов): грани/рёбра по номерам
   (`part.faces/edges/measure`, `kernel/Topology.h`), любая операция по полям

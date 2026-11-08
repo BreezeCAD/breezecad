@@ -9,10 +9,12 @@
 # pushes to `next` where every job is green also put all six into the
 # pre-release "next-build" — a stable link to the freshest build.
 #
-# Modules are separate downloads: each platform also packs the modules of
-# modules/ (bz-<id>-<version>-<system>-<arch>.bzmod, artifacts modules-<system>),
-# and a green push to next or main puts them on the release page "modules" —
-# one page listing every module, its description and its file per system.
+# Modules are separate downloads and live in their own repositories
+# (modules/list.txt): each platform takes the packages of its system from the
+# latest release of every module (scripts/fetch-modules.sh → artifacts
+# modules-<system>, the installer), and a green push to next or main puts them
+# on the release page "modules" — one page listing every module, its
+# description and its file per system.
 name: build
 
 # Documentation-only pushes build nothing. The platforms run side by side;
@@ -61,7 +63,12 @@ jobs:
       - name: Configure
         # The online installer looks for its files in the release it belongs to:
         # main → the latest numbered release, anything else → next-build.
-        run: OCCT_DIR=/mingw64/lib/cmake/opencascade cmake --preset windows-mingw -DBZ_BUILD_MCP=ON -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+        run: OCCT_DIR=/mingw64/lib/cmake/opencascade cmake --preset windows-mingw -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+      - name: Module packages (from their repositories)
+        shell: bash   # Git Bash: gh is there, not in MSYS2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-modules.sh windows build/windows-mingw/packages
       - name: Build
         id: build
         run: cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
@@ -246,8 +253,12 @@ jobs:
           occt=$(grep -h "define OCC_VERSION_COMPLETE" "$CONDA_PREFIX"/include/opencascade/Standard_Version.hxx | awk '{print $3}')
           echo "::notice title=Linux toolchain::$($CXX -dumpfullversion), OCCT $occt, GLFW $(grep -h 'define GLFW_VERSION_M' "$CONDA_PREFIX"/include/GLFW/glfw3.h | awk '{printf "%s.", $3}')"
       - name: Configure
-        run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" -DBZ_BUILD_MCP=ON -DBZ_SETUP_STATIC_GLFW=ON
+        run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" -DBZ_SETUP_STATIC_GLFW=ON
           -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+      - name: Module packages (from their repositories)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-modules.sh linux build/linux-release/packages
       # Three at a time: with OCCT 8 headers four compilers at once ran the
       # runner out of memory, which killed the build without a message.
       - name: Build
@@ -458,7 +469,11 @@ jobs:
           occt=$(grep -h "define OCC_VERSION_COMPLETE" "$(brew --prefix opencascade)"/include/opencascade/Standard_Version.hxx | awk '{print $3}')
           echo "::notice title=macOS toolchain::$(sw_vers -productVersion) $(uname -m), $(clang++ --version | head -1), OCCT $occt, GLFW $(brew list --versions glfw | awk '{print $2}')"
       - name: Configure
-        run: cmake --preset macos -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DBZ_BUILD_MCP=ON
+        run: cmake --preset macos -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+      - name: Module packages (from their repositories)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-modules.sh macos build/macos/packages
       - name: Build
         id: build
         run: cmake --build --preset macos 2>&1 | tee build.log; exit ${PIPESTATUS[0]}

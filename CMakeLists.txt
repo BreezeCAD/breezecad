@@ -31,7 +31,6 @@ endif()
 
 option(BZ_BUILD_APP   "Build the BreezeCAD desktop application" ON)
 option(BZ_BUILD_TESTS "Build unit tests"                          ON)
-option(BZ_BUILD_MCP   "Build the MCP module package (modules/mcp → .bzmod)" OFF)
 # Android: the app is a native library (src/android) packed into an APK by
 # scripts/android/package-apk.sh; the desktop app (BZ_BUILD_APP) is off there.
 # Windows: the installer and the File Explorer previews (installer/).
@@ -62,10 +61,6 @@ if(BZ_BUILD_INSTALLER)
 endif()
 if(APPLE AND BZ_BUILD_APP)
     add_subdirectory(installer/macos)
-endif()
-
-if(BZ_BUILD_MCP)   # a separate package, not a part of the program
-    add_subdirectory(modules/mcp)
 endif()
 
 if(BZ_BUILD_TESTS)

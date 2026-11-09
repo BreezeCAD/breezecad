@@ -68,6 +68,7 @@ add_executable(bz_tests
     kernel/StandardPartsTests.cpp
     kernel/SweepTests.cpp
     kernel/ThreadTests.cpp
+    kernel/ZzIpadThreadTests.cpp
     kernel/ToolRunTests.cpp
     kernel/TopologyTests.cpp
     kernel/WorkPlaneTests.cpp

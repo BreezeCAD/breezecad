@@ -7,6 +7,7 @@
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
 #include "app/mobile/MobileLayout.h"
+#include "app/shell/ModuleWindows.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "ui/Menus.h"
@@ -77,6 +78,7 @@ void MainMenu(AppContext& app) {
         MenuAction(app, "file.handoff");
         MenuAction(app, "file.handoffReceive");
     }
+    ModuleMenuItems(app, "file");   // what the user's modules add (bz_module.h: add_action)
 #if defined(BZ_MOBILE)
     // The phone: files go to and come from the projects folder; "share"
     // hands a document or an export to another app (a slicer, a messenger).

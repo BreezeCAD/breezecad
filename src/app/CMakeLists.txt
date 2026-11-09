@@ -71,6 +71,7 @@ set(BZ_APP_SOURCES
     shell/FilePreviews.cpp
     shell/HomeScreen.cpp
     shell/LeftPanels.cpp
+    shell/ModuleWindows.cpp
     shell/Ribbon.cpp
     shell/Splash.cpp
     shell/TouchpadSettings.cpp

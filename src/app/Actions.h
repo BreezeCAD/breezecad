@@ -33,6 +33,8 @@ struct Action {
 class ActionRegistry {
 public:
     void Add(Action action);
+    /// Takes an action away (a module's, when the module stops).
+    void Remove(std::string_view id);
     const Action* Find(std::string_view id) const;
     const std::vector<Action>& All() const { return myActions; }
 

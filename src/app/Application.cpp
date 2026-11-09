@@ -12,6 +12,7 @@
 #include "app/Backgrounds.h"
 #include "modules/ModuleHost.h"
 #include "modules/ModuleManager.h"
+#include "app/shell/ModuleWindows.h"
 #include "app/scripting/Scripting.h"
 #include "core/Image.h"
 #include "app/viewport/ViewportPanel.h"
@@ -422,6 +423,7 @@ int Application::Run() {
             myRecovery.Remember(*myContext);
             myRecovery.Run(*myContext, "модули", [&] { changed = myModules->Tick(); });
             if (changed) myFramesToDraw = std::max(myFramesToDraw, 3);   // show what they changed
+            SyncModuleActions(*myContext);   // the modules' menu items, before the menus are drawn
         }
         HandleCloseRequests();
         if (myShell.quitRequested && myWorkspace.sessions.empty()) {

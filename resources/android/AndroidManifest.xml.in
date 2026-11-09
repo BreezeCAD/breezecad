@@ -16,6 +16,9 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <!-- The watchdog's notice after a crash or a hang (Android 13+ asks). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- «Продолжить на устройстве»: the project comes from the computer over the
+         local network (docs/dev/CONTINUE-ON-DEVICE.md); nothing goes beyond it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application android:label="BreezeCAD"
                  android:icon="@mipmap/ic_launcher"
@@ -42,6 +45,13 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The computer's QR code, scanned with the camera, opens the program. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="breezecad" android:host="handoff" />
             </intent-filter>
         </activity>
 

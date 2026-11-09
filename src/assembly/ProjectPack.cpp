@@ -27,15 +27,6 @@ Expected<std::string> ReadBytes(const fs::path& file) {
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
-/// A path inside the archive that stays inside the folder it is unpacked to.
-bool SafeInside(const std::string& path) {
-    if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != std::string::npos) return false;
-    std::stringstream parts(path);
-    for (std::string part; std::getline(parts, part, '/');)
-        if (part.empty() || part == "." || part == ".." || part.find('\\') != std::string::npos) return false;
-    return true;
-}
-
 /// "Вал.bzc" → "Вал (2).bzc" while taken.
 std::string FreeName(const std::string& wanted, const std::set<std::string>& taken) {
     if (!taken.contains(wanted)) return wanted;
@@ -56,6 +47,14 @@ struct Zip {
 };
 
 } // namespace
+
+bool SafeArchivePath(const std::string& path) {
+    if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != std::string::npos) return false;
+    std::stringstream parts(path);
+    for (std::string part; std::getline(parts, part, '/');)
+        if (part.empty() || part == "." || part == ".." || part.find('\\') != std::string::npos) return false;
+    return true;
+}
 
 Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& out, std::string_view version) {
     Expected<Assembly> loaded = LoadAssembly(assemblyFile);
@@ -83,10 +82,11 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
             std::string where = c.path;
             for (char& ch : where)
                 if (ch == '\\') ch = '/';
-            if (!SafeInside(where) || taken.contains(where)) where = FreeName(ToUtf8(file.filename()), taken);
+            if (!SafeArchivePath(where) || taken.contains(where)) where = FreeName(ToUtf8(file.filename()), taken);
             taken.insert(where);
             it = inside.emplace(key, where).first;
             toPack.emplace_back(where, file);
+            report.packed.push_back({where, file, c.path});
             files[where] = ProjectFile{where, "part", {}};
             ++report.parts;
         }
@@ -168,10 +168,10 @@ Expected<ProjectManifest> ReadProject(const fs::path& bzp) {
             pf.role = f.value("role", std::string{});
             for (const Json& c : f.value("components", Json::array()))
                 if (c.is_string()) pf.components.push_back(c.get<std::string>());
-            if (!SafeInside(pf.path)) return Error{std::format("Проект небезопасен: путь «{}» ведёт за пределы папки", pf.path)};
+            if (!SafeArchivePath(pf.path)) return Error{std::format("Проект небезопасен: путь «{}» ведёт за пределы папки", pf.path)};
             m.files.push_back(std::move(pf));
         }
-        if (!SafeInside(m.main)) return Error{"Проект повреждён: не указана главная сборка"};
+        if (!SafeArchivePath(m.main)) return Error{"Проект повреждён: не указана главная сборка"};
         if (j.value("version", 0) > kProjectFormatVersion && m.files.empty()) return Error{"Проект создан более новой версией BreezeCAD"};
         return m;
     } catch (const Json::exception&) {

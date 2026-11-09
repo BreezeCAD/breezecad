@@ -19,6 +19,7 @@ add_executable(bz_tests
     ${PROJECT_SOURCE_DIR}/src/app/mobile/TouchText.cpp
     ${PROJECT_SOURCE_DIR}/src/app/features/ExtrudeDirection.cpp
     assembly/AssemblyFileTests.cpp
+    assembly/HandoffTests.cpp
     assembly/InventorConstraintsTests.cpp
     assembly/PartsBesideTests.cpp
     assembly/ProjectPackTests.cpp

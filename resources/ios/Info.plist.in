@@ -27,6 +27,18 @@
          ("На iPad → BreezeCAD"), documents opened and saved in place. -->
     <key>UIFileSharingEnabled</key>              <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key> <true/>
+    <!-- «Продолжить на устройстве» (docs/dev/CONTINUE-ON-DEVICE.md): the computer's
+         QR opens the app with breezecad://handoff; the project comes over the
+         local network, nothing goes beyond it. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>    <string>io.github.mikeverx.breezecad.handoff</string>
+            <key>CFBundleURLSchemes</key> <array><string>breezecad</string></array>
+        </dict>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Чтобы забрать проект с компьютера в той же сети и вернуть изменения («Продолжить на устройстве»).</string>
     <key>UISupportedInterfaceOrientations~iphone</key>
     <array>
         <string>UIInterfaceOrientationLandscapeLeft</string>

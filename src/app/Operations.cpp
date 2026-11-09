@@ -28,9 +28,6 @@
 #include "ui/ViewCube.h"
 
 namespace bz::app {
-namespace {
-
-/// Leaves any tool or panel of the active document (before switching away).
 void EndEditing(AppContext& app) {
     Session* s = app.Doc();
     if (!s) return;
@@ -38,8 +35,6 @@ void EndEditing(AppContext& app) {
     if (s->mode == EditMode::Sketch) app.sketch.Finish(app, *s);
     if (s->mode == EditMode::PickPlane) s->mode = EditMode::Model;
 }
-
-} // namespace
 
 void NewDocument(AppContext& app) {
     EndEditing(app);

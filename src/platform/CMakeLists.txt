@@ -8,6 +8,7 @@ if(ANDROID)
         Android.cpp
         FileDialogs_mobile.cpp
         OpenFiles.cpp
+        OpenLinks.cpp
         Launch.cpp
         Paths.cpp
         Process.cpp
@@ -30,6 +31,7 @@ if(IOS)
         Launch.cpp
         Mobile_ios.mm
         OpenFiles.cpp
+        OpenLinks.cpp
         Paths.cpp
         Process.cpp
         ProcessInfo.cpp
@@ -56,6 +58,7 @@ add_library(bz_platform STATIC
     SystemTheme.cpp
     Touchpad.cpp
     OpenFiles.cpp
+    OpenLinks.cpp
     Window.cpp)
 target_link_libraries(bz_platform PUBLIC bz::core PRIVATE glfw OpenGL::GL bz::pfd)
 if(WIN32)

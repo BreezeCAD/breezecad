@@ -39,10 +39,23 @@ struct ProjectManifest {
     std::vector<ProjectFile> files;
 };
 
+/// A part as it went into the archive: where it came from and how the
+/// assembly referred to it (to put it back there, see Handoff.h).
+struct PackedPart {
+    std::string           path;       ///< inside the archive
+    std::filesystem::path source;     ///< the file it was read from
+    std::string           original;   ///< the component path in the assembly as it was
+};
+
 struct PackReport {
     int                      parts = 0;
     std::vector<std::string> missing;   ///< parts the assembly refers to that are not there (left out)
+    std::vector<PackedPart>  packed;    ///< every part in the archive, once each
 };
+
+/// A path inside an archive that stays inside the folder it is unpacked to
+/// (no "..", no drive or root, '/' separated).
+bool SafeArchivePath(const std::string& path);
 
 /// Packs the assembly saved at `assemblyFile` with its parts into `out`.
 Expected<PackReport> PackProject(const std::filesystem::path& assemblyFile, const std::filesystem::path& out,

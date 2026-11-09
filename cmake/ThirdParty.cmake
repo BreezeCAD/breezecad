@@ -25,6 +25,20 @@ target_include_directories(bz_stb SYSTEM PUBLIC ${BZ_THIRD_PARTY}/stb)
 set_target_properties(bz_stb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(bz::stb ALIAS bz_stb)
 
+# Monocypher 4.0.2 — encryption of "Continue on device" over the local
+# network (XChaCha20-Poly1305). One C file, no dependencies, CC0 / BSD-2.
+add_library(bz_monocypher STATIC ${BZ_THIRD_PARTY}/monocypher/monocypher.c)
+target_include_directories(bz_monocypher SYSTEM PUBLIC ${BZ_THIRD_PARTY}/monocypher)
+set_target_properties(bz_monocypher PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(bz::monocypher ALIAS bz_monocypher)
+
+# QR Code generator (Project Nayuki, MIT) — the QR of «Продолжить на
+# устройстве» drawn on the computer's screen.
+add_library(bz_qrcodegen STATIC ${BZ_THIRD_PARTY}/qrcodegen/qrcodegen.cpp)
+target_include_directories(bz_qrcodegen SYSTEM PUBLIC ${BZ_THIRD_PARTY}/qrcodegen)
+set_target_properties(bz_qrcodegen PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(bz::qrcodegen ALIAS bz_qrcodegen)
+
 # doctest — unit tests.
 add_library(bz_doctest INTERFACE)
 target_include_directories(bz_doctest SYSTEM INTERFACE ${BZ_THIRD_PARTY}/doctest)

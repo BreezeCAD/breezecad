@@ -38,6 +38,7 @@ enum class LeftTab : unsigned char { Tree, Properties, Variables, Mate };
 enum class RibbonTab : unsigned char { Model, Sketch, View };
 
 struct ChangeDialogState;   // app/assembly/ChangeDialog.cpp
+struct HandoffState;        // app/handoff/HandoffUi.cpp
 
 /// UI state of the window chrome that outlives a frame.
 struct ShellState {
@@ -137,6 +138,8 @@ struct ShellState {
     bool interference = false;   ///< "Коллизии": overlaps of the bodies shown
     /// «Обнаружено изменение, затрагивающее другие детали»: choices, preview.
     std::shared_ptr<ChangeDialogState> changeDialog;
+    /// «Продолжить на устройстве»: the computer's window or the device's copy (HandoffUi.h).
+    std::shared_ptr<HandoffState> handoff;
 
     /// Choosing faces with the left button (see viewport/FaceSelection).
     struct FaceSelecting {

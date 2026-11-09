@@ -11,6 +11,7 @@ set(BZ_APP_SOURCES
     assembly/AssemblyUi.cpp
     assembly/InPlace.cpp
     assembly/ChangeDialog.cpp
+    handoff/HandoffUi.cpp
     Backgrounds.cpp
     BetaTesting.cpp
     CrashGuard.cpp
@@ -113,7 +114,7 @@ if(ANDROID)
                 ${BZ_APP_SOURCES})
     target_link_libraries(breezecad PRIVATE
         bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
-        bz::imgui bz::miniz bz::json lunasvg::lunasvg android EGL GLESv3 log)
+        bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg android EGL GLESv3 log)
     # The glue's entry point is called by the system, not by our code: keep it.
     target_link_options(breezecad PRIVATE "-uANativeActivity_onCreate")
     set_target_properties(breezecad PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/android)
@@ -137,7 +138,7 @@ if(IOS)
     set_source_files_properties(ios/IosMain.mm Application_ios.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(breezecad PRIVATE
         bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
-        bz::imgui bz::miniz bz::json lunasvg::lunasvg bz::occt_visual
+        bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg bz::occt_visual
         # OCCT is static on iOS: the system frameworks its toolkits use come here.
         "-framework Foundation" "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreText"
         "-framework UIKit" "-framework QuartzCore" "-framework OpenGLES")
@@ -161,7 +162,7 @@ if(WIN32)
 endif()
 target_link_libraries(breezecad PRIVATE
     bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
-    bz::imgui bz::miniz bz::json lunasvg::lunasvg glfw OpenGL::GL)
+    bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg glfw OpenGL::GL)
 bz_set_warnings(breezecad)
 
 # Assets next to the executable: the portable layout the app looks for first.

@@ -14,6 +14,7 @@
 #include "core/Monitor.h"
 #include "platform/Ios.h"
 #include "platform/Mobile.h"
+#include "platform/OpenLinks.h"
 #include "platform/Window.h"
 
 #include <BRepMesh_IncrementalMeshFactory.hxx>
@@ -322,6 +323,15 @@ void CatchCrashes() {
     // The program starts once UIKit is done launching: it does not return
     // until the app ends, and pumps the run loop meanwhile.
     [self performSelector:@selector(runProgram) withObject:nil afterDelay:0.0];
+    return YES;
+}
+
+// «Продолжить на устройстве»: the computer's QR, scanned with the Camera app,
+// opens BreezeCAD with its breezecad://handoff link (Info.plist CFBundleURLTypes).
+- (BOOL)application:(UIApplication*)application openURL:(NSURL*)url options:(NSDictionary*)options {
+    if (![url.scheme isEqualToString:@"breezecad"]) return NO;
+    bz::platform::PushOpenedLink(url.absoluteString.UTF8String);
+    ios::ViewChanged();   // a frame: the program takes the link
     return YES;
 }
 

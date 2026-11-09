@@ -1,6 +1,6 @@
 # ADR-0011: BreezCONN — передача на устройство модулем, окна модулей
 
-- **Status:** Proposed (ждёт решения MikeVerx; кода по нему нет)
+- **Status:** Accepted (MikeVerx одобрил 09.11.2026; кода по нему ещё нет)
 - **Date:** 2026-11-09
 - **Decision makers:** Михаил Афонишев (модули, iOS); основа и ABI — MikeVerx
 - **Related:** [ADR-0002](0002-module-commands-and-mcp.md), [ADR-0005](0005-module-catalog.md),

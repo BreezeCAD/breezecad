@@ -61,6 +61,7 @@ void AddFeatureCommands(Commands& out);    // FeatureCommands.cpp: hole, fillet,
 void AddWorkCommands(Commands& out);       // WorkCommands.cpp: work planes, axes, points
 void AddViewCommands(Commands& out);       // ViewCommands.cpp: picture, camera, appearance, standard parts
 void AddAssemblyCommands(Commands& out);   // AssemblyCommands.cpp: components, constraints, joints
+void AddConnCommands(Commands& out);       // ConnCommands.cpp: «Продолжить на устройстве» for a module
 
 // --- schemas ----------------------------------------------------------------
 

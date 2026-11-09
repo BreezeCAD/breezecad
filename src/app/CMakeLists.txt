@@ -38,6 +38,7 @@ set(BZ_APP_SOURCES
     scripting/WorkCommands.cpp
     scripting/ViewCommands.cpp
     scripting/AssemblyCommands.cpp
+    scripting/ConnCommands.cpp
     features/AppearanceEditor.cpp
     features/ToolChoice.cpp
     features/CopyEditors.cpp
@@ -71,6 +72,7 @@ set(BZ_APP_SOURCES
     shell/FilePreviews.cpp
     shell/HomeScreen.cpp
     shell/LeftPanels.cpp
+    shell/ModuleWindows.cpp
     shell/Ribbon.cpp
     shell/Splash.cpp
     shell/TouchpadSettings.cpp

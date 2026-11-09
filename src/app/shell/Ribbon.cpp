@@ -2,6 +2,7 @@
 // greyed out with a note, so the layout matches the approved mockup.
 
 #include "app/features/OperationEditors.h"
+#include "app/shell/ModuleWindows.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "core/I18n.h"
@@ -542,6 +543,7 @@ void FillRibbon(AppContext& app, Session& session, RibbonSink& sink, bool withFi
                 }
                 ModelRibbonImpl(sink);
             }
+            FillModuleRibbon(app, sink, session.assembly != nullptr);   // the user's modules, last
             break;
         case RibbonTab::Sketch: SketchRibbonImpl(app, sink, withFinish); break;
         case RibbonTab::View:   ViewRibbonImpl(app, sink); break;

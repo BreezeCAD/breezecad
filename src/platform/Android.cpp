@@ -1,5 +1,6 @@
 // Android: the bridge to BreezeActivity (resources/android/java). See Android.h.
 #include "platform/Android.h"
+#include "platform/OpenLinks.h"
 
 #include "core/Log.h"
 
@@ -599,6 +600,12 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_mikeverx_breezecad_BreezeActivi
         if (keyCode != 0) S().typed.push_back({{}, keyCode});
         else if (std::string t = Text(env, text); !t.empty()) S().typed.push_back({std::move(t), 0});
     }
+    Wake();
+}
+
+/// A "breezecad://" link the activity was opened with (a scanned QR code, OpenLinks.h).
+extern "C" JNIEXPORT void JNICALL Java_io_github_mikeverx_breezecad_BreezeActivity_nativeLink(JNIEnv* env, jclass, jstring link) {
+    if (std::string l = Text(env, link); !l.empty()) bz::platform::PushOpenedLink(std::move(l));
     Wake();
 }
 

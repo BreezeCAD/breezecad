@@ -1,6 +1,7 @@
 #include "platform/Launch.h"
 #include "assembly/AssemblyFile.h"
 #include "app/AssemblyState.h"
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/viewport/ViewportPanel.h"
 #include "core/Monitor.h"
@@ -475,6 +476,7 @@ void DrawViewport(AppContext& app, Session& session, ImVec2 pos, ImVec2 size) {
 
     session.camera = app.viewport.Camera();
     EndArea();
+    DrawImportCard(app, session, pos, {pos.x + size.x, pos.y + size.y});   // over the view, its own window
 }
 
 } // namespace bz::app

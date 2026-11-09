@@ -9,6 +9,7 @@
 #include "app/Language.h"
 #include "app/viewport/MarkingMenu.h"
 #include "app/Materials.h"
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/ShortcutPresets.h"
 #include "app/Backgrounds.h"
@@ -2080,6 +2081,7 @@ void DrawDialogs(AppContext& app) {
     ui::Ui& ui = app.ui;
     const ui::ThemeColors& c = ui.C();
     DrawNewDocumentDialog(app);
+    DrawImportDialog(app);
     DrawChangeDialog(app);
     DrawHandoff(app);
     DrawModulePanels(app);

@@ -16,6 +16,7 @@ set(BZ_APP_SOURCES
     BetaTesting.cpp
     CrashGuard.cpp
     Format.cpp
+    Import.cpp
     NewTemplates.cpp
     Language.cpp
     Materials.cpp

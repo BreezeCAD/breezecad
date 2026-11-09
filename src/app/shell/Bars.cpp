@@ -1,5 +1,6 @@
 // Bottom bars: open documents as tabs and the information line.
 
+#include "app/Import.h"
 #include "app/Format.h"
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
@@ -128,7 +129,7 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     if (!s || app.workspace.ShowsHome()) {
         text(Tr("Главная страница"), c.text, ui.fonts.medium);
         const bool fingers = app.shell.mobile.touchScreen && !app.shell.mobile.hardKeyboard;
-        const std::string home = Tr("Создайте документ (Ctrl+N) или откройте его (Ctrl+O)");
+        const std::string home = Tr("Создайте документ (Ctrl+N), откройте (Ctrl+O) или импортируйте STEP/STL (Ctrl+I)");
         text(fingers ? mobile::TouchHint(home) : home, c.textSecondary);
         EndArea();
         return;
@@ -169,7 +170,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     const ObjectId editing = operation ? operation->EditedFeature() : ObjectId{};
     int errors = 0;
     for (const auto& f : s->doc.Features()) errors += f->status.state == doc::FeatureState::Error && f->id != editing ? 1 : 0;
-    if (s->Rebuilding()) {
+    if (const std::optional<double> importing = ImportProgressOf(*s)) {
+        // «Импорт» on another thread: how far, and how to stop it.
+        rightText(Tr("Отмена — Esc"), c.textSecondary);
+        rightText(Trf("Импорт — {}%", static_cast<int>(*importing * 100)), c.accent);
+    } else if (s->Rebuilding()) {
         // A rebuild under way in slices: a bar with how far it is.
         const kernel::Model::Progress p = s->RebuildProgress();
         const float barW = ui.S(90), barH = ui.S(6);

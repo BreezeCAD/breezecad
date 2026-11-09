@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/Profile.h"
+#include "kernel/occt/Import.h"
 #include "kernel/occt/EdgeMatch.h"
 #include "kernel/occt/FaceMatch.h"
 #include "kernel/occt/Measure.h"
@@ -17,6 +18,7 @@
 #include <map>
 #include <AIS_ColoredDrawer.hxx>
 #include <AIS_ColoredShape.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <AIS_Shape.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
@@ -1405,7 +1407,9 @@ bool Viewport::MeasurePick(Vec2 pixel, int slot) {
     const auto s = static_cast<std::size_t>(std::clamp(slot, 0, 1));
     ClearMeasure(static_cast<int>(s));
 
-    const TopoDS_Shape entity = owner->Shape();
+    TopoDS_Shape entity = owner->Shape();
+    // A mesh (STL) is measured point by point: the picked point on its triangles.
+    if (entity.ShapeType() == TopAbs_FACE && kernel::occt::IsMesh(entity)) entity = BRepBuilderAPI_MakeVertex(selector->PickedPoint(1)).Vertex();
     const kernel::EntityInfo info = kernel::occt::Describe(entity, ToVec(selector->PickedPoint(1).XYZ()));
     ms.picked[s] = entity;
     (s == 0 ? ms.result.first : ms.result.second) = info;
@@ -1719,6 +1723,10 @@ void Viewport::BeginPickingOriginal(const kernel::Model& model, std::size_t feat
         if (target == PickTarget::EdgesAndFaces || target == PickTarget::All) m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_FACE));
         if (target == PickTarget::All || target == PickTarget::VerticesAndEdges)
             m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_VERTEX));
+        // A mesh (STL) has no vertices or edges to pick: any point on its
+        // triangles is one (a work plane through three points of a scan).
+        if (target != PickTarget::Faces && target != PickTarget::EdgesAndFaces && kernel::occt::IsMesh(body))
+            m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_FACE));
         o.targets.push_back(ais);
     }
     o.active = true;
@@ -1826,6 +1834,8 @@ std::optional<Viewport::VertexPick> Viewport::PickVertex(Vec2 pixel) {
     selector->Pick(px, py, m.view);
     for (int i = 1; i <= selector->NbPicked(); ++i) {
         const Handle(StdSelect_BRepOwner) owner = Handle(StdSelect_BRepOwner)::DownCast(selector->Picked(i));
+        if (!owner.IsNull() && owner->Shape().ShapeType() == TopAbs_FACE && kernel::occt::IsMesh(owner->Shape()))
+            return VertexPick{ToVec(selector->PickedPoint(i).XYZ()), std::nullopt};   // a point on a mesh
         // With edges and faces pickable too, the nearest thing has to be the vertex.
         if ((m.original.target == PickTarget::All || m.original.target == PickTarget::VerticesAndEdges) && (owner.IsNull() || owner->Shape().ShapeType() != TopAbs_VERTEX)) return std::nullopt;
         if (owner.IsNull() || owner->Shape().ShapeType() != TopAbs_VERTEX) continue;

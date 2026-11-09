@@ -1,5 +1,6 @@
 // Home screen: start a part, open a file, recover unsaved work, recent files.
 
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/shell/Shell.h"
 #include "app/assembly/AssemblyUi.h"
@@ -163,7 +164,11 @@ void DrawHomeScreen(AppContext& app, ImVec2 pos, ImVec2 size) {
         app.Later([&app] { NewAssembly(app); });
     ImGui::SameLine(0, ui.S(10));
     if (ui::SecondaryButton(ui, "##home-open", Tr("Открыть…"), "Ctrl+O", {ui.S(170), ui.S(40)})) app.Later([&app] { OpenDocument(app); });
-    y += ui.S(72);
+    ImGui::SameLine(0, ui.S(10));
+    if (ui::SecondaryButton(ui, "##home-import", Tr("Импорт…"), "Ctrl+I", {ui.S(170), ui.S(40)})) app.Later([&app] { StartImport(app); });
+    dl->AddText(ui.fonts.caption, ui.S(11), {x0, y + ui.S(48)}, ui::ToU32(c.textSecondary),
+                Tr("Импорт: STEP (.step, .stp) — точная деталь  \xC2\xB7  STL (.stl) — сетка для просмотра, измерений и опоры эскиза"));
+    y += ui.S(80);
 
     ImGui::SetCursorScreenPos({x0, y});
     ImGui::BeginGroup();

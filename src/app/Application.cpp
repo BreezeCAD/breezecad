@@ -24,6 +24,7 @@
 #include "render/Viewport.h"
 #include "ui/ViewCube.h"
 #include "platform/Paths.h"
+#include "app/Import.h"
 #include "platform/ProcessInfo.h"
 #include "platform/SystemTheme.h"
 
@@ -291,6 +292,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
         const std::u8string ext = file.extension().u8string();
         if (ext == u8".bzmod" || ext == u8".BZMOD" || ext == u8".bzlib" || ext == u8".BZLIB" || ext == u8".bzp" || ext == u8".BZP")
             OpenDropped(*myContext, file);
+        else if (IsImportable(file)) myContext->Later([ctx = myContext.get(), file] { StartImport(*ctx, file); });   // STEP, STL: on the first frame
         else myWorkspace.Open(file, myNotes, mySettings);
     }
     // Nothing asked for: the last file, if the user wants it (and it is still there).
@@ -575,6 +577,7 @@ bool Application::WaitsForBackground() const {
     // Only the document on screen: another one takes its result when shown.
     const Session* s = myWorkspace.Active();
     if (s && s->RebuildingInBackground()) return true;
+    if (s && s->importing) return true;   // its progress card moves
     return FilePreviewsBusy();   // the home page's pictures, read on another thread
 }
 
@@ -818,6 +821,8 @@ void Application::Frame() {
         mySceneFramesThisSecond = 0;
         mySecondStart = now;
     }
+
+    TickImports(app);   // a finished import goes into its part
 
     // Work requested by panels during the frame, now that nobody iterates.
     std::vector<std::function<void()>> work;

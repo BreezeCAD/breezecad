@@ -39,6 +39,7 @@ enum class RibbonTab : unsigned char { Model, Sketch, View };
 
 struct ChangeDialogState;   // app/assembly/ChangeDialog.cpp
 struct HandoffState;        // app/handoff/HandoffUi.cpp
+struct ImportState;         // app/Import.cpp
 
 /// UI state of the window chrome that outlives a frame.
 struct ShellState {
@@ -140,6 +141,8 @@ struct ShellState {
     std::shared_ptr<ChangeDialogState> changeDialog;
     /// «Продолжить на устройстве»: the computer's window or the device's copy (HandoffUi.h).
     std::shared_ptr<HandoffState> handoff;
+    /// The question asked before an import (app/Import.h).
+    std::shared_ptr<ImportState> import;
 
     /// Choosing faces with the left button (see viewport/FaceSelection).
     struct FaceSelecting {

@@ -16,7 +16,7 @@
 
 namespace bz::app {
 
-
+struct ImportJob;   // app/Import.cpp
 
 /// One open document with everything that belongs to it: the recipe,
 /// undo history, computed geometry, file, camera and editing state.
@@ -54,6 +54,10 @@ public:
     /// `preview`: the model as a PNG for the file manager (empty: the file keeps its old one).
     Status WriteFile(const std::filesystem::path& target, std::string_view generator,
                      std::span<const std::uint8_t> preview = {}) const;
+
+    /// «Импорт»: the file being read into this part on another thread, or
+    /// the card saying why it could not be (app/Import.h).
+    std::shared_ptr<ImportJob> importing;
 
     std::filesystem::path path;        ///< empty until saved once
     std::string           untitledName; ///< "Деталь1" for documents never saved

@@ -52,6 +52,7 @@ void MainMenu(AppContext& app) {
     if (!ImGui::BeginPopup("##main-menu")) return;
     MenuAction(app, "file.new");
     MenuAction(app, "file.open");
+    MenuAction(app, "file.import");
     if (ui::BeginSubmenu(ui, Tr("Последние"), "ui-file", !app.settings.recentFiles.empty())) {
         for (const auto& file : app.settings.recentFiles) {
             const std::u8string name = file.filename().u8string();

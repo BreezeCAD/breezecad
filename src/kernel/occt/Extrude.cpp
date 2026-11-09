@@ -149,10 +149,10 @@ Expected<TopoDS_Shape> CutToFace(const TopoDS_Shape& prism, const TopoDS_Face& f
         TopoDS_Shape kept;
         double volume = 0;
         for (TopExp_Explorer e(splitter.Shape(), TopAbs_SOLID); e.More(); e.Next()) {
-            // A classifier for each point: one loaded with the solid and asked
-            // again faults inside OCCT 7.9.3 of MSYS2 (see Thread.cpp).
+            BRepClass3d_SolidClassifier classifier(e.Current());
             const bool start = std::any_of(seeds.begin(), seeds.end(), [&](const gp_Pnt& seed) {
-                return BRepClass3d_SolidClassifier(e.Current(), seed, 1e-6).State() == TopAbs_IN;
+                classifier.Perform(seed, 1e-6);
+                return classifier.State() == TopAbs_IN;
             });
             if (!start) continue;
             GProp_GProps props;

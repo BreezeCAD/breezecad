@@ -44,6 +44,7 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Shell.hxx>
+#include <gp_Vec3f.hxx>   // OCCT 8 no longer brings it with Poly_Triangulation
 #include <TopoDS_Solid.hxx>
 
 #include <miniz.h>
@@ -704,6 +705,15 @@ Expected<ImportResult> ImportStep(const std::filesystem::path& path, ImportProgr
     return result;
 }
 
+/// The message of an OCCT exception: GetMessageString up to 7.9, what() from 8.0 (the old name is deprecated there).
+const char* FailureText(const Standard_Failure& failure) {
+#if OCC_VERSION_HEX >= 0x080000
+    return failure.what();
+#else
+    return failure.GetMessageString();
+#endif
+}
+
 bool HasExtension(const std::filesystem::path& path, std::initializer_list<std::string_view> list) {
     std::string ext = ToUtf8(path.extension());
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -765,7 +775,7 @@ Expected<ImportResult> ImportFile(const std::filesystem::path& path, const Impor
             try {
                 result = probe->format == ImportFormat::Step ? ImportStep(path, progress) : ImportStl(path, options, progress);
             } catch (const Standard_Failure& failure) {
-                result = Error{std::format("Ошибка геометрического ядра при чтении файла: {}", failure.GetMessageString())};
+                result = Error{std::format("Ошибка геометрического ядра при чтении файла: {}", FailureText(failure))};
             } catch (const std::bad_alloc&) {
                 result = Error{"Не хватило памяти, чтобы прочитать файл: попробуйте упростить сетку или закрыть другие документы"};
             } catch (const std::exception& e) {

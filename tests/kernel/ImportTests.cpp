@@ -54,15 +54,43 @@ fs::path TempFile(const std::string& name) {
     return dir / PathFromUtf8(name);
 }
 
-/// Writes `shape` as STEP AP214 with lengths in `unit` ("MM", "INCH", "M").
-void WriteStep(const TopoDS_Shape& shape, const fs::path& path, const char* unit = "MM") {
+/// Writes `shape` as STEP AP214 in millimetres.
+void WriteStep(const TopoDS_Shape& shape, const fs::path& path) {
     STEPControl_Writer writer;
     Interface_Static::SetCVal("write.step.schema", "AP214IS");
-    Interface_Static::SetCVal("write.step.unit", unit);
+    Interface_Static::SetCVal("write.step.unit", "MM");
     REQUIRE(writer.Transfer(shape, STEPControl_AsIs) == IFSelect_RetDone);
     const std::string utf8 = ToUtf8(path);
     REQUIRE(writer.Write(utf8.c_str()) == IFSelect_RetDone);
-    Interface_Static::SetCVal("write.step.unit", "MM");
+}
+
+void WriteText(const fs::path& path, const std::string& text);
+std::string ReadText(const fs::path& path);
+
+/// Writes `shape` as a STEP file in inches, the way a CAD working in inches
+/// does: the numbers are the shape's own, the file's length unit is INCH.
+/// Made by hand from a millimetre file — how OCCT itself writes INCH differs
+/// between versions (7.8 writes the numbers as they are, 7.9 converts them).
+void WriteInchStep(const TopoDS_Shape& shape, const fs::path& path) {
+    const fs::path mm = path.parent_path() / (path.stem().string() + "-mm.step");
+    WriteStep(shape, mm);
+    std::string text = ReadText(mm);
+    const std::string unit = "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );";
+    const std::size_t at = text.find(unit);
+    REQUIRE(at != std::string::npos);
+    int top = 0;   // the largest entity number
+    for (std::size_t p = text.find("\n#"); p != std::string::npos; p = text.find("\n#", p + 1))
+        top = std::max(top, std::atoi(text.c_str() + p + 2));
+    const int exponents = top + 1, factor = top + 2, millimetre = top + 3;
+    text.replace(at, unit.size(),
+                 "( CONVERSION_BASED_UNIT('INCH',#" + std::to_string(factor) + ") LENGTH_UNIT() NAMED_UNIT(#" +
+                     std::to_string(exponents) + ") );");
+    const std::size_t end = text.rfind("ENDSEC;");
+    REQUIRE(end != std::string::npos);
+    text.insert(end, "#" + std::to_string(exponents) + " = DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n#" +
+                         std::to_string(factor) + " = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#" +
+                         std::to_string(millimetre) + ");\n#" + std::to_string(millimetre) + " = " + unit + "\n");
+    WriteText(path, text);
 }
 
 void WriteText(const fs::path& path, const std::string& text) {
@@ -299,9 +327,8 @@ TEST_CASE("several bodies in a STEP file become several bodies of one part") {
 
 TEST_CASE("STEP in inches comes in millimetres") {
     const fs::path path = TempFile("inch.step");
-    // A file from a CAD working in inches: a 1 × 1 × 2 inch block (OCCT
-    // writes the numbers as they are and names the unit INCH).
-    WriteStep(BRepPrimAPI_MakeBox(1, 1, 2).Shape(), path, "INCH");
+    // A file from a CAD working in inches: a 1 × 1 × 2 inch block.
+    WriteInchStep(BRepPrimAPI_MakeBox(1, 1, 2).Shape(), path);
     const std::string text = ReadText(path);
     CHECK(text.find("INCH") != std::string::npos);
     doc::Document d;
@@ -764,8 +791,8 @@ const fs::path kGolden = fs::path(BZ_SOURCE_DIR) / "tests" / "data" / "import" /
 /// The parts the golden files were made from.
 doc::Document GoldenStep() {
     const fs::path step = TempFile("golden.step");
-    WriteStep(BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(10, 30).Shape(), BRepPrimAPI_MakeCylinder(4, 30).Shape()).Shape(), step,
-              "INCH");   // the file says inches: 10 × 30 inch, 4 inch hole
+    WriteInchStep(BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(10, 30).Shape(), BRepPrimAPI_MakeCylinder(4, 30).Shape()).Shape(),
+                  step);   // the file says inches: 10 × 30 inch, 4 inch hole
     doc::Document d;
     AddImported(d, Imported(step));
     return d;

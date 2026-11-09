@@ -158,10 +158,12 @@ Expected<Layout> Plan(const TopoDS_Shape& body, const doc::ThreadFeature& f) {
     // runs out past it. A closed one (a shoulder, the bottom of a blind
     // hole): the groove stops short of it rather than cutting into it.
     const double half = (l.depth + kOvershoot * l.pitch) * std::tan(kPi / 6);
-    BRepClass3d_SolidClassifier classifier(body);
     const auto open = [&](double along, double outward) {
         const Vec3 p = s.axisPoint + axis * (along + outward * std::min(0.2 * l.pitch, 0.5)) + l.across * (s.radius + l.side * l.depth / 2);
-        classifier.Perform(gp_Pnt(p.x, p.y, p.z), 1e-7);
+        // A classifier made for the point, not one loaded with the body and
+        // asked again: that one faults inside OCCT 7.9.3 of MSYS2 (Windows)
+        // on a hole under a counterbore, the same answer elsewhere.
+        const BRepClass3d_SolidClassifier classifier(body, gp_Pnt(p.x, p.y, p.z), 1e-7);
         return classifier.State() == TopAbs_OUT;
     };
     l.begin += open(l.begin, -1) ? -l.pitch : half;

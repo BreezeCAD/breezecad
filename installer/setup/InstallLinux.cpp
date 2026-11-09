@@ -57,6 +57,9 @@ constexpr FileType kTypes[] = {
     {"bzlib", "application/x-breezecad-library", "library"},
     {"bzp", "application/x-breezecad-project", "project"},
 };
+/// Other programs' files BreezeCAD imports, by the system's own MIME types:
+/// "Open with" only, never the default (an STL usually opens in a slicer).
+constexpr const char* kImportMimes = "model/step;application/step;model/stl;application/sla;model/x.stl-binary;model/x.stl-ascii;";
 
 fs::path Env(const char* name) {
     const char* v = std::getenv(name);
@@ -482,7 +485,7 @@ bool Register(const Choices& c, const std::string& version, std::uint64_t sizeBy
     const std::string desktop = std::format(
         "[Desktop Entry]\nType=Application\nName=BreezeCAD\nGenericName=CAD\nComment={}\nExec={} %F\nIcon=breezecad\n"
         "Terminal=false\nCategories=Graphics;Engineering;3DGraphics;\nMimeType={}\nStartupWMClass=BreezeCAD\nNoDisplay={}\n",
-        Tr("tagline"), Quote(c.dir / kExe), mimes, c.startMenu ? "false" : "true");
+        Tr("tagline"), Quote(c.dir / kExe), mimes + kImportMimes, c.startMenu ? "false" : "true");
     if (!WriteText(DesktopFile(), desktop, error)) return false;
     RefreshDesktop();
     // The chosen types open in BreezeCAD by default.

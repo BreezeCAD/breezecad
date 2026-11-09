@@ -1970,7 +1970,7 @@
     "Соединение: выберите грань второго компонента": "Joint: select a face of the second component",
     "Соединение: выберите грань первого компонента (вдоль её оси или нормали — движение)": "Joint: select a face of the first component (motion is along its axis or normal)",
     "Соединения": "Joints",
-    "Создайте документ (Ctrl+N), откройте (Ctrl+O) или импортируйте STEP/STL (Ctrl+I)": "Create a document (Ctrl+N), open one (Ctrl+O) or import STEP/STL (Ctrl+I)",
+    "Создайте документ (Ctrl+N) или откройте его (Ctrl+O)": "Create a document (Ctrl+N) or open one (Ctrl+O)",
     "Создание детали": "Create part",
     "Создание окна…": "Creating window…",
     "Создать": "New",

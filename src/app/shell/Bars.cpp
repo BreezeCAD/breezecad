@@ -129,7 +129,7 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     if (!s || app.workspace.ShowsHome()) {
         text(Tr("Главная страница"), c.text, ui.fonts.medium);
         const bool fingers = app.shell.mobile.touchScreen && !app.shell.mobile.hardKeyboard;
-        const std::string home = Tr("Создайте документ (Ctrl+N), откройте (Ctrl+O) или импортируйте STEP/STL (Ctrl+I)");
+        const std::string home = Tr("Создайте документ (Ctrl+N) или откройте его (Ctrl+O)");
         text(fingers ? mobile::TouchHint(home) : home, c.textSecondary);
         EndArea();
         return;

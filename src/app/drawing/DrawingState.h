@@ -46,6 +46,8 @@ public:
     /// empty before the first save — then they are full paths.
     std::filesystem::path savedAt;
 
+    /// The page shown of a specification sheet (it may take several), from 0.
+    int activePage = 0;
     /// The view picked on the sheet or in the tree (not saved).
     ObjectId selectedView;
     /// The lines of the views, computed from the models (app/drawing/DrawingViews).

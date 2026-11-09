@@ -71,7 +71,10 @@ std::string SizeName(dw::SheetSize size) {
     return std::format("А{}", std::string(dw::SizeId(size)).substr(1));
 }
 
-std::string SheetTitle(const dw::Sheet& s) { return std::format("{} ({})", s.name, SizeName(s.size)); }
+std::string SheetTitle(const dw::Sheet& s) {
+    if (s.kind == dw::SheetKind::Specification) return s.name;
+    return std::format("{} ({})", s.name, SizeName(s.size));
+}
 
 // --- the sheet on the screen ----------------------------------------------------
 
@@ -190,8 +193,19 @@ const char* DirectionName(dw::ViewDirection d) {
 
 std::string ViewTitle(const dw::View& v) { return std::format("{} ({})", Tr(DirectionName(v.direction)), dw::ScaleText(v.scale)); }
 
-dw::ViewLinesSource LinesSource(AppContext& app, DrawingState& d) {
-    return [&app, &d](const dw::Sheet&, const dw::View& v) { return DrawingViews::Of(d).Lines(app.workspace, d, v); };
+/// The index of the sheet shown in the drawing.
+std::size_t SheetIndex(const DrawingState& d) {
+    for (std::size_t i = 0; i < d.drawing.sheets.size(); ++i)
+        if (d.drawing.sheets[i].id == d.Sheet().id) return i;
+    return 0;
+}
+
+/// The page shown: the sheet, or the page of its specification picked.
+dw::Page CurrentPage(DrawingState& d, const dw::SheetContent& content) {
+    const std::vector<dw::Page> pages = dw::PagesOf(d.drawing, SheetIndex(d), content);
+    if (pages.empty()) return {};
+    d.activePage = std::clamp(d.activePage, 0, static_cast<int>(pages.size()) - 1);
+    return pages[static_cast<std::size_t>(d.activePage)];
 }
 
 Box3 BoxOf(const kernel::Bounds& b) {
@@ -299,8 +313,6 @@ void AddStandardViews(AppContext& app) {
             left.at        = place->left;
             left.parent    = front.id;
             for (const dw::View& v : {front, top, left}) s.views.push_back(dw::MakeViewItem(v));
-            // The scale of the title block: of the main view, unless the user wrote one.
-            if (s.title.fields[dw::field::kScale].empty()) s.title.fields[dw::field::kScale] = dw::ScaleText(place->scale);
             main = front.id;
         }
     });
@@ -350,6 +362,67 @@ void AddIsoView(AppContext& app) {
         return;
     }
     app.notes.Info(Tr("Изометрия не помещается на лист: возьмите формат больше или освободите место"));
+}
+
+/// «Спецификация»: a sheet of the drawing's assembly (one picked if it has none).
+void AddSpecification(AppContext& app) {
+    DrawingState* d = ActiveDrawing(app);
+    if (!d) return;
+    ObjectId model;
+    for (const dw::ModelRef& m : d->drawing.models)
+        if (PathFromUtf8(m.path).extension() == ".bza") {
+            model = m.id;
+            break;
+        }
+    if (!model) {
+        if (const std::string problem = platform::FileDialogProblem(); !problem.empty()) {
+            app.notes.Error(problem);
+            return;
+        }
+        const std::filesystem::path folder = d->savedAt.empty() ? platform::DocumentsDir() : d->savedAt.parent_path();
+        const auto file = platform::ShowOpenDialog(Tr("Сборка для спецификации"), {{Tr("Сборка BreezeCAD"), "*.bza"}}, folder);
+        if (!file) return;
+        const std::string path = ModelPath(*d, *file);
+        d->Change(Tr("Модель чертежа"), [&](dw::Drawing& dr) {
+            dw::ModelRef ref;
+            ref.id   = dr.Ids().Next();
+            ref.path = path;
+            model    = ref.id;
+            dr.models.push_back(std::move(ref));
+        });
+    }
+    for (const dw::Sheet& s : d->drawing.sheets)
+        if (s.kind == dw::SheetKind::Specification && s.model == model) {   // one is enough: show it
+            d->activeSheet = s.id;
+            d->activePage = 0;
+            d->zoom = 0;
+            return;
+        }
+    ObjectId added;
+    // The signatures and the organization as on the drawing's first sheet: one team signs both.
+    dw::Fields signed_;
+    for (const dw::Sheet& s : d->drawing.sheets)
+        if (s.kind == dw::SheetKind::Drawing) {
+            for (const char* key : {dw::field::kDeveloper, dw::field::kChecker, dw::field::kNormControl, dw::field::kApprover,
+                                    dw::field::kOrganization, dw::field::kLetter})
+                if (const auto it = s.title.fields.find(key); it != s.title.fields.end()) signed_[key] = it->second;
+            break;
+        }
+    d->Change(Tr("Спецификация"), [&](dw::Drawing& dr) {
+        dw::Sheet sheet;
+        for (const auto& [key, value] : signed_) sheet.title.fields[key] = value;
+        sheet.id          = dr.Ids().Next();
+        sheet.name        = "Спецификация";
+        sheet.kind        = dw::SheetKind::Specification;
+        sheet.model       = model;
+        sheet.size        = dw::SheetSize::A4;
+        sheet.orientation = dw::Orientation::Portrait;
+        added             = sheet.id;
+        dr.sheets.push_back(std::move(sheet));
+    });
+    d->activeSheet = added;
+    d->activePage = 0;
+    d->zoom = 0;
 }
 
 /// Changes one view of the sheet shown (an undo step).
@@ -496,16 +569,6 @@ void NewDrawingFromModel(AppContext& app) {
     if (!CanDrawingFromModel(app)) return;
     Session* model = app.Doc();
     if (model->host) model = model->host;
-    std::string name, designation, material;
-    if (model->assembly) {
-        name        = model->assembly->assembly.info.name;
-        designation = model->assembly->assembly.info.designation;
-    } else {
-        name        = model->doc.info.name;
-        designation = model->doc.info.designation;
-        material    = model->doc.info.material;
-    }
-    if (name.empty()) name = model->Title();
     const std::filesystem::path file = model->path;
     EndEditing(app);
     Session& s = app.workspace.NewDrawing();
@@ -514,10 +577,7 @@ void NewDrawingFromModel(AppContext& app) {
     ref.id   = s.drawing->drawing.Ids().Next();
     ref.path = DrawingState::StoredPath(file);
     s.drawing->drawing.models.push_back(std::move(ref));
-    dw::TitleBlock& title = s.drawing->Sheet().title;
-    title.fields[dw::field::kName] = name;
-    if (!designation.empty()) title.fields[dw::field::kDesignation] = designation;
-    if (!material.empty()) title.fields[dw::field::kMaterial] = material;
+    // The title block is not copied: its fields come from the model (DrawingViews::AutoFields) and follow it.
     s.untitledName = app.workspace.NextUntitledName(std::format("{} — чертёж ", model->Title()));
     app.shell.ribbonTab = RibbonTab::Model;
 }
@@ -539,10 +599,12 @@ void RegisterDrawingActions(AppContext& app) {
                DrawingState* d = ActiveDrawing(app);
                d->Change(Tr("Добавить лист"), [d](dw::Drawing& dr) {
                    dw::Sheet sheet;
-                   sheet.id          = dr.Ids().Next();
-                   sheet.name        = std::format("Лист {}", dr.sheets.size() + 1);
-                   sheet.size        = d->Sheet().size;
-                   sheet.orientation = d->Sheet().orientation;
+                   sheet.id   = dr.Ids().Next();
+                   sheet.name = std::format("Лист {}", dr.sheets.size() + 1);
+                   if (d->Sheet().kind == dw::SheetKind::Drawing) {   // the format of the one shown; after a specification, А3
+                       sheet.size        = d->Sheet().size;
+                       sheet.orientation = d->Sheet().orientation;
+                   }
                    const auto at = std::find_if(dr.sheets.begin(), dr.sheets.end(), [&](const dw::Sheet& s) { return s.id == d->Sheet().id; });
                    const ObjectId id = sheet.id;
                    dr.sheets.insert(at == dr.sheets.end() ? at : at + 1, std::move(sheet));
@@ -555,6 +617,9 @@ void RegisterDrawingActions(AppContext& app) {
            [&app] { AddStandardViews(app); }, 0, N_("вид спереди сверху слева проекции")});
     a.Add({"drawing.isoView", N_("Изометрия"), "ui-cube", 0, N_("Изометрия детали (ГОСТ 2.317) на свободном месте листа"), inDrawing,
            [&app] { AddIsoView(app); }, 0, N_("аксонометрия вид")});
+    a.Add({"drawing.specification", N_("Спецификация"), "ui-list", 0,
+           N_("Спецификация сборки по ГОСТ 2.106 на листах А4: разделы, позиции, количество — из сборки, меняется вместе с ней"),
+           inDrawing, [&app] { AddSpecification(app); }, 0, N_("спецификация bom перечень состав сборки")});
     a.Add({"file.exportPdf", N_("Экспорт в PDF"), "export", 0, N_("Все листы чертежа — страницами в натуральную величину, для печати и отправки"),
            inDrawing, [&app] { ExportDocument(app, ExportFormat::Pdf); }, 0, N_("пдф печать вывод")});
     a.Add({"drawing.removeSheet", N_("Удалить лист"), "ui-trash", 0, N_("Убрать текущий лист из чертежа (Ctrl+Z вернёт)"),
@@ -605,6 +670,9 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
             sink.Large("drawing.addSheet", N_("Добавить\nлист"));
             sink.Large("drawing.removeSheet", N_("Удалить\nлист"));
             sink.EndGroup();
+            sink.BeginGroup(N_("Документы"));
+            sink.Large("drawing.specification", N_("Специфи-\nкация"));
+            sink.EndGroup();
             sink.BeginGroup(N_("Вывод"));
             sink.Large("file.exportPdf", N_("Экспорт\nв PDF"));
             sink.EndGroup();
@@ -631,13 +699,28 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         ImGui::PushID(static_cast<int>(sheet.id.value));
         const bool active = sheet.id == d.Sheet().id;
         bool twice = false;
-        if (TreeRow(ui, "##sheet", "doc-drawing", SheetTitle(sheet), x, y, width, active, false, &twice) && !active) {
+        const bool spec = sheet.kind == dw::SheetKind::Specification;
+        if (TreeRow(ui, "##sheet", spec ? "ui-list" : "doc-drawing", SheetTitle(sheet), x, y, width, active, false, &twice) && !active) {
             d.activeSheet = sheet.id;
+            d.activePage = 0;
             d.zoom = 0;
         }
         if (twice) app.Later([&app] { OpenSheetDialog(app); });
         y += ui.S(30);
-        if (active) {
+        if (active && spec) {
+            // Its pages, as many as the rows take.
+            const dw::SheetContent content = DrawingViews::Of(d).Content(app.workspace, d);
+            const std::vector<dw::Page> pages = dw::PagesOf(d.drawing, SheetIndex(d), content);
+            for (std::size_t i = 0; i < pages.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                if (TreeRow(ui, "##page", nullptr, Trf("Лист {} из {}", i + 1, pages.size()), x + ui.S(24), y, width - ui.S(24),
+                            d.activePage == static_cast<int>(i), false))
+                    d.activePage = static_cast<int>(i);
+                y += ui.S(30);
+                ImGui::PopID();
+            }
+        }
+        if (active && !spec) {
             // Its views; what this version does not know is counted, kept as it is.
             const std::vector<dw::View> views = dw::ViewsOf(sheet);
             for (const dw::View& v : views) {
@@ -694,6 +777,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
 // --- the sheet ------------------------------------------------------------------------
 
 std::string DrawingSheetCaption(const DrawingState& d) {
+    if (d.Sheet().kind == dw::SheetKind::Specification) return Trf("{}, лист {}, А4", d.Sheet().name, d.activePage + 1);
     return Trf("{} из {}, {}", d.Sheet().name, d.drawing.sheets.size(), SizeName(d.Sheet().size));
 }
 
@@ -709,8 +793,9 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     views.Poll();
     ImDrawList* dl = BeginArea("##drawing-sheet", pos, size, c.sheetDesk);
     const dw::Sheet& sheet = d.Sheet();
-    const dw::SheetLayout layout =
-        dw::LayoutSheetWithViews(sheet, d.SheetNumber(), static_cast<int>(d.drawing.sheets.size()), LinesSource(app, d));
+    const dw::SheetContent content = views.Content(app.workspace, d);
+    const dw::Page page = CurrentPage(d, content);
+    const dw::SheetLayout layout = dw::LayoutPage(d.drawing, page, content);
     if (d.zoom <= 0) FitInto(d, layout, size, ui.S(24), ui.S(36));
 
     // The canvas takes the mouse: wheel — zoom about the cursor; a view dragged
@@ -808,9 +893,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
 
     ImGui::PushClipRect(pos, {pos.x + size.x, pos.y + size.y}, true);
     // Drawn from the layout of this frame's start; a view being dragged is drawn where it is now.
-    const dw::SheetLayout now = drag.moved ? dw::LayoutSheetWithViews(d.Sheet(), d.SheetNumber(), static_cast<int>(d.drawing.sheets.size()),
-                                                                       LinesSource(app, d))
-                                           : layout;
+    const dw::SheetLayout now = drag.moved ? dw::LayoutPage(d.drawing, page, content) : layout;
     DrawSheet(dl, ui, view, now);
     // The views: the picked one framed; one without lines says why.
     for (const dw::View& v : dw::ViewsOf(d.Sheet())) {
@@ -832,7 +915,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size();
     std::string note;
     if (newer > 0) note = Trf("На листе есть объекты из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer);
-    else if (onSheet.empty()) note = Tr("«Стандартные виды» на вкладке «Виды» — главный вид, сверху и слева по детали. Двойной щелчок по надписи — заполнить её");
+    else if (onSheet.empty() && sheet.kind == dw::SheetKind::Drawing) note = Tr("«Стандартные виды» на вкладке «Виды» — главный вид, сверху и слева по детали. Двойной щелчок по надписи — заполнить её");
     else if (views.Busy()) note = Tr("Виды считаются…");
     if (!note.empty()) {
         const ImVec2 ns = ui.fonts.body->CalcTextSizeA(ui.S(12), FLT_MAX, 0, note.c_str());
@@ -868,6 +951,8 @@ void DrawDrawingDialogs(AppContext& app) {
     ImGui::Dummy({0, ui.S(4)});
     const float full = ImGui::GetContentRegionAvail().x;
 
+    const bool spec = dlg.edit.kind == dw::SheetKind::Specification;   // always А4 upright (ГОСТ 2.106)
+    if (!spec) {
     ImGui::TextUnformatted(Tr("Формат"));
     std::vector<std::string> names;
     for (dw::SheetSize s : kSizes) names.push_back(SizeName(s));
@@ -885,11 +970,14 @@ void DrawDrawingDialogs(AppContext& app) {
     int orientation = a4 || dlg.edit.orientation == dw::Orientation::Portrait ? 0 : 1;
     orientation = ui::Segmented(ui, "##orientation", orientations, orientation, 2, full, a4 ? 0b10 : 0);
     if (!a4) dlg.edit.orientation = orientation == 0 ? dw::Orientation::Portrait : dw::Orientation::Landscape;
+    }
 
     ImGui::Dummy({0, ui.S(6)});
     ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(c.textSecondary));
-    ImGui::TextUnformatted(Tr("Основная надпись (ГОСТ 2.104, форма 1)"));
+    ImGui::TextUnformatted(spec ? Tr("Основная надпись (ГОСТ 2.104, форма 2)") : Tr("Основная надпись (ГОСТ 2.104, форма 1)"));
+    ImGui::TextUnformatted(Tr("Серым — из модели: пустое поле берёт значение из её свойств и меняется вместе с ней"));
     ImGui::PopStyleColor();
+    const dw::Fields automatic = DrawingViews::Of(*d).AutoFields(app.workspace, *d, dlg.edit);
     struct Field {
         const char* key;
         const char* label;
@@ -911,7 +999,12 @@ void DrawDrawingDialogs(AppContext& app) {
         std::string value;
         const auto it = dlg.edit.title.fields.find(f.key);
         if (it != dlg.edit.title.fields.end()) value = it->second;
-        if (ImGui::InputText("##value", &value)) dlg.edit.title.fields[f.key] = value;
+        const auto hint = automatic.find(f.key);
+        if (ImGui::InputTextWithHint("##value", hint != automatic.end() ? hint->second.c_str() : "", &value)) {
+            // Emptied: back to the model's value.
+            if (value.empty()) dlg.edit.title.fields.erase(f.key);
+            else dlg.edit.title.fields[f.key] = value;
+        }
         ImGui::PopID();
     }
     dlg.justOpened = false;

@@ -7,6 +7,7 @@
 
 #include <doctest.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -513,3 +514,73 @@ TEST_CASE("a program inside a package stays runnable after installing") {
 }
 #endif
 #endif
+
+TEST_CASE("module windows: items and panels are filed under the module that runs") {
+    using namespace bz::modules;
+    const BzHostApi* host = HostApi();
+    REQUIRE(BZ_HAS(host, add_action));
+    REQUIRE(BZ_HAS(host, close_panel));
+
+    // Outside a call into a module nothing can be added (whose would it be?).
+    SetCallingModule({});
+    CHECK(host->add_action(R"({"id":"start","label":"Старт"})") == BZ_EFAIL);
+
+    SetCallingModule("conn");
+    const auto revision = ModuleUiRevision();
+    CHECK(host->add_action("not json") == BZ_EARGUMENT);
+    CHECK(host->add_action(R"({"id":"bad id","label":"x"})") == BZ_EARGUMENT);
+    CHECK(host->add_action(R"({"id":"start"})") == BZ_EARGUMENT);   // no label
+    CHECK(host->add_action(R"({"id":"start","label":"Продолжить на устройстве","menu":"file",
+                               "ribbon":{"tab":"model","group":"BreezCONN"}})") == BZ_OK);
+    CHECK(ModuleUiRevision() > revision);
+    REQUIRE(ModuleActions().size() == 1);
+    CHECK(ModuleActions()[0].module == "conn");
+    CHECK(ModuleActions()[0].menu == "file");
+    CHECK(ModuleActions()[0].ribbonGroup == "BreezCONN");
+
+    // The same id replaces the item and keeps it greyed out.
+    CHECK(host->enable_action("start", 0) == BZ_OK);
+    CHECK(host->add_action(R"({"id":"start","label":"Передать"})") == BZ_OK);
+    REQUIRE(ModuleActions().size() == 1);
+    CHECK(ModuleActions()[0].label == "Передать");
+    CHECK_FALSE(ModuleActions()[0].enabled);
+    CHECK(host->enable_action("nope", 1) == BZ_ENOTFOUND);
+
+    CHECK(host->show_panel(R"({"title":"без id"})") == BZ_EARGUMENT);
+    CHECK(host->show_panel(R"({"id":"send","title":"Продолжить","items":[{"type":"text","text":"а"}]})") == BZ_OK);
+    CHECK(host->show_panel(R"({"id":"send","title":"Продолжить","items":[]})") == BZ_OK);   // redrawn, not doubled
+    REQUIRE(ModulePanels().size() == 1);
+    CHECK(ModulePanels()[0].json.find("\"items\":[]") != std::string::npos);
+
+    // Another module's ids are its own.
+    SetCallingModule("other");
+    CHECK(host->close_panel("send") == BZ_ENOTFOUND);
+    CHECK(host->enable_action("start", 1) == BZ_ENOTFOUND);
+    CHECK(host->add_action(R"({"id":"start","label":"Чужой"})") == BZ_OK);
+    CHECK(ModuleActions().size() == 2);
+
+    SetCallingModule("conn");
+    CHECK(host->close_panel("send") == BZ_OK);
+    CHECK(ModulePanels().empty());
+    CHECK(host->show_panel(R"({"id":"send","title":"Ещё раз"})") == BZ_OK);
+    DropPanel("conn", "send");   // the user closed it
+    CHECK(ModulePanels().empty());
+    SetCallingModule({});
+
+    // A module that stops takes its things with it.
+    ForgetModule("conn");
+    REQUIRE(ModuleActions().size() == 1);
+    CHECK(ModuleActions()[0].module == "other");
+    ForgetModule("other");
+    CHECK(ModuleActions().empty());
+}
+
+TEST_CASE("an older module's table has no window callbacks") {
+    // A module built before BZ_MODULE_PANELS ends at main_tick: BZ_HAS says so.
+    BzModuleApi old{};
+    old.abi_version = BZ_MODULE_ABI_VERSION;
+    old.struct_size = static_cast<uint32_t>(offsetof(BzModuleApi, main_tick) + sizeof(old.main_tick));
+    old.on_action   = reinterpret_cast<void (*)(const char*)>(1);   // garbage past the end must not count
+    CHECK_FALSE(BZ_HAS(&old, on_action));
+    CHECK_FALSE(BZ_HAS(&old, on_panel_event));
+}

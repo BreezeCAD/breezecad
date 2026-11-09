@@ -219,6 +219,8 @@ void RegisterDrawingActions(AppContext& app) {
                });
                d->zoom = 0;
            }});
+    a.Add({"file.exportPdf", N_("Экспорт в PDF"), "export", 0, N_("Все листы чертежа — страницами в натуральную величину, для печати и отправки"),
+           inDrawing, [&app] { ExportDocument(app, ExportFormat::Pdf); }, 0, N_("пдф печать вывод")});
     a.Add({"drawing.removeSheet", N_("Удалить лист"), "ui-trash", 0, N_("Убрать текущий лист из чертежа (Ctrl+Z вернёт)"),
            [&app] { DrawingState* d = ActiveDrawing(app); return d && d->drawing.sheets.size() > 1; }, [&app] {
                DrawingState* d = ActiveDrawing(app);
@@ -266,6 +268,9 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
             sink.Large("drawing.sheet", N_("Лист и\nнадпись"));
             sink.Large("drawing.addSheet", N_("Добавить\nлист"));
             sink.Large("drawing.removeSheet", N_("Удалить\nлист"));
+            sink.EndGroup();
+            sink.BeginGroup(N_("Вывод"));
+            sink.Large("file.exportPdf", N_("Экспорт\nв PDF"));
             sink.EndGroup();
             break;
     }

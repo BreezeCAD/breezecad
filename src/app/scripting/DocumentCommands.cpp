@@ -105,8 +105,8 @@ Json Export(AppContext& app, const Json& args) {
     const std::filesystem::path file = AbsolutePath(args, "path");
     std::string                 ext  = ToUtf8(file.extension());
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    static const std::vector<std::string> kFormats = {"step", "stl", "3mf", "bzp"};
-    const std::size_t byExtension = ext == ".stl" ? 1 : ext == ".3mf" ? 2 : ext == ".bzp" ? 3 : 0;
+    static const std::vector<std::string> kFormats = {"step", "stl", "3mf", "bzp", "pdf"};
+    const std::size_t byExtension = ext == ".stl" ? 1 : ext == ".3mf" ? 2 : ext == ".bzp" ? 3 : ext == ".pdf" ? 4 : 0;
     const std::size_t chosen      = Choice(args, "format", kFormats, byExtension);
     std::error_code   ec;
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
@@ -125,10 +125,10 @@ Json Export(AppContext& app, const Json& args) {
         if (!r->missing.empty()) out["missing"] = r->missing;
         return out;
     }
-    const auto format = static_cast<ExportFormat>(chosen);
+    const auto format = chosen == 4 ? ExportFormat::Pdf : static_cast<ExportFormat>(chosen);   // 4: a drawing's sheets
     std::string error;
     if (!app.workspace.ExportTo(s, format, file, app.notes, &error)) Fail(error);
-    return {{"path", ToUtf8(file)}, {"format", kFormats[static_cast<std::size_t>(format)]},
+    return {{"path", ToUtf8(file)}, {"format", kFormats[chosen]},
             {"bytes", std::filesystem::file_size(file, ec)}};
 }
 
@@ -166,9 +166,9 @@ void AddDocumentCommands(Commands& out) {
                    true, &OpenProjectCommand});
     out.push_back({"doc.export",
                    "Экспортирует тела активного документа в STEP, STL или 3MF; сборку — ещё и проектом .bzp (сборка со всеми "
-                   "деталями в одном файле, несохранённое сохраняется).",
+                   "деталями в одном файле, несохранённое сохраняется); чертёж — в PDF (лист — страница, в натуральную величину).",
                    Schema({{"path", StringArg("Полный путь файла; папка создаётся при нужде.")},
-                           {"format", EnumArg("Формат; не задан — по расширению path.", {"step", "stl", "3mf", "bzp"})}},
+                           {"format", EnumArg("Формат; не задан — по расширению path.", {"step", "stl", "3mf", "bzp", "pdf"})}},
                           {"path"}),
                    true, &Export});   // "changes": it brings the geometry up to date, not while the user edits
     out.push_back({"doc.undo", "Отменяет последний шаг активного документа (как Ctrl+Z). Ответ: undone — что отменено, next_undo — что отменится следующим.", Schema(), true,

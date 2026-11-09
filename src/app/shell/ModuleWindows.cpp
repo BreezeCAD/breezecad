@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -35,8 +36,8 @@ using Json = nlohmann::json;
 // --- what the program keeps of the modules' windows ----------------------------
 
 struct Choice {
-    std::string sent;    ///< the value the module sent last
-    std::string value;   ///< what the user chose (the module's value until then)
+    int sent  = 0;   ///< the option the module sent last (its number)
+    int value = 0;   ///< what the user chose (the module's value until then)
 };
 
 struct Picture {
@@ -74,6 +75,18 @@ bool Flag(const Json& j, const char* key) {
     if (it->is_boolean()) return it->get<bool>();
     if (it->is_number()) return it->get<double>() != 0;
     return false;
+}
+
+/// The item's caption: "label" (ADR-0011, sdk/bz_panel.h), "text" taken too.
+std::string Caption(const Json& j) {
+    std::string label = Text(j, "label");
+    return label.empty() ? Text(j, "text") : label;
+}
+
+/// "Esc", "esc", "ESC" -> "esc".
+std::string Lower(std::string text) {
+    for (char& ch : text) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return text;
 }
 
 float Number(const Json& j, const char* key, float fallback) {
@@ -190,8 +203,9 @@ void SyncPanels() {
             if (const auto items = p.panel.find("items"); items != p.panel.end() && items->is_array())
                 for (const Json& item : *items) {
                     if (Text(item, "type") != "choice") continue;
-                    const std::string id = Text(item, "id"), sent = Text(item, "value");
+                    const std::string id = Text(item, "id");
                     if (id.empty()) continue;
+                    const int sent = static_cast<int>(Number(item, "value", 0));
                     Choice c{sent, sent};
                     if (const auto was = p.choices.find(id); was != p.choices.end() && was->second.sent == sent) c.value = was->second.value;
                     choices[id] = c;
@@ -292,11 +306,8 @@ void DrawChoice(AppContext& app, PanelState& p, const Json& item, int index) {
     const auto it = p.choices.find(id);
     const auto options = item.find("options");
     if (it == p.choices.end() || options == item.end() || !options->is_array() || options->empty()) return;
-    std::vector<std::string> ids, labels;
-    for (const Json& o : *options) {
-        ids.push_back(Text(o, "id"));
-        labels.push_back(Text(o, "label"));
-    }
+    std::vector<std::string> labels;   // "options": ["С устройства", "Своё", "Оба"]
+    for (const Json& o : *options) labels.push_back(o.is_string() ? o.get<std::string>() : Caption(o));
     ImGui::PushID(index);
     // The file's picture, when the module names a saved part or assembly.
     if (const std::string preview = Text(item, "preview"); !preview.empty()) {
@@ -315,14 +326,13 @@ void DrawChoice(AppContext& app, PanelState& p, const Json& item, int index) {
         ImGui::SameLine(0, ui.S(10));
     }
     ImGui::BeginGroup();
-    ImGui::TextUnformatted(Text(item, "text").c_str());
+    ImGui::TextUnformatted(Caption(item).c_str());
     std::vector<const char*> names;
     for (const std::string& l : labels) names.push_back(l.c_str());
-    int current = 0;
-    for (std::size_t i = 0; i < ids.size(); ++i)
-        if (ids[i] == it->second.value) current = static_cast<int>(i);
-    const int chosen = ui::Segmented(ui, "##choice", names, current, static_cast<int>(names.size()), ImGui::GetContentRegionAvail().x);
-    if (chosen != current && chosen >= 0 && chosen < static_cast<int>(ids.size())) it->second.value = ids[static_cast<std::size_t>(chosen)];
+    const int count   = static_cast<int>(names.size());
+    const int current = std::clamp(it->second.value, 0, count - 1);
+    const int chosen  = ui::Segmented(ui, "##choice", names, current, count, ImGui::GetContentRegionAvail().x);
+    if (chosen >= 0 && chosen < count) it->second.value = chosen;
     ImGui::EndGroup();
     ImGui::PopID();
 }
@@ -339,7 +349,7 @@ std::string DrawButtons(ui::Ui& ui, const Json& item, int index) {
     int i = 0;
     for (const Json& b : *buttons) {
         if (i > 0) ImGui::SameLine(0, gap);
-        const std::string id = Text(b, "id"), label = Text(b, "label"), key = Text(b, "key");
+        const std::string id = Text(b, "id"), label = Caption(b), key = Lower(Text(b, "key"));
         const char* hint = key == "enter" ? "Enter" : key == "esc" ? "Esc" : nullptr;
         const std::string imguiId = "##btn" + std::to_string(i);
         const bool enabled = !b.contains("enabled") || Flag(b, "enabled");
@@ -363,7 +373,7 @@ bool HasEscButton(const Json& panel) {
         if (Text(item, "type") != "buttons") continue;
         if (const auto b = item.find("items"); b != item.end() && b->is_array())
             for (const Json& button : *b)
-                if (Text(button, "key") == "esc") return true;
+                if (Lower(Text(button, "key")) == "esc") return true;
     }
     return false;
 }
@@ -417,8 +427,14 @@ bool DrawPanel(AppContext& app, PanelState& p) {
             } else if (type == "status") {
                 DrawStatus(ui, item);
             } else if (type == "link") {
-                const std::string text = Text(item, "text");
+                const std::string text = Caption(item);
                 if (ui::LinkButton(ui, ("##link" + std::to_string(index)).c_str(), text.c_str()) && pressed.empty()) pressed = Text(item, "id");
+            } else if (type == "button") {   // one button on its own row; "style": "link" — as a link
+                const std::string text = Caption(item), style = Text(item, "style"), imguiId = "##button" + std::to_string(index);
+                const bool clicked = style == "link"      ? ui::LinkButton(ui, imguiId.c_str(), text.c_str())
+                                     : style == "primary" ? ui::PrimaryButton(ui, imguiId.c_str(), text.c_str(), nullptr, {ImGui::GetContentRegionAvail().x, ui.S(36)})
+                                                          : ui::SecondaryButton(ui, imguiId.c_str(), text.c_str(), nullptr, {ImGui::GetContentRegionAvail().x, ui.S(36)});
+                if (clicked && pressed.empty()) pressed = Text(item, "id");
             } else if (type == "bitmap") {
                 DrawBitmap(ui, item);
             } else if (type == "image") {

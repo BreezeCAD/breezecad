@@ -1,6 +1,7 @@
 // Header row: brand menu, quick access toolbar, document title, command
 // search with its drop-down, and live stats (FPS, memory, objects).
 
+#include "app/handoff/HandoffUi.h"
 #include "app/assembly/AssemblyIssues.h"
 #include "app/BetaTesting.h"
 #include "app/Operations.h"
@@ -69,6 +70,12 @@ void MainMenu(AppContext& app) {
         MenuAction(app, "file.export3mf");
         if (const Session* t = app.workspace.ActiveTab(); t && t->assembly) MenuAction(app, "file.exportProject");
         ImGui::EndMenu();
+    }
+    // «Продолжить на устройстве» (app/handoff): there and back over the local network.
+    if (HandoffOnDevice(app)) MenuAction(app, "file.handoffReturn");
+    else {
+        MenuAction(app, "file.handoff");
+        MenuAction(app, "file.handoffReceive");
     }
 #if defined(__ANDROID__)
     // The phone: files go to and come from the projects folder; "share"

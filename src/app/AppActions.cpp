@@ -8,6 +8,7 @@
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/InPlace.h"
 #include "app/features/OperationEditors.h"
+#include "app/handoff/HandoffUi.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "document/Origin.h"
@@ -122,6 +123,13 @@ void RegisterActions(AppContext& app) {
     a.Add({"file.exportProject", N_("Экспорт проекта"), "export", 0, N_("Сборка со всеми деталями в одном файле .bzp — отправить или перенести"),
            [&app] { const Session* t = app.workspace.ActiveTab(); return t && t->assembly && !app.workspace.ShowsHome(); },
            [&app] { ExportProject(app); }});
+    a.Add({"file.handoff", N_("Продолжить на устройстве"), "export", 0,
+           N_("Открытый документ — на телефон или планшет по QR-коду в той же сети, потом изменения обратно"),
+           [&app] { return CanStartHandoff(app); }, [&app] { StartHandoff(app); }, 0, N_("передать планшет телефон айпад qr")});
+    a.Add({"file.handoffReceive", N_("Принять с компьютера"), "ui-open", 0, N_("Открыть проект, переданный с компьютера (ссылка из его QR-кода)"),
+           [&app] { return !HandoffOnDevice(app); }, [&app] { OpenHandoffReceive(app); }, 0, N_("передача qr ссылка")});
+    a.Add({"file.handoffReturn", N_("Вернуть на компьютер"), "export", 0, N_("Изменения — на компьютер, с которого пришёл проект; копия здесь удаляется"),
+           [&app] { return HandoffOnDevice(app); }, [&app] { ReturnHandoff(app); }});
     a.Add({"app.quit", N_("Выход"), "", Ctrl(ImGuiKey_Q), {}, {}, [&app] { app.shell.quitRequested = true; }});
     a.Add({"app.home", N_("Главная страница"), "ui-home", 0, {}, {}, [&app] { app.workspace.ShowHome(true); }});
     a.Add({"app.search", N_("Поиск команд"), "ui-search", Ctrl(ImGuiKey_K), {}, {}, [&app] {

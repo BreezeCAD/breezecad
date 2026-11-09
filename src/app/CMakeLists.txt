@@ -38,6 +38,7 @@ set(BZ_APP_SOURCES
     scripting/WorkCommands.cpp
     scripting/ViewCommands.cpp
     scripting/AssemblyCommands.cpp
+    scripting/ConnCommands.cpp
     features/AppearanceEditor.cpp
     features/ToolChoice.cpp
     features/CopyEditors.cpp

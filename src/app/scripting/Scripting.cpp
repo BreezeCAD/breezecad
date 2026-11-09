@@ -34,6 +34,7 @@ const Commands& Table() {
         AddWorkCommands(all);
         AddViewCommands(all);
         AddAssemblyCommands(all);
+        AddConnCommands(all);
         return all;
     }();
     return table;

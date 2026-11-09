@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/AssemblyState.h"
+#include "app/drawing/DrawingState.h"
 #include "app/EditMode.h"
 #include "core/Expected.h"
 #include "document/Commands.h"
@@ -36,6 +37,13 @@ public:
     std::unique_ptr<AssemblyState> assembly;
     bool IsAssembly() const { return assembly != nullptr; }
 
+    /// Set for a drawing (ADR-0012): `doc` and `model` stay empty; the
+    /// editor (app/drawing) shows the sheet instead of the 3D view.
+    std::unique_ptr<DrawingState> drawing;
+    bool IsDrawing() const { return drawing != nullptr; }
+    /// Makes this session a drawing (a new one: one A3 sheet).
+    DrawingState& MakeDrawing();
+
     /// A part edited inside an assembly (AssemblyState::parts): that
     /// assembly's session. It is saved with the assembly, not by itself.
     Session* host = nullptr;
@@ -43,7 +51,7 @@ public:
     ObjectId inPlaceOf;
     /// Makes this session an assembly (an empty one).
     AssemblyState& MakeAssembly();
-    /// The kind of document (doc::DocumentTypes): "part" or "assembly".
+    /// The kind of document (doc::DocumentTypes): "part", "assembly" or "drawing".
     std::string_view DocumentType() const;
 
     /// Counts every change of the content (autosave).
@@ -81,10 +89,10 @@ public:
     std::string ContextName() const;
     /// An assembly counts the parts edited in it too.
     bool IsModified() const;
-    bool CanUndo() const { return assembly ? assembly->CanUndo() : history.CanUndo(); }
-    bool CanRedo() const { return assembly ? assembly->CanRedo() : history.CanRedo(); }
-    std::string UndoLabel() const { return assembly ? assembly->UndoLabel() : history.UndoLabel(); }
-    std::string RedoLabel() const { return assembly ? assembly->RedoLabel() : history.RedoLabel(); }
+    bool CanUndo() const { return drawing ? drawing->CanUndo() : assembly ? assembly->CanUndo() : history.CanUndo(); }
+    bool CanRedo() const { return drawing ? drawing->CanRedo() : assembly ? assembly->CanRedo() : history.CanRedo(); }
+    std::string UndoLabel() const { return drawing ? drawing->UndoLabel() : assembly ? assembly->UndoLabel() : history.UndoLabel(); }
+    std::string RedoLabel() const { return drawing ? drawing->RedoLabel() : assembly ? assembly->RedoLabel() : history.RedoLabel(); }
     /// After saving to `path` (the session's file from now on).
     void MarkSaved();
 

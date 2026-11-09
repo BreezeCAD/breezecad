@@ -9,8 +9,15 @@
 #include "core/I18n.h"
 #include "document/Commands.h"
 #include "document/SketchFeature.h"
+#include "kernel/Projection.h"
+#include "sketch/Fillet.h"
+#include "sketch/Mirror.h"
+#include "sketch/Move.h"
+#include "sketch/Offset.h"
 #include "sketch/Shapes.h"
+#include "sketch/Trim.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 
@@ -38,7 +45,9 @@ public:
         myNextName = std::stoi(next.substr(1));
     }
 
-    sketch::Sketch& Sk() { return myFeature->sketch; }
+    sketch::Sketch&     Sk() { return myFeature->sketch; }
+    doc::SketchFeature& Feature() { return *myFeature; }
+    Session&            Part() { return mySession; }
     IdGenerator&    Ids() { return mySession.doc.Ids(); }
 
     /// An existing point at `pos` (within 1 µm), else a new one: shapes drawn
@@ -180,8 +189,35 @@ Json AddItem(SketchEdit& e, const Json& item) {
         if (dims) dim(e.Dimension(ConstraintType::Diameter, p.circle, {}, 2 * radius, Vec2{1, 1}.Normalized() * (radius + 8)));
         out["sides"] = Json::array();
         for (ObjectId s : p.sides) out["sides"].push_back(s.value);
+    } else if (type == "point") {
+        const ObjectId p = sk.AddPoint(e.Ids(), Point(item, "at", std::nullopt));
+        out["point"] = p.value;
+    } else if (type == "spline") {
+        const Json& list = Required(item, "points");
+        if (!list.is_array() || list.size() < 2) Fail("spline: «points» — минимум две точки");
+        std::vector<ObjectId> ids;
+        for (const Json& p : list) ids.push_back(e.PointAt(Point(p, "points")));
+        if (Flag(item, "closed", false)) {
+            if (ids.size() < 3) Fail("spline: замкнутому сплайну нужны минимум три точки");
+            ids.push_back(ids.front());
+        }
+        const ObjectId spline = sk.AddSpline(e.Ids(), ids, Flag(item, "interpolate", true), aux);
+        out["spline"] = spline.value;
+        out["points"] = Json::array();
+        for (ObjectId p : ids) out["points"].push_back(p.value);
+    } else if (type == "ellipse") {
+        const Vec2   c     = Point(item, "center", std::nullopt);
+        const Vec2   major = Point(item, "major", std::nullopt);
+        const double minor = Number(item, "minor_radius");
+        const Vec2   axis  = major - c;
+        if (axis.Length() < 1e-6 || minor <= 0) Fail("ellipse: конец большой оси не в центре, minor_radius больше нуля");
+        const Vec2 side = Vec2{-axis.y, axis.x}.Normalized() * minor;
+        const ObjectId ellipse = sk.AddEllipse(e.Ids(), e.PointAt(c), e.PointAt(major), e.PointAt(c + side), aux);
+        out["ellipse"] = ellipse.value;
     } else {
-        Fail(std::format("Неизвестный тип «{}» (line, centerline, polyline, rectangle, circle, arc, slot, polygon)", type));
+        Fail(std::format("Неизвестный тип «{}» (line, centerline, polyline, rectangle, circle, arc, slot, polygon, point, spline, "
+                         "ellipse)",
+                         type));
     }
     if (!names.empty()) out["dimensions"] = std::move(names);
     return out;
@@ -282,6 +318,191 @@ Json Remove(AppContext& app, const Json& args) {
     return edit.Commit(Tr("Изменить эскиз"));
 }
 
+std::vector<ObjectId> EntitiesArg(SketchEdit& e, const Json& args) {
+    const Json& list = Required(args, "entities");
+    if (!list.is_array() || list.empty()) Fail("«entities» — непустой список id элементов эскиза");
+    std::vector<ObjectId> out;
+    for (const Json& v : list) {
+        if (!v.is_number_unsigned()) Fail("В «entities» — id (числа)");
+        const ObjectId id{v.get<std::uint64_t>()};
+        if (e.Sk().KindOf(id) == sketch::EntityKind::None) Fail(std::format("В эскизе нет элемента {}", id.value));
+        out.push_back(id);
+    }
+    return out;
+}
+
+ObjectId CurveArg(SketchEdit& e, const Json& args, const char* key) {
+    const ObjectId id = Id(args, key);
+    if (e.Sk().KindOf(id) == sketch::EntityKind::None) Fail(std::format("В эскизе нет элемента {}", id.value));
+    return id;
+}
+
+Json Ids(const std::vector<ObjectId>& ids) {
+    Json out = Json::array();
+    for (ObjectId id : ids) out.push_back(id.value);
+    return out;
+}
+
+/// The editing tools of the sketch ribbon, by their geometry (sketch/Trim.h,
+/// Fillet.h, Offset.h, Mirror.h, Move.h): one undo step each.
+Json Edit(AppContext& app, const Json& args) {
+    Session&        s = ActivePart(app);
+    SketchEdit      edit(s, SketchOf(s, args));
+    sketch::Sketch& sk = edit.Sk();
+    static const std::vector<std::string> kOps = {"fillet", "offset", "trim", "extend", "split", "mirror",
+                                                  "move", "copy", "rotate", "scale"};
+    const std::size_t op = Choice(args, "operation", kOps, kOps.size());
+    if (op >= kOps.size()) Fail("Нужна «operation»: fillet, offset, trim, extend, split, mirror, move, copy, rotate, scale");
+    Json made = {{"operation", kOps[op]}};
+    switch (op) {
+    case 0: {   // fillet: the corner point of two lines
+        const ObjectId corner = CurveArg(edit, args, "point");
+        const double   r      = Number(args, "radius");
+        if (r <= 0) Fail("radius — больше нуля");
+        const std::optional<ObjectId> arc = sketch::FilletCorner(sk, edit.Ids(), corner, r);
+        if (!arc) Fail("Скругление не помещается: в точке должны сходиться два отрезка, достаточно длинных для этого радиуса");
+        made["arc"] = arc->value;
+        if (Flag(args, "dimensions", true)) {
+            const ObjectId d = edit.Dimension(ConstraintType::Radius, *arc, {}, r, Vec2{1, 1}.Normalized() * (r + 8));
+            made["dimension"] = edit.NameOf(d);
+        }
+        break;
+    }
+    case 1: {   // offset: the chain through a curve, to the side of `toward`
+        const ObjectId curve = CurveArg(edit, args, "curve");
+        const double   d     = Number(args, "distance");
+        if (d <= 0) Fail("distance — больше нуля");
+        const std::optional<sketch::Chain> chain = sketch::ChainOf(sk, curve);
+        if (!chain) Fail("Эту кривую нельзя сместить (проекция или не отрезок / дуга / окружность)");
+        const int side = Has(args, "toward") ? sketch::SideOf(sk, *chain, Point(args, "toward", std::nullopt)) : 1;
+        const std::optional<sketch::OffsetCurves> curves = sketch::OffsetChain(sk, edit.Ids(), *chain, side * d);
+        if (!curves) Fail("Смещение не строится: дуга схлопнулась бы или соседние кривые копии не сходятся");
+        made["curves"] = Ids(curves->curves);
+        // The first distance drives, the rest follow it (as the program's tool does).
+        std::string driver;
+        Json names = Json::array();
+        for (const auto& [point, line] : curves->distances) {
+            const ObjectId c = edit.Dimension(ConstraintType::PointLineDistance, point, line, d, {8, 8});
+            if (driver.empty()) driver = edit.NameOf(c);
+            else sk.FindConstraint(c)->parameter.expression = driver;
+            names.push_back(edit.NameOf(c));
+        }
+        if (!names.empty()) made["dimensions"] = std::move(names);
+        break;
+    }
+    case 2: {   // trim: the piece of `curve` around `at`
+        const ObjectId curve = CurveArg(edit, args, "curve");
+        const std::optional<sketch::TrimSpan> span = sketch::FindTrimSpan(sk, curve, Point(args, "at", std::nullopt));
+        if (!span || !sketch::Trim(sk, edit.Ids(), *span)) Fail("Обрезать нечего: кривую ничего не пересекает");
+        break;
+    }
+    case 3: {   // extend: the end of a line nearer `at`
+        const ObjectId line = CurveArg(edit, args, "curve");
+        const std::optional<sketch::Extension> ext = sketch::FindExtension(sk, line, Point(args, "at", std::nullopt));
+        if (!ext) Fail("Удлинять некуда: впереди нет кривой, или конец общий с другой кривой");
+        sketch::Extend(sk, edit.Ids(), *ext);
+        made["to"] = {ext->to.x, ext->to.y};
+        break;
+    }
+    case 4: {   // split a line or an arc at `at`
+        const ObjectId curve = CurveArg(edit, args, "curve");
+        const std::optional<ObjectId> point = sketch::Split(sk, edit.Ids(), curve, Point(args, "at", std::nullopt));
+        if (!point) Fail("Разбить можно отрезок или дугу, не у самого конца");
+        made["point"] = point->value;
+        break;
+    }
+    case 5: {   // mirror over a line
+        const std::vector<ObjectId> entities = EntitiesArg(edit, args);
+        const ObjectId axis = CurveArg(edit, args, "axis");
+        if (!sk.FindLine(axis)) Fail("«axis» — отрезок (ось симметрии)");
+        made["made"] = Ids(sketch::MirrorEntities(sk, edit.Ids(), entities, axis));
+        break;
+    }
+    case 6:
+    case 7:
+    case 8: {   // move / copy (by), rotate (center, angle)
+        const std::vector<ObjectId> entities = EntitiesArg(edit, args);
+        sketch::Motion motion;
+        if (op == 8) {
+            motion.centre = Point(args, "center", Vec2{});
+            motion.angle  = Number(args, "angle") * kPi / 180.0;
+        } else {
+            const Vec2 by = Point(args, "by", std::nullopt);
+            motion.offset = by;
+        }
+        if (op == 7) {
+            const std::vector<ObjectId> copies = sketch::CopyEntities(sk, edit.Ids(), entities, motion);
+            if (copies.empty()) Fail("Копировать нечего: среди элементов нет кривых");
+            made["made"] = Ids(copies);
+        } else if (!sketch::MoveEntities(sk, edit.Ids(), entities, motion)) {
+            Fail("Ничего не сдвинулось: точки закреплены (начало координат, проекции, связь fix)");
+        }
+        break;
+    }
+    case 9: {   // scale about a centre
+        const std::vector<ObjectId> entities = EntitiesArg(edit, args);
+        const double factor = Number(args, "factor");
+        if (factor <= 0) Fail("factor — больше нуля");
+        if (!sketch::ScaleEntities(sk, entities, Point(args, "center", Vec2{}), factor)) Fail("Масштабировать нечего");
+        break;
+    }
+    default: break;
+    }
+    Json out = edit.Commit(Tr("Изменить эскиз"));
+    out["made"] = std::move(made);
+    return out;
+}
+
+/// Model edges into the sketch, following the model (the program's
+/// «Проецировать геометрию», linked): the curves move when the edges do.
+Json Project(AppContext& app, const Json& args) {
+    Session&        s = ActivePart(app);
+    SketchEdit      edit(s, SketchOf(s, args));
+    sketch::Sketch& sk = edit.Sk();
+    const int index = s.doc.IndexOf(edit.Feature().id);
+    const Json& list = Required(args, "edges");
+    if (!list.is_array() || list.empty()) Fail("«edges» — номера рёбер из part.edges");
+    // Neighbouring edges share their ends: one projected point for both.
+    const auto point = [&](Vec2 at) {
+        for (const sketch::Point& p : sk.points)
+            if (p.projected && (p.pos - at).Length() < 1e-6) return p.id;
+        const ObjectId id = sk.AddPoint(edit.Ids(), at);
+        sk.FindPoint(id)->projected = true;
+        return id;
+    };
+    Json curves = Json::array();
+    for (const Json& v : list) {
+        const kernel::EdgeInfo& edge = EdgeArg(s, v, "edges");
+        const Expected<kernel::ProjectedCurve> pc = s.model.ProjectEdge(edge.ref, edit.Feature().placement.frame, static_cast<std::size_t>(index));
+        if (!pc) Fail(std::format("Ребро {} не проецируется: {}", edge.index, Tr(pc.GetError().message)));
+        ObjectId curve;
+        switch (pc->kind) {
+        case kernel::ProjectedCurve::Kind::Line:
+            if ((pc->end - pc->start).Length() < 1e-6) continue;   // seen end-on: a point, nothing to draw
+            curve = sk.AddLine(edit.Ids(), point(pc->start), point(pc->end));
+            sk.FindLine(curve)->projected = true;
+            break;
+        case kernel::ProjectedCurve::Kind::Circle:
+            curve = sk.AddCircle(edit.Ids(), point(pc->centre), pc->radius);
+            sk.FindCircle(curve)->projected = true;
+            break;
+        case kernel::ProjectedCurve::Kind::Arc:
+            curve = sk.AddArc(edit.Ids(), point(pc->centre), point(pc->start), point(pc->end));
+            for (auto& a : sk.arcs)
+                if (a.id == curve) a.projected = true;
+            break;
+        case kernel::ProjectedCurve::Kind::Ellipse:
+            curve = sk.AddEllipse(edit.Ids(), point(pc->centre), point(pc->start), point(pc->end));
+            break;
+        }
+        edit.Feature().projections.push_back({edge.ref, curve, {}});
+        curves.push_back({{"edge", edge.index}, {"curve", curve.value}});
+    }
+    Json out = edit.Commit(Tr("Изменить эскиз"));
+    out["projected"] = std::move(curves);
+    return out;
+}
+
 Json Get(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
     s.RebuildNow();
@@ -321,8 +542,31 @@ Json Get(AppContext& app, const Json& args) {
     out["circles"] = std::move(circles);
     out["arcs"] = std::move(arcs);
     out["constraints"] = std::move(cons);
-    if (!sk.splines.empty() || !sk.ellipses.empty() || !sk.texts.empty())
-        out["other"] = {{"splines", sk.splines.size()}, {"ellipses", sk.ellipses.size()}, {"texts", sk.texts.size()}};
+    if (!sk.splines.empty()) {
+        Json splines = Json::array();
+        for (const auto& sp : sk.splines) {
+            Json j = {{"id", sp.id.value}, {"points", Json::array()}, {"at", Json::array()}, {"interpolate", sp.interpolate}};
+            for (ObjectId p : sp.points) {
+                j["points"].push_back(p.value);
+                j["at"].push_back(xy(sk.PositionOf(p)));
+            }
+            if (sp.Closed()) j["closed"] = true;
+            if (sp.construction) j["construction"] = true;
+            splines.push_back(std::move(j));
+        }
+        out["splines"] = std::move(splines);
+    }
+    if (!sk.ellipses.empty()) {
+        Json ellipses = Json::array();
+        for (const auto& el : sk.ellipses) {
+            Json j = {{"id", el.id.value}, {"center", el.center.value}, {"major", el.major.value}, {"minor", el.minor.value},
+                      {"at", xy(sk.PositionOf(el.center))}, {"major_at", xy(sk.PositionOf(el.major))}, {"minor_at", xy(sk.PositionOf(el.minor))}};
+            if (el.construction) j["construction"] = true;
+            ellipses.push_back(std::move(j));
+        }
+        out["ellipses"] = std::move(ellipses);
+    }
+    if (!sk.texts.empty()) out["texts"] = sk.texts.size();
     Json regions = Json::array();
     if (const auto* rs = s.model.Regions(f.id))
         for (const auto& r : *rs) regions.push_back({{"inside", xy(r.sample)}, {"holes", r.loops.size() - 1}, {"automatic", r.automatic}});
@@ -335,13 +579,17 @@ Json ItemSchema() {
             {"description",
              "Фигура. type: line {from,to} | centerline {from,to} — осевая для вращения | polyline {points,closed} | "
              "rectangle {corner,opposite} или {center,width,height} | circle {center, radius или diameter} | "
-             "arc {center,start,end} — против часовой | slot {from,to,width} | polygon {center,sides,radius,inscribed}. "
+             "arc {center,start,end} — против часовой | slot {from,to,width} | polygon {center,sides,radius,inscribed} | "
+             "point {at} | spline {points, interpolate — через точки (по умолчанию) или по управляющим, closed} | "
+             "ellipse {center, major — конец большой оси, minor_radius}. "
              "Общие: construction (вспомогательная), dimensions (по умолчанию true — проставить размеры, "
              "они станут параметрами d1, d2…). Точки с одинаковыми координатами объединяются, так контуры замыкаются."},
             {"properties",
-             {{"type", {{"type", "string"}, {"enum", {"line", "centerline", "polyline", "rectangle", "circle", "arc", "slot", "polygon"}}}},
+             {{"type", {{"type", "string"}, {"enum", {"line", "centerline", "polyline", "rectangle", "circle", "arc", "slot", "polygon", "point", "spline", "ellipse"}}}},
+              {"at", PointArg("point: где.")}, {"interpolate", BoolArg("spline: через точки (по умолчанию да).")},
+              {"major", PointArg("ellipse: конец большой оси.")}, {"minor_radius", NumberArg("ellipse: малая полуось, мм.")},
               {"from", PointArg("Начало.")}, {"to", PointArg("Конец.")}, {"points", {{"type", "array"}, {"items", PointArg("Точка.")}}},
-              {"closed", BoolArg("polyline: замкнуть.")}, {"corner", PointArg("Угол.")}, {"opposite", PointArg("Противоположный угол.")},
+              {"closed", BoolArg("polyline, spline: замкнуть.")}, {"corner", PointArg("Угол.")}, {"opposite", PointArg("Противоположный угол.")},
               {"center", PointArg("Центр.")}, {"width", NumberArg("Ширина, мм.")}, {"height", NumberArg("Высота, мм.")},
               {"radius", NumberArg("Радиус, мм.")}, {"diameter", NumberArg("Диаметр, мм.")}, {"start", PointArg("Начало дуги.")},
               {"end", PointArg("Конец дуги (ставится на радиус).")}, {"sides", IntegerArg("Число сторон.")},
@@ -386,6 +634,37 @@ void AddSketchCommands(Commands& out) {
                            {"entities", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "id элементов."}}}},
                           {"sketch", "entities"}),
                    true, &Remove});
+    out.push_back({"sketch.edit",
+                   "Правка эскиза инструментами ленты (id из sketch.get, точки — мм эскиза). operation: "
+                   "fillet {point — угол двух отрезков, radius} | offset {curve, distance, toward — точка, с какой стороны} — "
+                   "вся цепочка через кривую, с размерами | trim {curve, at — точка на удаляемом куске} | "
+                   "extend {curve — отрезок, at — у какого конца} | split {curve, at} | mirror {entities, axis — отрезок} | "
+                   "move {entities, by: [dx, dy]} | copy {entities, by} | rotate {entities, center, angle — градусы против часовой} | "
+                   "scale {entities, center, factor}.",
+                   Schema({{"sketch", IdArg("id эскиза.")},
+                           {"operation", EnumArg("Что сделать.", {"fillet", "offset", "trim", "extend", "split", "mirror", "move", "copy", "rotate", "scale"})},
+                           {"point", IntegerArg("fillet: id точки угла.")},
+                           {"radius", NumberArg("fillet: радиус, мм.")},
+                           {"curve", IntegerArg("offset, trim, extend, split: id кривой.")},
+                           {"distance", NumberArg("offset: расстояние, мм.")},
+                           {"toward", PointArg("offset: точка с той стороны, куда смещать.")},
+                           {"at", PointArg("trim, extend, split: точка на кривой.")},
+                           {"entities", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "mirror, move, copy, rotate, scale: id элементов."}}},
+                           {"axis", IntegerArg("mirror: id отрезка-оси.")},
+                           {"by", PointArg("move, copy: сдвиг [dx, dy], мм.")},
+                           {"center", PointArg("rotate, scale: центр, мм (по умолчанию начало эскиза).")},
+                           {"angle", NumberArg("rotate: угол, градусы.")},
+                           {"factor", NumberArg("scale: множитель.")},
+                           {"dimensions", BoolArg("fillet: проставить радиус (по умолчанию да).")}},
+                          {"sketch", "operation"}),
+                   true, &Edit});
+    out.push_back({"sketch.project",
+                   "Проецирует рёбра тела (номера из part.edges) в эскиз как связанную геометрию: кривые следуют за рёбрами, "
+                   "когда модель меняется. Рёбра — тел, построенных до этого эскиза.",
+                   Schema({{"sketch", IdArg("id эскиза.")},
+                           {"edges", IndexListArg("Номера рёбер из part.edges.")}},
+                          {"sketch", "edges"}),
+                   true, &Project});
     out.push_back({"sketch.get",
                    "Решённый эскиз: точки, отрезки, окружности, дуги с id и координатами; связи и размеры (конфликтующие "
                    "помечены), число степеней свободы, замкнутые контуры (profiles: точка внутри каждого — для выдавливания).",

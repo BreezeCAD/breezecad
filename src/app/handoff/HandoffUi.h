@@ -28,6 +28,12 @@ bool HandoffOnDevice(const AppContext& app);
 /// The device: the changes back to the computer, the copy removed.
 void ReturnHandoff(AppContext& app);
 
+/// The device, while a project from a computer is open: the «Вернуть на
+/// компьютер» button in the header row at `pos` (between the appearance and
+/// the command search: not over the model, where it got in the way of
+/// drawing). Gives the width it took, 0 when there is no such project.
+float DrawHandoffReturnButton(AppContext& app, float x, float y, float height);
+
 /// Every frame: the windows, the links the system passed, the work in progress.
 void DrawHandoff(AppContext& app);
 

@@ -417,8 +417,11 @@ void DrawReceiveDialog(AppContext& app, HandoffState& st) {
     ImGui::EndPopup();
 }
 
-/// A small bar while a project from a computer is open: it says so and returns it.
+/// The phone layout has no header row: there a small bar over the bottom of
+/// the model says the project is from a computer and returns it. Elsewhere
+/// the button is in the header (DrawHandoffReturnButton).
 void DrawDeviceBar(AppContext& app, HandoffState& st) {
+    if (!app.shell.mobile.phone) return;
     if (!st.device || st.device->folder.empty() || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) return;
     ui::Ui& ui = app.ui;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -441,6 +444,21 @@ void DrawDeviceBar(AppContext& app, HandoffState& st) {
 }
 
 } // namespace
+
+float DrawHandoffReturnButton(AppContext& app, float x, float y, float height) {
+    const HandoffState* st = app.shell.handoff.get();
+    if (!st || !st->device || st->device->folder.empty()) return 0;
+    ui::Ui& ui = app.ui;
+    const bool busy = st->giving.valid();
+    const char* label = busy ? Tr("Отправляю…") : Tr("Вернуть на компьютер");
+    const float width = ui.fonts.body->CalcTextSizeA(ui.S(13), FLT_MAX, 0, label).x + ui.S(28);
+    ImGui::SetCursorScreenPos({x, y});
+    if (ui::PrimaryButton(ui, "##handoff-return-header", label, nullptr, {width, height}, !busy)) {
+        app.Later([&app] { ReturnHandoff(app); });
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Trf("«{}» с компьютера: изменения — туда, копия здесь удаляется", st->device->name).c_str());
+    return width;
+}
 
 bool CanStartHandoff(AppContext& app) {
     const Session* s = app.workspace.ActiveTab();

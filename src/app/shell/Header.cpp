@@ -293,6 +293,8 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
     x += ui.S(6);
     app.ops.appearance.DrawToolbarPicker(app, app.workspace.ShowsHome() ? nullptr : app.Doc(), {x, cy}, ui.S(170), ui.S(30));
     x += ui.S(176);
+    // A project from a computer (the device): its way back, here and not over the model.
+    if (const float back = DrawHandoffReturnButton(app, x + ui.S(4), cy, ui.S(30)); back > 0) x += back + ui.S(12);
 
     // Right side: search and stats. A narrow window (an iPad held upright, a
     // small laptop) gives up the stats first, then narrows the search, and

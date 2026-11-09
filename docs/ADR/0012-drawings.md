@@ -42,10 +42,13 @@ MikeVerx; этот ADR описывает только устройство че
 такой же ZIP-контейнер, как `.bzc`/`.bza`:
 
 ```
-manifest.json   {"format": "bzd", "formatVersion": 1, "documentType": "drawing", "generator": …}
-drawing.json    листы, виды, размеры, поля основной надписи
+manifest.json   {"format": "bzc", "documentType": "drawing", "generator": …}   — общий контейнер
+document.json   {"formatVersion": 1, "models": […], "sheets": […]}   — версия формата чертежа
 preview.png     миниатюра первого листа (главная, «Открыть»)
 ```
+
+Контейнер общий с деталью и сборкой (`WriteBzcArchive`/`ReadBzcArchive`), как `.bza`: своё у
+чертежа — `documentType` и версия формата внутри `document.json`.
 
 Почему не модуль: чертежу нужны рисование листа и ввод мышью и пальцем (ImGui основы), ядро
 (HLR, сечения) и тот же iPad. А на iOS модули запрещены (ADR-0005).

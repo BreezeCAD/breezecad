@@ -23,6 +23,8 @@ public:
     /// Starts a page; millimetres from its lower left corner, y up.
     void BeginPage(double widthMm, double heightMm);
     void Line(Vec2 a, Vec2 b, double widthMm);
+    /// Points joined in order; `dash` — lengths of strokes and gaps, mm (empty: solid).
+    void Polyline(const std::vector<Vec2>& points, double widthMm, const std::vector<double>& dash = {});
     /// Text with its base line from `at`; `emMm` — the font's em, `rotation`
     /// in degrees counter-clockwise, `squeeze` — horizontal scale (1 as is).
     void Text(std::string_view utf8, Vec2 at, double emMm, double rotation = 0, double squeeze = 1);

@@ -112,6 +112,18 @@ void PdfWriter::Line(Vec2 a, Vec2 b, double widthMm) {
         std::format("{} w {} {} m {} {} l S\n", Num(widthMm), Num(a.x), Num(a.y), Num(b.x), Num(b.y));
 }
 
+void PdfWriter::Polyline(const std::vector<Vec2>& points, double widthMm, const std::vector<double>& dash) {
+    if (myPages.empty() || points.size() < 2) return;
+    std::string& c = myPages.back().content;
+    // Round ends and joins: a curve drawn as many short pieces stays smooth.
+    c += std::format("{} w 1 J 1 j [", Num(widthMm));
+    for (double d : dash) c += Num(d) + " ";
+    c += "] 0 d\n";
+    c += std::format("{} {} m\n", Num(points[0].x), Num(points[0].y));
+    for (std::size_t i = 1; i < points.size(); ++i) c += std::format("{} {} l\n", Num(points[i].x), Num(points[i].y));
+    c += "S [] 0 d 2 J 0 j\n";
+}
+
 void PdfWriter::Text(std::string_view utf8, Vec2 at, double emMm, double rotation, double squeeze) {
     if (myPages.empty() || utf8.empty() || emMm <= 0) return;
     std::string glyphs;

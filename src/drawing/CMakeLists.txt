@@ -5,9 +5,11 @@ add_library(bz_drawing STATIC
     Drawing.cpp
     DrawingFile.cpp
     DrawingPdf.cpp
+    DrawingView.cpp
     Pdf.cpp
     SheetLayout.cpp
-    TrueType.cpp)
+    TrueType.cpp
+    ViewPlacement.cpp)
 target_link_libraries(bz_drawing
     PUBLIC  bz::core bz::json
     PRIVATE bz::document bz::miniz)

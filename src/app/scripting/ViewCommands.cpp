@@ -293,6 +293,18 @@ Json LibrarySavePart(AppContext& app, const Json& args) {
             {"note", "Изделие в моей библиотеке: library.make_part с этим standard."}};
 }
 
+/// Removes an item of the user's library (one library.save_part made).
+Json LibraryRemovePart(AppContext& app, const Json& args) {
+    const std::string id = Text(args, "standard");
+    if (!doc::parts::FindStandard(id)) Fail(std::format("Нет изделия «{}» (список — library.list)", id));
+    if (const Status ok = doc::parts::RemoveUserItem(StandardPackDir() / std::string(doc::parts::kUserPackFile), id); !ok)
+        Fail(ok.GetError().message);
+    LoadStandardPacks(app);
+    app.shell.library.chosen = {};
+    std::erase_if(app.shell.library.recent, [&](const auto& r) { return r.standard == id; });
+    return {{"removed", id}};
+}
+
 /// Adds a pack of standard parts (.bzlib) to the user's library and reloads the packs.
 Json LibraryAddPack(AppContext& app, const Json& args) {
     const std::string path = Text(args, "path");
@@ -318,11 +330,7 @@ Json LibraryMake(AppContext& app, const Json& args) {
     request.length     = Number(args, "length", 0.0);
     request.realThread = Flag(args, "real_thread", false);
     request.appearance = Text(args, "appearance", "");
-    if (const auto in = args.find("inputs"); in != args.end() && in->is_object())
-        for (const auto& [name, value] : in->items()) {
-            if (!value.is_number()) Fail(std::format("inputs.{} — число, мм", name));
-            request.inputs.emplace_back(name, value.get<double>());
-        }
+    StandardInputs(args, request);
     Expected<doc::parts::Made> made = doc::parts::MakePart(request);
     if (!made) Fail(Tr(made.GetError().message));
     Session& s = app.workspace.NewPart();
@@ -348,6 +356,16 @@ Json ViewArgs(Json p) {
 }
 
 } // namespace
+
+void StandardInputs(const Json& args, doc::parts::Request& request) {
+    const auto in = args.find("inputs");
+    if (in == args.end()) return;
+    if (!in->is_object()) Fail("«inputs» — объект {\"имя\": мм}");
+    for (const auto& [name, value] : in->items()) {
+        if (!value.is_number()) Fail(std::format("inputs.{} — число, мм", name));
+        request.inputs.emplace_back(name, value.get<double>());
+    }
+}
 
 void AddViewCommands(Commands& out) {
     out.push_back({"view.snapshot",
@@ -407,6 +425,10 @@ void AddViewCommands(Commands& out) {
                                      {"description", "Строки: значения переменных в порядке variables, мм."}}}},
                           {"title", "variables"}),
                    true, &LibrarySavePart});
+    out.push_back({"library.remove_part",
+                   "Удаляет изделие из моей библиотеки (сделанное library.save_part); изделия пакетов и встроенные не удаляются.",
+                   Schema({{"standard", StringArg("id изделия (из library.save_part или library.list).")}}, {"standard"}), true,
+                   &LibraryRemovePart});
     out.push_back({"library.add_pack",
                    "Добавляет в библиотеку пакет стандартных изделий (файл .bzlib: таблицы размеров и рецепт построения — "
                    "docs/ADR/0006-standard-part-packs.md). Файл проверяется и копируется в папку библиотеки пользователя.",

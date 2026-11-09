@@ -27,6 +27,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F   // OpenGL 1.2; Windows headers stop at 1.1
+#endif
+
 namespace bz::app {
 
 namespace {

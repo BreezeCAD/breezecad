@@ -9,6 +9,12 @@
 #include <BRep_Tool.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <gp_Lin.hxx>
+#include <cstdlib>
+#include <string>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepGProp_Face.hxx>
@@ -158,10 +164,29 @@ Expected<Layout> Plan(const TopoDS_Shape& body, const doc::ThreadFeature& f) {
     // runs out past it. A closed one (a shoulder, the bottom of a blind
     // hole): the groove stops short of it rather than cutting into it.
     const double half = (l.depth + kOvershoot * l.pitch) * std::tan(kPi / 6);
-    BRepClass3d_SolidClassifier classifier(body);
+    // DIAG (branch diag/thread-windows): BZ_THREAD_CLASSIFY picks how a point is classified.
+    const char* mode = std::getenv("BZ_THREAD_CLASSIFY");
+    const std::string m = mode ? mode : "A";
     const auto open = [&](double along, double outward) {
         const Vec3 p = s.axisPoint + axis * (along + outward * std::min(0.2 * l.pitch, 0.5)) + l.across * (s.radius + l.side * l.depth / 2);
-        classifier.Perform(gp_Pnt(p.x, p.y, p.z), 1e-7);
+        const gp_Pnt pt(p.x, p.y, p.z);
+        if (m == "D") return false;
+        if (m == "B") { BRepClass3d_SolidClassifier c(body); c.Perform(pt, 1e-4); return c.State() == TopAbs_OUT; }
+        if (m == "C") { BRepClass3d_SolidClassifier c(body, pt, 1e-7); return c.State() == TopAbs_OUT; }
+        if (m == "E") {
+            // A ray from the point: an odd number of crossings — inside.
+            IntCurvesFace_ShapeIntersector ray;
+            ray.Load(body, 1e-7);
+            const Vec3 d = (l.across * 0.7 + axis * 0.2 + l.across.Cross(axis) * 0.3).Normalized();
+            ray.Perform(gp_Lin(pt, gp_Dir(d.x, d.y, d.z)), 0, 1e9);
+            return ray.IsDone() && ray.NbPnt() % 2 == 0;
+        }
+        if (m == "F") {
+            BRepExtrema_DistShapeShape dss(BRepBuilderAPI_MakeVertex(pt).Vertex(), body);
+            return !(dss.IsDone() && dss.InnerSolution()) && !(dss.IsDone() && dss.Value() < 1e-7);
+        }
+        BRepClass3d_SolidClassifier classifier(body);
+        classifier.Perform(pt, 1e-7);
         return classifier.State() == TopAbs_OUT;
     };
     l.begin += open(l.begin, -1) ? -l.pitch : half;

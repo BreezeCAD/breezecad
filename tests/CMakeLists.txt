@@ -18,6 +18,7 @@ add_executable(bz_tests
     ${PROJECT_SOURCE_DIR}/src/app/mobile/Gestures.cpp
     ${PROJECT_SOURCE_DIR}/src/app/mobile/TouchText.cpp
     ${PROJECT_SOURCE_DIR}/src/app/features/ExtrudeDirection.cpp
+    drawing/DrawingTests.cpp
     assembly/AssemblyFileTests.cpp
     assembly/HandoffTests.cpp
     assembly/InventorConstraintsTests.cpp
@@ -85,7 +86,7 @@ add_executable(bz_tests
     sketch/SolverTests.cpp
     sketch/StressTests.cpp
     sketch/TrimTests.cpp)
-target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
+target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::drawing bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
 add_dependencies(bz_tests bz_example_module bz_example_module_fail)
 if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop only (GLFW)
     # The assembly as the program runs it (solving, adaptivity, undo): its

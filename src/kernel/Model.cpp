@@ -20,6 +20,8 @@
 #include "document/SweepFeature.h"
 #include "document/SheetMetalFeature.h"
 #include "document/ShellFeature.h"
+#include "document/ImportFeature.h"
+#include "kernel/occt/Import.h"
 #include "document/ThreadFeature.h"
 #include "document/WorkAxisFeature.h"
 #include "document/WorkPointFeature.h"
@@ -144,9 +146,17 @@ bool Meets(const TopoDS_Shape& body, const TopoDS_Shape& tool, bool touching) {
 std::vector<std::size_t> BodiesMet(const std::vector<Body>& bodies, const TopoDS_Shape& tool, bool touching) {
     std::vector<std::size_t> out;
     for (std::size_t i = 0; i < bodies.size(); ++i)
-        if (Meets(bodies[i].shape, tool, touching)) out.push_back(i);
+        if (!bodies[i].mesh && Meets(bodies[i].shape, tool, touching)) out.push_back(i);
     return out;
 }
+
+/// The most recent body an operation on solids can change (not a mesh).
+Body* LastSolid(std::vector<Body>& bodies) {
+    for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
+        if (!it->mesh) return &*it;
+    return nullptr;
+}
+const Body* LastSolid(const std::vector<Body>& bodies) { return LastSolid(const_cast<std::vector<Body>&>(bodies)); }
 
 /// The last step of every operation that makes a solid: keep it as a new
 /// body, or join, cut or intersect it with the bodies it reaches. A join
@@ -160,7 +170,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
     // A new body copied by a pattern joins the body it started.
     if (op != doc::BooleanOp::Intersect) impl.tools[id] = {tool, op == doc::BooleanOp::Cut ? doc::BooleanOp::Cut : doc::BooleanOp::Join, {}};
 
-    if (op == doc::BooleanOp::NewBody || bodies.empty()) {
+    if (op == doc::BooleanOp::NewBody || !LastSolid(bodies)) {
         if (op == doc::BooleanOp::Cut || op == doc::BooleanOp::Intersect) {
             status = {FeatureState::Error, "Нет тела, к которому применить операцию"};
             return;
@@ -179,14 +189,15 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
             status = {FeatureState::Error, "Пересечение пустое: ни одно тело не перекрывается с операцией"};
             return;
         }
-        Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies.back().shape, tool, op);
+        Body& last = *LastSolid(bodies);
+        Expected<TopoDS_Shape> result = occt::ApplyBoolean(last.shape, tool, op);
         if (!result) {
             status = {FeatureState::Error, result.GetError().message};
             return;
         }
-        bodies.back().shape = *result;
+        last.shape = *result;
         status = {FeatureState::Warning,
-                  std::format("Не касается ни одного тела: добавлено к «{}» отдельным куском", bodies.back().name)};
+                  std::format("Не касается ни одного тела: добавлено к «{}» отдельным куском", last.name)};
         return;
     }
     if (op == doc::BooleanOp::Join) {
@@ -298,7 +309,7 @@ double FaceMiss(const TopoDS_Shape& body, const doc::FaceReference& ref) {
 /// at least one is still there.
 template <class MakeShape>
 void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc::FeatureStatus& status, MakeShape make) {
-    if (bodies.empty()) {
+    if (!LastSolid(bodies)) {
         status = {FeatureState::Error, "Нет тела, к которому применить операцию"};
         return;
     }
@@ -309,11 +320,12 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
         }
     // The body that has the most of the edges, and of those the one where
     // they are nearest where they were picked (the most recent on a tie).
-    Body* target = &bodies.back();
+    Body* target = LastSolid(bodies);
     std::vector<TopoDS_Edge> edges;
     std::vector<std::size_t> kept;   // index in f.edges of each found edge
     double bestMiss = 1e300;
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it) {
+        if (it->mesh) continue;
         std::vector<TopoDS_Edge> found;
         std::vector<std::size_t> which;
         double miss = 0;
@@ -353,14 +365,14 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
 /// its shape into the new one.
 template <class Miss, class Make>
 void ApplyToBody(std::vector<Body>& bodies, doc::FeatureStatus& status, const char* noBody, Miss&& miss, Make&& make) {
-    if (bodies.empty()) {
+    Body* target = LastSolid(bodies);
+    if (!target) {
         status = {FeatureState::Error, noBody};
         return;
     }
-    Body* target = &bodies.back();
     double best = 1e300;
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
-        if (const double m = miss(it->shape); m < best - 1e-6) {
+        if (const double m = it->mesh ? 1e300 : miss(it->shape); m < best - 1e-6) {
             best = m;
             target = &*it;
         }
@@ -381,18 +393,20 @@ void ApplyToLastBody(std::vector<Body>& bodies, doc::FeatureStatus& status, cons
 /// A thread is cut from the body that has its face (the most recent one first).
 void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body>& bodies) {
     thread.site.reset();
-    if (bodies.empty()) {
+    Body* target = LastSolid(bodies);
+    if (!target) {
         thread.status = {FeatureState::Error, "Нет тела, на котором делать резьбу"};
         return;
     }
-    Body* target = &bodies.back();
     if (thread.face)
-        for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
+        for (auto it = bodies.rbegin(); it != bodies.rend(); ++it) {
+            if (it->mesh) continue;
             if (const auto site = occt::FindThreadSite(it->shape, *thread.face)) {
                 thread.site = doc::ThreadFeature::Site{site->external, site->nominal, site->length};
                 target = &*it;
                 break;
             }
+        }
     if (thread.cosmetic) {   // drawn on the face only; exports cut it (Model::WithRealThreads)
         const Expected<TopoDS_Shape> drawn = occt::CosmeticThread(target->shape, thread);
         if (!drawn) {
@@ -707,6 +721,10 @@ void ApplySection(doc::SectionFeature& section, const doc::Document& doc, std::v
     }
     std::vector<Body> kept;
     for (Body& body : bodies) {
+        if (body.mesh) {   // a mesh is not cut: it stays as a reference
+            kept.push_back(body);
+            continue;
+        }
         const auto cut = occt::CutByPlane(body.shape, *plane, section.flipped);
         if (!cut) {
             section.status = {FeatureState::Error, cut.GetError().message};
@@ -943,10 +961,10 @@ bool UpdateProjections(doc::SketchFeature& sk, const std::vector<Body>& bodies, 
             byEdge.push_back(i);
         }
     const std::vector<std::optional<TopoDS_Edge>> found =
-        bodies.empty() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, bodies.back().shape);
+        !LastSolid(bodies) || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, LastSolid(bodies)->shape);
     std::vector<std::optional<TopoDS_Edge>> edges(sk.projections.size());
     for (std::size_t k = 0; k < byEdge.size(); ++k) edges[byEdge[k]] = found[k];
-    const TopoDS_Shape body = bodies.empty() ? TopoDS_Shape() : bodies.back().shape;
+    const TopoDS_Shape body = LastSolid(bodies) ? LastSolid(bodies)->shape : TopoDS_Shape();
     std::vector<std::pair<ObjectId, ProjectedCurve>> place;
     const auto lose = [&](ObjectId curve) {
         sk.lostProjections.insert(curve);
@@ -1302,6 +1320,32 @@ void ApplySheetCut(doc::SheetCutFeature& f, Model::Impl& impl, std::vector<Body>
     PutSheet(std::move(info), f.id, f.sheet, impl, bodies, f.status);
 }
 
+/// «Импортированное тело»: the bodies kept in the feature, each a body of
+/// its own. Decoding a large block takes a while, so the result is kept
+/// until the block changes.
+void ApplyImported(doc::ImportFeature& f, Model::Impl& impl, std::vector<Body>& bodies) {
+    Model::Impl::Decoded& cache = impl.imported[f.id];
+    if (cache.data != f.data || cache.shapes.empty()) {
+        cache = {};
+        Expected<std::vector<TopoDS_Shape>> shapes = occt::DecodeImported(f);
+        if (!shapes) {
+            impl.imported.erase(f.id);
+            f.status = {FeatureState::Error, shapes.GetError().message};
+            return;
+        }
+        cache = {f.data, std::move(*shapes)};
+    }
+    int open = 0;
+    for (const TopoDS_Shape& shape : cache.shapes) {
+        const bool mesh = occt::IsMesh(shape);
+        if (!mesh && shape.ShapeType() != TopAbs_SOLID) ++open;
+        bodies.push_back({f.id, NextBodyName(bodies), shape, mesh});
+    }
+    f.status = open > 0 ? doc::FeatureStatus{FeatureState::Warning,
+                                             std::format("Незамкнутых поверхностей: {} — у них нет объёма", open)}
+                        : doc::FeatureStatus{FeatureState::Ok, {}};
+}
+
 /// OCCT prints progress reports (STEP statistics...) to stdout; keep only
 /// warnings and errors, our own log covers the rest.
 /// Process-wide OCCT setup: fewer messages, booleans on the calling thread.
@@ -1517,6 +1561,8 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                  [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
                                      return occt::MakeCoil(faces, *coil, profile.sketch, frame);
                                  });
+            } else if (auto* imported = dynamic_cast<doc::ImportFeature*>(&f)) {
+                ApplyImported(*imported, impl, bodies);
             } else if (auto* loft = dynamic_cast<doc::LoftFeature*>(&f)) {
                 ApplyLoft(*loft, impl, bodies, doc);
             } else if (auto* wp = dynamic_cast<doc::WorkPlaneFeature*>(&f)) {
@@ -1629,7 +1675,8 @@ Model Model::Fork(std::size_t start) const {
         if (!s.IsNull()) builder.Add(all, s);
     };
     if (start > 0)
-        for (const Body& body : a.bodiesAfter[start - 1]) add(body.shape);
+        for (const Body& body : a.bodiesAfter[start - 1])
+            if (!body.mesh) add(body.shape);   // a mesh never changes: shared, not copied (Copy drops its triangles)
     for (const auto& [id, tool] : a.tools) {
         add(tool.shape);
         add(tool.cuts);
@@ -1645,7 +1692,8 @@ Model Model::Fork(std::size_t start) const {
     };
 
     if (start > 0)
-        for (const Body& body : a.bodiesAfter[start - 1]) b.bodiesAfter[start - 1].push_back({body.id, body.name, copied(body.shape)});
+        for (const Body& body : a.bodiesAfter[start - 1])
+            b.bodiesAfter[start - 1].push_back({body.id, body.name, body.mesh ? body.shape : copied(body.shape), body.mesh});
     for (const auto& [id, tool] : a.tools) b.tools[id] = {copied(tool.shape), tool.op, copied(tool.cuts)};
     for (const auto& [id, profile] : a.sketches) {
         occt::SketchProfile& p = b.sketches[id];
@@ -1696,6 +1744,13 @@ ObjectId Model::BodyNearest(Vec3 point) const {
     ObjectId best;
     double bestDistance = 1e300;
     for (const Body& b : myImpl->bodies) {
+        if (b.mesh) {
+            if (const double d = occt::MeshDistance(b.shape, gp_Pnt(point.x, point.y, point.z)); d < bestDistance) {
+                best = b.id;
+                bestDistance = d;
+            }
+            continue;
+        }
         BRepExtrema_DistShapeShape distance(probe, b.shape);
         if (!distance.IsDone() || distance.Value() >= bestDistance) continue;
         best = b.id;
@@ -1731,7 +1786,7 @@ std::vector<ProjectedCurve> Model::ProjectSection(const Frame& plane, std::size_
     if (featureIndex == 0 || featureIndex > after.size()) return {};
     std::vector<ProjectedCurve> out;
     for (const Body& b : after[featureIndex - 1]) {
-        std::vector<ProjectedCurve> cut = occt::ProjectSection(b.shape, plane);
+        std::vector<ProjectedCurve> cut = b.mesh ? occt::SectionMesh(b.shape, plane) : occt::ProjectSection(b.shape, plane);
         out.insert(out.end(), cut.begin(), cut.end());
     }
     return out;
@@ -1826,7 +1881,18 @@ std::optional<MassProperties> Model::Properties() const {
     if (myImpl->bodies.empty()) return std::nullopt;
     GProp_GProps volume, surface;
     Bnd_Box box;
+    // Meshes are measured by their triangles (BRepGProp needs surfaces).
+    double meshVolume = 0.0, meshArea = 0.0;
+    gp_XYZ meshMoment(0, 0, 0);
     for (const Body& b : myImpl->bodies) {
+        if (b.mesh) {
+            const occt::MeshProperties mesh = occt::MeasureMesh(b.shape);
+            meshVolume += mesh.volume;
+            meshMoment += mesh.centre.XYZ() * mesh.volume;
+            meshArea += mesh.area;
+            box.Add(mesh.box);
+            continue;
+        }
         // BRepGProp overwrites its output, so each body is measured alone
         // and added to the totals.
         GProp_GProps bodyVolume, bodySurface;
@@ -1836,11 +1902,14 @@ std::optional<MassProperties> Model::Properties() const {
         surface.Add(bodySurface);
         BRepBndLib::AddOptimal(b.shape, box, false);      // exact, not padded by tolerances
     }
+    if (box.IsVoid()) return std::nullopt;
     MassProperties p;
-    p.volume = volume.Mass();
-    p.area = surface.Mass();
-    const gp_Pnt c = volume.CentreOfMass();
-    p.centre = {c.X(), c.Y(), c.Z()};
+    p.volume = volume.Mass() + meshVolume;
+    p.area = surface.Mass() + meshArea;
+    gp_XYZ centre = volume.Mass() > 0 ? volume.CentreOfMass().XYZ() * volume.Mass() : gp_XYZ(0, 0, 0);
+    centre += meshMoment;
+    if (std::abs(p.volume) > 1e-12) centre /= p.volume;
+    p.centre = {centre.X(), centre.Y(), centre.Z()};
     double xmin, ymin, zmin, xmax, ymax, zmax;
     box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
     p.bounds = {{xmin, ymin, zmin}, {xmax, ymax, zmax}};
@@ -1857,6 +1926,7 @@ const std::vector<Interference>& Model::Interferences() const {
     for (std::size_t i = 0; i < m.bodies.size(); ++i) BRepBndLib::Add(m.bodies[i].shape, boxes[i]);
     for (std::size_t i = 0; i < m.bodies.size(); ++i)
         for (std::size_t j = i + 1; j < m.bodies.size(); ++j) {
+            if (m.bodies[i].mesh || m.bodies[j].mesh) continue;   // a mesh has no inside to share
             if (boxes[i].IsOut(boxes[j])) continue;
             try {
                 BRepAlgoAPI_Common common(m.bodies[i].shape, m.bodies[j].shape);
@@ -1904,6 +1974,10 @@ ObjectId Model::FeatureAt(Vec3 point, const doc::Document& doc, std::size_t befo
 double Model::Volume() const {
     double volume = 0.0;
     for (const Body& b : myImpl->bodies) {
+        if (b.mesh) {
+            volume += occt::MeasureMesh(b.shape).volume;
+            continue;
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(b.shape, props);
         volume += props.Mass();

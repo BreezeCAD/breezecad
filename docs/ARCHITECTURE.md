@@ -84,6 +84,11 @@ Zip: `manifest.json` (версия формата) + `document.json` (дерев
 пакеты `.bzmod` (ZIP: папка модуля под одну систему), их ставит `ModuleManager::Install` в папку модулей
 настроек («Настройки → Модули» или перетаскиванием в окно), включает сразу, удаляет `Uninstall`. Каждый модуль
 живёт в своём репозитории (`BreezeCAD/bz-module-<id>`, ADR-0010); MCP-модуль для Claude — `BreezeCAD/bz-module-mcp`.
+Окна модулей (ADR-0011, `BZ_MODULE_PANELS`): модуль добавляет пункты (`add_action` → меню «Файл», поиск
+команд, группа на ленте «3D-модель») и показывает панель JSON-описанием (`show_panel`); хост
+(`modules/ModuleHost`) только хранит, что попросили, рисует `app/shell/ModuleWindows` темой основы, обратно —
+`on_action` / `on_panel_event` через `ModuleManager::Call`. Команды `conn.pack/plan/apply`
+(`ConnCommands`) — передача на устройство для модуля BreezCONN поверх `assembly/Handoff`.
 
 ## Листовой металл (ADR-0007)
 Операции `sheetMetal` («Лист»), `sheetFlange` («Отбортовка»), `sheetCut` («Вырез») хранят только ввод.

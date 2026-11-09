@@ -27,6 +27,13 @@ if(BZ_BUILD_ANDROID_APP)   # Android: the same app as a library run by the activ
     add_subdirectory(app)
 endif()
 
+if(BZ_BUILD_IOS_APP)   # iOS: the same app as on Android, an executable in BreezeCAD.app (docs/dev/IOS-PORT.md)
+    add_subdirectory(platform)
+    add_subdirectory(render)
+    add_subdirectory(ui)
+    add_subdirectory(app)
+endif()
+
 if(BZ_BUILD_APP)
     add_subdirectory(platform)
     add_subdirectory(render)

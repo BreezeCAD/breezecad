@@ -5,6 +5,10 @@
 #include "app/Session.h"
 #include "app/Workspace.h"
 #include "app/scripting/Commands.h"
+#include "app/Autosave.h"
+#include "app/features/OperationEditors.h"
+#include "assembly/ProjectPack.h"
+#include "core/Version.h"
 #include "core/PathText.h"
 
 #include <cctype>
@@ -58,6 +62,21 @@ Json Open(AppContext& app, const Json& args) {
     return DescribeSession(*app.Doc(), app.workspace.ActiveIndex(), true);
 }
 
+/// A project (.bzp: an assembly with its parts) unpacked into a folder and opened.
+Json OpenProjectCommand(AppContext& app, const Json& args) {
+    const std::filesystem::path file = AbsolutePath(args, "path");
+    const std::filesystem::path folder = AbsolutePath(args, "folder");
+    const Expected<assembly::ProjectManifest> m = assembly::ReadProject(file);
+    if (!m) Fail(m.GetError().message);
+    const Expected<std::filesystem::path> main = assembly::UnpackProject(file, folder);
+    if (!main) Fail(std::format("Проект не распакован: {}", main.GetError().message));
+    if (!app.workspace.Open(*main, app.notes, app.settings)) Fail(std::format("Не удалось открыть «{}»", ToUtf8(*main)));
+    app.workspace.ShowHome(false);
+    Json out = DescribeSession(*app.Doc(), app.workspace.ActiveIndex(), true);
+    out["unpacked_to"] = ToUtf8(folder);
+    return out;
+}
+
 Json Activate(AppContext& app, const Json& args) {
     const int index = Integer(args, "index");
     if (index < 0 || index >= static_cast<int>(app.workspace.sessions.size())) Fail(std::format("Нет документа с номером {}", index));
@@ -86,11 +105,27 @@ Json Export(AppContext& app, const Json& args) {
     const std::filesystem::path file = AbsolutePath(args, "path");
     std::string                 ext  = ToUtf8(file.extension());
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    static const std::vector<std::string> kFormats = {"step", "stl", "3mf"};
-    const std::size_t byExtension = ext == ".stl" ? 1 : ext == ".3mf" ? 2 : 0;
-    const auto        format      = static_cast<ExportFormat>(Choice(args, "format", kFormats, byExtension));
+    static const std::vector<std::string> kFormats = {"step", "stl", "3mf", "bzp"};
+    const std::size_t byExtension = ext == ".stl" ? 1 : ext == ".3mf" ? 2 : ext == ".bzp" ? 3 : 0;
+    const std::size_t chosen      = Choice(args, "format", kFormats, byExtension);
     std::error_code   ec;
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
+    if (chosen == 3) {   // the assembly with all its parts in one file, as «Экспорт проекта»
+        if (!s.assembly) Fail("Проект .bzp — только для сборки");
+        app.ops.Commit(app, s);
+        if (s.path.empty()) Fail("Сборка ещё ни разу не сохранялась — сначала doc.save с path");
+        if (s.IsModified()) {
+            std::string error;
+            if (!app.workspace.SaveTo(s, s.path, app.notes, app.settings, &error)) Fail(std::format("Не удалось сохранить: {}", error));
+            app.autosave.Discard(s);
+        }
+        const Expected<assembly::PackReport> r = assembly::PackProject(s.path, file, Version());
+        if (!r) Fail(r.GetError().message);
+        Json out = {{"path", ToUtf8(file)}, {"format", "bzp"}, {"parts", r->parts}, {"bytes", std::filesystem::file_size(file, ec)}};
+        if (!r->missing.empty()) out["missing"] = r->missing;
+        return out;
+    }
+    const auto format = static_cast<ExportFormat>(chosen);
     std::string error;
     if (!app.workspace.ExportTo(s, format, file, app.notes, &error)) Fail(error);
     return {{"path", ToUtf8(file)}, {"format", kFormats[static_cast<std::size_t>(format)]},
@@ -124,9 +159,16 @@ void AddDocumentCommands(Commands& out) {
     out.push_back({"doc.save",
                    "Сохраняет активный документ: в его файл или, если задан path, в новый файл (дальше документ связан с ним).",
                    Schema({{"path", StringArg("Полный путь .bzc (папка создаётся при нужде); не задан — сохранить в текущий файл.")}}), true, &Save});
-    out.push_back({"doc.export", "Экспортирует тела активного документа в STEP, STL или 3MF.",
+    out.push_back({"app.open_project",
+                   "Распаковывает проект .bzp (сборка со всеми деталями) в папку folder и открывает сборку.",
+                   Schema({{"path", StringArg("Полный путь к .bzp.")}, {"folder", StringArg("Папка, куда распаковать (создаётся).")}},
+                          {"path", "folder"}),
+                   true, &OpenProjectCommand});
+    out.push_back({"doc.export",
+                   "Экспортирует тела активного документа в STEP, STL или 3MF; сборку — ещё и проектом .bzp (сборка со всеми "
+                   "деталями в одном файле, несохранённое сохраняется).",
                    Schema({{"path", StringArg("Полный путь файла; папка создаётся при нужде.")},
-                           {"format", EnumArg("Формат; не задан — по расширению path.", {"step", "stl", "3mf"})}},
+                           {"format", EnumArg("Формат; не задан — по расширению path.", {"step", "stl", "3mf", "bzp"})}},
                           {"path"}),
                    true, &Export});   // "changes": it brings the geometry up to date, not while the user edits
     out.push_back({"doc.undo", "Отменяет последний шаг активного документа (как Ctrl+Z). Ответ: undone — что отменено, next_undo — что отменится следующим.", Schema(), true,

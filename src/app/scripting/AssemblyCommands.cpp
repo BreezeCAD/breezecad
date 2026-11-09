@@ -17,6 +17,7 @@
 #include "document/DocumentTypes.h"
 #include "document/SketchFeature.h"
 #include "kernel/AssemblyReadApi.h"
+#include "kernel/ComponentPattern.h"
 #include "kernel/ContextProjection.h"
 #include "kernel/Topology.h"
 
@@ -111,6 +112,14 @@ Json ComponentJson(Session& s, const kernel::ComponentRecord& r) {
 /// The assembly brought up to date (parts loaded, constraints solved).
 void Solved(Session& s) { s.RebuildNow(); }
 
+Json PatternJson(const assembly::ComponentPattern& p) {
+    static const char* kinds[] = {"holes", "rectangular", "circular"};
+    Json j = {{"id", p.id.value}, {"name", p.name}, {"kind", kinds[static_cast<std::size_t>(p.kind)]}, {"seed", Json::array()},
+              {"instances", p.instances.size() + 1}};
+    for (ObjectId c : p.seed) j["seed"].push_back(c.value);
+    return j;
+}
+
 Json Overview(Session& s) {
     Solved(s);
     AssemblyState& st = *s.assembly;
@@ -119,6 +128,10 @@ Json Overview(Session& s) {
     for (const kernel::ComponentRecord& r : reader.Components()) components.push_back(ComponentJson(s, r));
     for (const assembly::Constraint& c : st.assembly.constraints) constraints.push_back(ConstraintJson(c));
     Json out = {{"components", std::move(components)}, {"constraints", std::move(constraints)}};
+    if (!st.assembly.patterns.empty()) {
+        out["patterns"] = Json::array();
+        for (const assembly::ComponentPattern& p : st.assembly.patterns) out["patterns"].push_back(PatternJson(p));
+    }
     if (!st.problems.empty()) {
         for (const std::string& p : st.problems) out["problems"].push_back(Tr(p));
         st.problems.clear();
@@ -154,6 +167,7 @@ Json Place(AppContext& app, const Json& args) {
         if (!info) Fail(std::format("Нет стандарта «{}» (список — library.list)", request.standard));
         request.size = doc::parts::MatchSize(*info, Text(args, "size"));
         request.length = Number(args, "length", 0.0);
+        StandardInputs(args, request);
         if (const Expected<doc::parts::Made> check = doc::parts::MakePart(request); !check) Fail(Tr(check.GetError().message));
         const auto made = StandardPartFileOf(app, s, request);
         if (!made) Fail("Не удалось сохранить файл стандартного изделия");
@@ -427,6 +441,11 @@ Json Remove(AppContext& app, const Json& args) {
         if (!st.assembly.FindConstraint(id)) Fail("Нет такой зависимости");
         st.Checkpoint(N_("Удалить"));
         st.assembly.RemoveConstraint(id);
+    } else if (Has(args, "pattern")) {   // the instances go, the seed stays
+        const ObjectId id = Id(args, "pattern");
+        if (!st.assembly.FindPattern(id)) Fail("Нет такого массива");
+        st.Checkpoint(N_("Удаление массива"));
+        st.assembly.RemovePattern(id);
     } else {
         const ObjectId id = ComponentOf(s, args, "component").id;
         st.Checkpoint(N_("Удалить"));
@@ -435,6 +454,64 @@ Json Remove(AppContext& app, const Json& args) {
     st.selected = {};
     st.assembly.Touch();
     return Overview(s);
+}
+
+/// A pattern of a component with its group (the standard parts on it come
+/// along), as the program's «Массив компонентов».
+Json Pattern(AppContext& app, const Json& args) {
+    Session&       s  = ActiveAssembly(app);
+    AssemblyState& st = *s.assembly;
+    const ObjectId component = ComponentOf(s, args, "component").id;
+    Solved(s);
+    assembly::ComponentPattern p;
+    p.seed = kernel::PatternGroup(st.assembly, component, IsStandardPart);
+    if (p.seed.empty()) Fail("Этот компонент нельзя размножить (он сам — экземпляр массива?)");
+    const std::size_t kind = Choice(args, "kind", {"auto", "holes", "rectangular", "circular"}, 0);
+    const auto rim = kernel::SeatHoleOf(st.assembly, p.seed);
+    if (kind == 0 || kind == 1) {
+        const bool holes = rim && st.geometry.SameHoles(st.assembly, *rim).size() > 1;
+        if (kind == 1 && !holes) Fail("Компонент не стоит в отверстии, у которого есть такие же: kind rectangular или circular");
+        if (holes) {
+            p.kind = assembly::PatternKind::Holes;
+            p.rim  = *rim;
+        } else {
+            p.kind = assembly::PatternKind::Rectangular;
+        }
+    } else if (kind == 2) {
+        p.kind = assembly::PatternKind::Rectangular;
+    } else {
+        p.kind = assembly::PatternKind::Circular;
+    }
+    if (p.kind == assembly::PatternKind::Rectangular) {
+        if (Has(args, "direction1")) p.direction1 = Point3(args["direction1"], "direction1").Normalized();
+        if (Has(args, "direction2")) p.direction2 = Point3(args["direction2"], "direction2").Normalized();
+        p.count1 = Integer(args, "count1", 3);
+        p.count2 = Integer(args, "count2", 1);
+        double spacing = 20.0;
+        if (const auto box = st.geometry.ComponentBounds(component)) spacing = std::max(1.0, std::ceil((box->max.x - box->min.x) * 1.5));
+        p.spacing1 = Sane(Number(args, "spacing1", spacing), "spacing1");
+        p.spacing2 = Sane(Number(args, "spacing2", p.spacing1), "spacing2");
+        if (p.count1 < 1 || p.count2 < 1 || p.count1 * p.count2 < 2 || p.count1 * p.count2 > 1000)
+            Fail("count1 × count2 — от 2 до 1000 (с исходным)");
+    } else if (p.kind == assembly::PatternKind::Circular) {
+        p.axisOrigin    = Has(args, "axis_origin") ? Point3(args["axis_origin"], "axis_origin") : Vec3{};
+        p.axisDirection = Has(args, "axis_direction") ? Point3(args["axis_direction"], "axis_direction").Normalized() : Vec3{0, 0, 1};
+        p.count         = Integer(args, "count", 4);
+        p.angle         = Number(args, "angle", 360.0) * kPi / 180.0;
+        if (p.count < 2 || p.count > 1000) Fail("count — от 2 до 1000 (с исходным)");
+    }
+    if (const auto spots = kernel::PatternSpots(st.geometry, st.assembly, p); !spots) Fail(Tr(spots.GetError().message));
+    st.Checkpoint(N_("Массив компонентов"));
+    const ObjectId id = st.assembly.AddPattern(p).id;
+    const Expected<int> made = kernel::ApplyPattern(st.geometry, st.assembly, id);
+    if (!made) {
+        st.assembly.RemovePattern(id);
+        Fail(Tr(made.GetError().message));
+    }
+    st.selected = id;
+    st.assembly.Touch();
+    Solved(s);
+    return PatternJson(*st.assembly.FindPattern(id));
 }
 
 Json Clashes(AppContext& app, const Json&) {
@@ -555,6 +632,8 @@ void AddAssemblyCommands(Commands& out) {
                            {"standard", StringArg("Или id стандарта (gost7798…).")},
                            {"size", StringArg("Размер стандартного изделия (M10).")},
                            {"length", NumberArg("Длина стандартного изделия, мм.")},
+                           {"inputs", {{"type", "object"},
+                                       {"description", "Размеры стандартного изделия, которые вводятся (inputs из library.sizes): {\"B\": 1250}, мм."}}},
                            {"at", Point3Arg("Положение начала координат детали в сборке, мм.")},
                            {"rotate", {{"type", "object"}, {"description", "{\"axis\": [x, y, z], \"angle\": градусы}."}}},
                            {"grounded", BoolArg("Закрепить (по умолчанию — только первый).")}}),
@@ -613,8 +692,29 @@ void AddAssemblyCommands(Commands& out) {
                    true, &Move});
     out.push_back({"assembly.ground", "Закрепить (grounded: true, по умолчанию) или освободить компонент.",
                    Schema({{"component", IdArg("id компонента.")}, {"grounded", BoolArg("Закрепить.")}}, {"component"}), true, &Ground});
-    out.push_back({"assembly.remove", "Удаляет компонент (с его зависимостями) или одну зависимость.",
-                   Schema({{"component", IdArg("id компонента.")}, {"constraint", IdArg("Или id зависимости.")}}), true, &Remove});
+    out.push_back({"assembly.remove", "Удаляет компонент (с его зависимостями), одну зависимость или массив (его экземпляры; исходный остаётся).",
+                   Schema({{"component", IdArg("id компонента.")}, {"constraint", IdArg("Или id зависимости.")},
+                           {"pattern", IdArg("Или id массива.")}}),
+                   true, &Remove});
+    out.push_back({"assembly.pattern",
+                   "Массив компонента вместе с его стандартными изделиями (болт с шайбой и гайкой): kind auto — по таким же "
+                   "отверстиям, если компонент стоит в отверстии, иначе ряд; rectangular — ряды по direction1/direction2 "
+                   "(count — с исходным, spacing — шаг, мм); circular — вокруг оси axis_origin/axis_direction (count с исходным, "
+                   "angle — общий угол, градусы, 360 — равномерно по кругу). Экземпляры связаны так же, как исходный.",
+                   Schema({{"component", IdArg("id компонента.")},
+                           {"kind", EnumArg("Вид массива (по умолчанию auto).", {"auto", "holes", "rectangular", "circular"})},
+                           {"direction1", Point3Arg("rectangular: направление рядов.")},
+                           {"count1", IntegerArg("rectangular: число в ряду (с исходным), по умолчанию 3.")},
+                           {"spacing1", NumberArg("rectangular: шаг, мм.")},
+                           {"direction2", Point3Arg("rectangular: второе направление.")},
+                           {"count2", IntegerArg("rectangular: число рядов, по умолчанию 1.")},
+                           {"spacing2", NumberArg("rectangular: шаг рядов, мм.")},
+                           {"axis_origin", Point3Arg("circular: точка оси, мм.")},
+                           {"axis_direction", Point3Arg("circular: направление оси (по умолчанию Z).")},
+                           {"count", IntegerArg("circular: число (с исходным), по умолчанию 4.")},
+                           {"angle", NumberArg("circular: общий угол, градусы (по умолчанию 360).")}},
+                          {"component"}),
+                   true, &Pattern});
     out.push_back({"assembly.clashes", "Пересечения компонентов: пары и объём общего материала.", Schema(), false, &Clashes});
     out.push_back({"assembly.edit_in_place",
                    "Правка детали компонента на месте, в сборке (как двойной щелчок): дальше команды деталей работают с ней, "

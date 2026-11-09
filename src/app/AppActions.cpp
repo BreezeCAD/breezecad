@@ -159,7 +159,7 @@ void RegisterActions(AppContext& app) {
            [&app] { app.shell.showMassProperties = true; }});
     a.Add({"app.settings", N_("Настройки"), "ui-sliders", 0, N_("Масштаб интерфейса, оформление, сочетания клавиш"), {},
            [&app] { app.shell.showSettings = true; }});
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
     {
         // The touch settings, found by search: what people call them.
         Action touch{"app.settingsTouch", N_("Настройки сенсора"), "ui-sliders", 0,
@@ -336,7 +336,7 @@ void RegisterActions(AppContext& app) {
     }
     // The same tool, making a copy that no longer follows the model.
     a.Add({"sketch.projectFixed", N_("Независимая проекция"), "sk-project-fixed", 0,
-           N_("Щёлкните ребро модели или грань — её контур станет обычной закреплённой геометрией эскиза, за моделью не следует"),
+           N_("Щёлкните ребро, грань, вершину, рабочую геометрию или кривую другого эскиза — проекция станет обычной закреплённой геометрией эскиза, за моделью не следует"),
            inSketch, [&app] {
                app.sketch.SetProjectLinked(false);
                app.sketch.SetTool(app, *app.Doc(), SketchTool::Project);

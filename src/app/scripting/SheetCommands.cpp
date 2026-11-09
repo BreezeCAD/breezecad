@@ -53,11 +53,12 @@ Json CreateSheet(AppContext& app, const Json& args) {
     }
     f->thickness.name = s.doc.NextParameterName();
     f->thickness.expression = Expression(args, "thickness", "2");
-    if (Has(args, "radius")) {
+    // "auto": follows the thickness (as not given): the way back from a typed value through part.edit_feature too.
+    if (Has(args, "radius") && Expression(args, "radius") != "auto") {
         f->radiusAuto = false;
         f->radius.expression = Expression(args, "radius");
     }
-    if (Has(args, "k_factor")) {
+    if (Has(args, "k_factor") && Expression(args, "k_factor") != "auto") {
         f->kAuto = false;
         f->kFactor.expression = Expression(args, "k_factor");
     }
@@ -246,15 +247,15 @@ void AddSheetCommands(Commands& out) {
                    "их вручную. Толщина — параметр (dN): part.set_parameter меняет её, всё остальное пересчитывается.",
                    Schema({{"sketch", IdArg("id эскиза с замкнутым контуром.")},
                            {"thickness", ExpressionArg("Толщина листа, мм (по умолчанию 2).")},
-                           {"radius", ExpressionArg("Внутренний радиус гиба, мм; не задан — равен толщине.")},
-                           {"k_factor", ExpressionArg("K-фактор 0…1; не задан — по DIN 6935.")},
+                           {"radius", ExpressionArg("Внутренний радиус гиба, мм; не задан или \"auto\" — равен толщине.")},
+                           {"k_factor", ExpressionArg("K-фактор 0…1; не задан или \"auto\" — по DIN 6935.")},
                            {"reversed", BoolArg("Толщина вниз от плоскости эскиза.")},
                            {"profiles", {{"type", "array"}, {"items", PointArg("Точка внутри контура.")}, {"description", "Одна точка внутри контура листа, если контуров несколько."}}},
                            {"name", StringArg("Имя операции.")}},
                           {"sketch"}),
                    true, &CreateSheet});
     out.push_back({"sheet.flange",
-                   "Отбортовка: полка на прямом ребре плоского листа или на дальнем ребре другой полки (on_flange), на всю длину ребра. Высота — наружная, от точки "
+                   "Отбортовка: полка на прямом ребре плоского листа или на дальнем ребре другой полки (on_flange); по умолчанию на всю длину ребра, width / offset_start / offset_end — часть ребра. Высота — наружная, от точки "
                    "пересечения наружных сторон (для 90° — наружный размер полки); основание укорачивается так, что наружный "
                    "габарит по эскизу сохраняется. Возвращает прямую часть полки и длину сгиба в развёртке.",
                    Schema({{"sheet", IdArg("id «Листа»; не задан — последний.")},

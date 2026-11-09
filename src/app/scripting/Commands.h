@@ -20,6 +20,9 @@
 namespace bz::doc {
 class Document;
 class Feature;
+namespace parts {
+struct Request;
+}
 } // namespace bz::doc
 
 namespace bz::app {
@@ -133,6 +136,9 @@ void RollBackIfFailed(Session& part, ObjectId feature);
 /// rebuilds, rolls back on failure. The reply: the feature, its named
 /// parameters and the part's volume.
 Json AddToPart(Session& part, std::unique_ptr<doc::Feature> f, const Json& args, const char* title, std::vector<Parameter*> name = {});
+/// The sizes a standard part takes typed ("inputs": {"B": 1250}, mm) into
+/// `request` (library.make_part, assembly.place).
+void StandardInputs(const Json& args, doc::parts::Request& request);
 /// A plane: "XY" / "XZ" / "YZ", a work plane's name or its id.
 ObjectId PlaneArg(Session& part, const Json& args, const char* key);
 

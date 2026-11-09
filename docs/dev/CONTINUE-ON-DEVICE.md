@@ -127,9 +127,9 @@
   компьютер, документы закрываются, копия удаляется.
 - Android: `INTERNET` в манифесте; камера не нужна (QR читает системная
   камера / Lens).
-- iOS (ведёт prorck): зарегистрировать схему `breezecad` (`CFBundleURLTypes`),
-  в `application:openURL:` вызвать `bz::platform::PushOpenedLink(url)`;
-  `NSLocalNetworkUsageDescription` в Info.plist.
+- iOS: схема `breezecad` в `CFBundleURLTypes`, `NSLocalNetworkUsageDescription`
+  (resources/ios/Info.plist.in); `application:openURL:` в `app/ios/IosMain.mm`
+  передаёт ссылку в `PushOpenedLink`.
 - Строки переведены в `assets/lang/en.json`.
 
 ## Дальше

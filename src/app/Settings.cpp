@@ -75,10 +75,14 @@ Settings FromJson(const nlohmann::json& j) {
     s.gridSnap        = j.value("gridSnap", s.gridSnap);
     s.pointSnap       = j.value("pointSnap", s.pointSnap);
     s.orthoMode       = j.value("orthoMode", s.orthoMode);
+    s.polarStep       = std::clamp(j.value("polarStep", s.polarStep), 0.0, 90.0);
+    s.panelWidth      = std::clamp(j.value("panelWidth", s.panelWidth), 0.0, 1200.0);
     s.graphics        = std::clamp(j.value("graphics", s.graphics), 0, 2);
     s.textureQuality  = std::clamp(j.value("textureQuality", s.textureQuality), 0, 2);
     s.showAllConstraints = j.value("showAllConstraints", s.showAllConstraints);
     s.sketchRegionFill = j.value("sketchRegionFill", s.sketchRegionFill);
+    s.autoProjectEdges = j.value("autoProjectEdges", s.autoProjectEdges);
+    s.projectOriginOnCreate = j.value("projectOriginOnCreate", s.projectOriginOnCreate);
     if (const auto r = j.find("ribbonIconsOnly"); r != j.end() && r->is_array()) {
         s.ribbonIconsOnly.clear();
         for (const auto& id : *r)
@@ -172,6 +176,7 @@ Settings FromJson(const nlohmann::json& j) {
         o.longPress = std::clamp(m->value("longPress", o.longPress), 0.2, 2.0);
         o.cursorSpeed = std::clamp(m->value("cursorSpeed", o.cursorSpeed), 0.1, 1.0);
         o.cursorReach = std::clamp(m->value("cursorReach", o.cursorReach), 16, 120);
+        o.sketchInput = std::clamp(m->value("sketchInput", o.sketchInput), 0, 3);
         o.scrollSpeed = std::clamp(m->value("scrollSpeed", o.scrollSpeed), 0.25, 4.0);
         o.askedNotifications = m->value("askedNotifications", o.askedNotifications);
         o.projectsFolderName = m->value("projectsFolderName", o.projectsFolderName);
@@ -238,11 +243,15 @@ nlohmann::json Settings::ToJson() const {
         {"gridSnap", gridSnap},
         {"pointSnap", pointSnap},
         {"orthoMode", orthoMode},
+        {"polarStep", polarStep},
+        {"panelWidth", panelWidth},
         {"graphics", graphics},
         {"textureQuality", textureQuality},
         {"backgroundRebuild", backgroundRebuild},
         {"showAllConstraints", showAllConstraints},
         {"sketchRegionFill", sketchRegionFill},
+        {"autoProjectEdges", autoProjectEdges},
+        {"projectOriginOnCreate", projectOriginOnCreate},
         {"ribbonIconsOnly", ribbonIconsOnly},
         {"finishOnRight", finishOnRight},
         {"gridStep", gridStep},
@@ -303,6 +312,7 @@ nlohmann::json Settings::ToJson() const {
                     {"longPress", mobile.longPress},
                     {"cursorSpeed", mobile.cursorSpeed},
                     {"cursorReach", mobile.cursorReach},
+                    {"sketchInput", mobile.sketchInput},
                     {"scrollSpeed", mobile.scrollSpeed},
                     {"hotbar", mobile.hotbar},
                     {"openGroups", mobile.openGroups},

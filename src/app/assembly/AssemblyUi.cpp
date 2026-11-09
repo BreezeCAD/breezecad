@@ -703,6 +703,10 @@ void PlaceComponent(AppContext& app) {
     if (PlaceFile(app, *s, *file)) app.settings.AddRecent(*file);
 }
 
+bool IsStandardPart(const assembly::Component& c) {
+    return c.path.starts_with("Стандартные изделия/") || c.path.find("/Стандартные изделия/") != std::string::npos;
+}
+
 namespace {
 
 /// The file of a standard part next to the assembly, made when missing.
@@ -781,12 +785,6 @@ void DropOnRim(AppContext& app, Session& s, const assembly::GeometryRef& rim) {
     st.offer = holes > 1 ? AssemblyState::Offer{ids[screw], holes} : AssemblyState::Offer{};
     app.notes.Success(Trf("Вставлено: {} (пакет {} мм)", doc::parts::Designation(plan->items[screw].request),
                           FormatNumber(plan->stack, 1)));
-}
-
-/// Parts made by the library ("Стандартные изделия" next to the assembly)
-/// come along with the component a pattern repeats; other parts do not.
-bool IsStandardPart(const Component& c) {
-    return c.path.starts_with("Стандартные изделия/") || c.path.find("/Стандартные изделия/") != std::string::npos;
 }
 
 /// A pattern of `component` with its group: into the holes like the one it

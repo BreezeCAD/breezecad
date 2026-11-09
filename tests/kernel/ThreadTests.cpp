@@ -5,6 +5,8 @@
 
 #include <doctest.h>
 
+#include <filesystem>
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -159,4 +161,25 @@ TEST_CASE("a chosen standard size wins over the shaft, a cosmetic thread cuts no
     CHECK(t->size == 8);
     CHECK(t->cosmetic);
     CHECK(doc::StandardSizes().size() == 22);
+}
+
+TEST_CASE("an internal thread in a hole under a counterbore builds (made on an iPad)") {
+    // The part from the iPad: a blind Ø6.6 hole under a Ø11 counterbore, an
+    // M8 thread in it. On Windows (OCCT 7.9.3 of MSYS2) a classifier loaded
+    // with the body and asked twice faulted inside OCCT, the thread got
+    // "сбой внутри OpenCASCADE"; Linux and macOS built it.
+    Expected<doc::Document> d = doc::LoadBzc(std::filesystem::path(BZ_SOURCE_DIR) / "tests" / "data" / "thread-counterbore.bzc");
+    REQUIRE(d);
+    kernel::Model model;
+    model.Rebuild(*d);
+    const doc::ThreadFeature* thread = nullptr;
+    for (const auto& f : d->Features())
+        if (const auto* t = dynamic_cast<const doc::ThreadFeature*>(f.get())) thread = t;
+    REQUIRE(thread);
+    REQUIRE_MESSAGE(thread->status.state == FeatureState::Ok, thread->status.message);
+    REQUIRE(thread->site);
+    CHECK(thread->site->nominal == doctest::Approx(8));
+    CHECK(thread->site->length == doctest::Approx(3.6));
+    // The same on every system: Linux 8.0.1 / 7.6.3, macOS and Windows 7.9.3.
+    CHECK(model.Volume() == doctest::Approx(14789.1).epsilon(1e-4));
 }

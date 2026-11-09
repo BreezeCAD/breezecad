@@ -74,6 +74,15 @@ TEST_CASE("standard part sizes match the tables") {
     REQUIRE(bearing);
     CHECK(bearing->envelope.x == doctest::Approx(47));
     CHECK(bearing->envelope.z == doctest::Approx(14));
+    // ГОСТ 17473-80 М8×20: головка D = 13, k = 5,6 (табл. 1).
+    Expected<Made> pan = MakePart({"gost17473", "М8", 20});
+    REQUIRE(pan);
+    CHECK(pan->envelope.x == doctest::Approx(13));
+    CHECK(pan->envelope.z == doctest::Approx(25.6));
+    // ISO 7040 M10: гайка нормальной высоты, h max = 11,9 (не 10, как низкая DIN 985).
+    Expected<Made> lock = MakePart({"iso7040", "M10", 0});
+    REQUIRE(lock);
+    CHECK(lock->envelope.z == doctest::Approx(11.9));
 }
 
 TEST_CASE("a standard part stays parametric: the length variable drives the model") {

@@ -5,6 +5,7 @@
 
 #include "app/Notifications.h"
 #include "app/Settings.h"
+#include "app/drawing/DrawingViews.h"
 #include "app/assembly/InPlace.h"
 #include "core/I18n.h"
 #include "core/Log.h"
@@ -46,7 +47,7 @@ const Expected<drawing::TrueTypeFont>& PdfFont() {
     return font;
 }
 
-bool ExportPdf(const Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
+bool ExportPdf(Workspace& ws, Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
     const auto fail = [&](const std::string& message) {
         if (error) *error = message;
         notes.Error(Tr(message));
@@ -54,7 +55,12 @@ bool ExportPdf(const Session& session, const std::filesystem::path& target, Noti
     };
     const Expected<drawing::TrueTypeFont>& font = PdfFont();
     if (!font) return fail(font.GetError().message);
-    const Status status = drawing::ExportDrawingPdf(session.drawing->drawing, target, *font, std::format("BreezeCAD {}", Version()));
+    // The views' lines, all of them computed first (a PDF is not drawn half done).
+    DrawingState& d = *session.drawing;
+    DrawingViews& views = DrawingViews::Of(d);
+    views.Finish(ws, d);
+    const auto lines = [&](const drawing::Sheet&, const drawing::View& v) { return views.Lines(ws, d, v); };
+    const Status status = drawing::ExportDrawingPdf(d.drawing, target, *font, std::format("BreezeCAD {}", Version()), lines);
     if (!status) return fail(status.GetError().message);
     if (!platform::FileWritten(target)) {
         const std::string message = Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));
@@ -391,7 +397,7 @@ bool Workspace::ExportTo(Session& session, ExportFormat format, const std::files
         notes.Info(Tr(empty));
         return false;
     }
-    if (format == ExportFormat::Pdf) return ExportPdf(session, target, notes, error);
+    if (format == ExportFormat::Pdf) return ExportPdf(*this, session, target, notes, error);
     // A long export (a threaded part as STEP on a phone) is work, not a hang: no hang
     // report, and on Android the watchdog does not offer to close the app meanwhile.
     const mon::Waiting waiting;

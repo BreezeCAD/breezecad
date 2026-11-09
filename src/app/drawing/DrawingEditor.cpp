@@ -4,10 +4,16 @@
 #include "app/Operations.h"
 #include "app/Session.h"
 #include "app/Workspace.h"
+#include "app/drawing/DrawingViews.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "core/PathText.h"
+#include "drawing/DrawingPdf.h"
+#include "drawing/DrawingView.h"
 #include "drawing/SheetLayout.h"
+#include "drawing/ViewPlacement.h"
+#include "platform/FileDialogs.h"
+#include "platform/Paths.h"
 #include "ui/Ui.h"
 #include "ui/Widgets.h"
 
@@ -18,6 +24,8 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -104,6 +112,43 @@ void DrawLabel(ImDrawList* dl, ImFont* font, const SheetView& v, const dw::Label
     }
 }
 
+/// A line of a view; dashes as on paper (ГОСТ 2.303), solid when they would
+/// be too small to tell on the screen.
+void DrawPolyline(ImDrawList* dl, const SheetView& v, const dw::Polyline& p, ImU32 color, float thick, float thin) {
+    if (p.points.size() < 2) return;
+    const float width = p.weight == dw::LineWeight::Thick ? thick : thin;
+    std::vector<ImVec2> points;
+    points.reserve(p.points.size());
+    for (Vec2 q : p.points) points.push_back(v.ToScreen(q));
+    const std::vector<double> dash = dw::DashOf(p.style);
+    if (dash.empty() || dash[1] * v.zoom < 2.5) {
+        dl->AddPolyline(points.data(), static_cast<int>(points.size()), color, ImDrawFlags_None, width);
+        return;
+    }
+    std::size_t k = 0;
+    double left = dash[0] * v.zoom;
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        const ImVec2 a = points[i - 1], b = points[i];
+        const double len = std::hypot(b.x - a.x, b.y - a.y);
+        if (len <= 0) continue;
+        const ImVec2 dir{static_cast<float>((b.x - a.x) / len), static_cast<float>((b.y - a.y) / len)};
+        double at = 0;
+        while (at < len) {
+            const double step = std::min(left, len - at);
+            if (k % 2 == 0) {
+                const auto f0 = static_cast<float>(at), f1 = static_cast<float>(at + step);
+                dl->AddLine({a.x + dir.x * f0, a.y + dir.y * f0}, {a.x + dir.x * f1, a.y + dir.y * f1}, color, width);
+            }
+            at += step;
+            left -= step;
+            if (left <= 1e-6) {
+                k = (k + 1) % dash.size();
+                left = dash[k] * v.zoom;
+            }
+        }
+    }
+}
+
 void DrawSheet(ImDrawList* dl, ui::Ui& ui, const SheetView& v, const dw::SheetLayout& l) {
     const ui::ThemeColors& c = ui.C();
     const ImVec2 a = v.ToScreen({0, l.height}), b = v.ToScreen({l.width, 0});
@@ -116,6 +161,7 @@ void DrawSheet(ImDrawList* dl, ui::Ui& ui, const SheetView& v, const dw::SheetLa
     const float thin  = std::max(1.0f, static_cast<float>(0.18 * v.zoom));
     for (const dw::Stroke& s : l.strokes)
         dl->AddLine(v.ToScreen(s.a), v.ToScreen(s.b), ink, s.weight == dw::LineWeight::Thick ? thick : thin);
+    for (const dw::Polyline& p : l.polylines) DrawPolyline(dl, v, p, ink, thick, thin);
     for (const dw::Label& label : l.labels) DrawLabel(dl, ui.fonts.body, v, label, ink);
 }
 
@@ -125,6 +171,291 @@ void FitInto(DrawingState& d, const dw::SheetLayout& l, ImVec2 size, float margi
     d.zoom   = std::max(0.05, std::min(zx, zy));
     // Shifted down by half the note's room: the sheet sits under it.
     d.center = {l.width / 2, l.height / 2 + top / 2 / d.zoom};
+}
+
+// --- views ------------------------------------------------------------------------
+
+const char* DirectionName(dw::ViewDirection d) {
+    switch (d) {
+        case dw::ViewDirection::Front:  return N_("Вид спереди");
+        case dw::ViewDirection::Back:   return N_("Вид сзади");
+        case dw::ViewDirection::Top:    return N_("Вид сверху");
+        case dw::ViewDirection::Bottom: return N_("Вид снизу");
+        case dw::ViewDirection::Left:   return N_("Вид слева");
+        case dw::ViewDirection::Right:  return N_("Вид справа");
+        case dw::ViewDirection::Iso:    return N_("Изометрия");
+    }
+    return N_("Вид спереди");
+}
+
+std::string ViewTitle(const dw::View& v) { return std::format("{} ({})", Tr(DirectionName(v.direction)), dw::ScaleText(v.scale)); }
+
+dw::ViewLinesSource LinesSource(AppContext& app, DrawingState& d) {
+    return [&app, &d](const dw::Sheet&, const dw::View& v) { return DrawingViews::Of(d).Lines(app.workspace, d, v); };
+}
+
+Box3 BoxOf(const kernel::Bounds& b) {
+    Box3 box;
+    box.Include(b.min);
+    box.Include(b.max);
+    return box;
+}
+
+/// Where a view is on the sheet: its lines, else its model's box, else a square around its origin.
+Box2 BoxOfView(AppContext& app, DrawingState& d, const dw::View& v) {
+    DrawingViews& views = DrawingViews::Of(d);
+    if (const dw::ViewLines* l = views.Lines(app.workspace, d, v)) {
+        const Box2 b = dw::ViewBox(v, *l);
+        if (!b.IsEmpty()) return b;
+    }
+    Box2 b;
+    if (const auto bounds = views.ModelBounds(app.workspace, d, v.model)) {
+        const Box2 e = dw::Extent(v.direction, BoxOf(*bounds));
+        b.Include(v.at + e.min * v.scale.Value());
+        b.Include(v.at + e.max * v.scale.Value());
+    }
+    if (b.IsEmpty()) b.Include(v.at, 15);
+    return b;
+}
+
+/// A path of a model as the drawing keeps it: relative to a saved drawing, else full.
+std::string ModelPath(const DrawingState& d, const std::filesystem::path& file) {
+    if (d.savedAt.empty()) return DrawingState::StoredPath(file);
+    std::filesystem::path relative = file.lexically_relative(d.savedAt.parent_path());
+    if (relative.empty()) relative = file;
+    return DrawingState::StoredPath(relative);
+}
+
+/// The model the views are made of: the drawing's first, else one the user picks now.
+ObjectId ModelForViews(AppContext& app, DrawingState& d) {
+    if (!d.drawing.models.empty()) return d.drawing.models.front().id;
+    if (const std::string problem = platform::FileDialogProblem(); !problem.empty()) {
+        app.notes.Error(problem);
+        return {};
+    }
+    const std::filesystem::path folder = d.savedAt.empty() ? platform::DocumentsDir() : d.savedAt.parent_path();
+    const auto file = platform::ShowOpenDialog(Tr("Деталь для чертежа"), {{Tr("Деталь BreezeCAD"), "*.bzc"}}, folder);
+    if (!file) return {};
+    ObjectId id;
+    const std::string path = ModelPath(d, *file);
+    d.Change(Tr("Модель чертежа"), [&](dw::Drawing& dr) {
+        dw::ModelRef ref;
+        ref.id   = dr.Ids().Next();
+        ref.path = path;
+        id       = ref.id;
+        dr.models.push_back(std::move(ref));
+    });
+    return id;
+}
+
+/// The boxes of the views on the sheet now (to keep new ones off them).
+std::vector<Box2> ViewBoxes(AppContext& app, DrawingState& d) {
+    std::vector<Box2> out;
+    for (const dw::View& v : dw::ViewsOf(d.Sheet())) {
+        Box2 b = BoxOfView(app, d, v);
+        b.Include(b.min - Vec2{5, 5});
+        b.Include(b.max + Vec2{5, 5});
+        out.push_back(b);
+    }
+    return out;
+}
+
+void AddStandardViews(AppContext& app) {
+    DrawingState* d = ActiveDrawing(app);
+    if (!d) return;
+    const ObjectId model = ModelForViews(app, *d);
+    if (!model) return;
+    std::string problem;
+    const auto bounds = DrawingViews::Of(*d).ModelBounds(app.workspace, *d, model, &problem);
+    if (!bounds) {
+        app.notes.Error(problem);
+        return;
+    }
+    const dw::SheetLayout layout = dw::LayoutSheet(d->Sheet(), d->SheetNumber(), static_cast<int>(d->drawing.sheets.size()));
+    const dw::Room room = dw::RoomOf(layout, ViewBoxes(app, *d));
+    const auto place = dw::PlaceStandardViews(room, BoxOf(*bounds));
+    if (!place) {
+        app.notes.Info(Tr("Виды не помещаются на лист: возьмите формат больше или освободите место"));
+        return;
+    }
+    const ObjectId sheet = d->Sheet().id;
+    ObjectId main;
+    d->Change(Tr("Стандартные виды"), [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets) {
+            if (s.id != sheet) continue;
+            dw::View front;
+            front.id        = dr.Ids().Next();
+            front.model     = model;
+            front.direction = dw::ViewDirection::Front;
+            front.scale     = place->scale;
+            front.at        = place->front;
+            dw::View top = front, left = front;
+            top.id         = dr.Ids().Next();
+            top.direction  = dw::ViewDirection::Top;
+            top.at         = place->top;
+            top.parent     = front.id;
+            left.id        = dr.Ids().Next();
+            left.direction = dw::ViewDirection::Left;
+            left.at        = place->left;
+            left.parent    = front.id;
+            for (const dw::View& v : {front, top, left}) s.views.push_back(dw::MakeViewItem(v));
+            // The scale of the title block: of the main view, unless the user wrote one.
+            if (s.title.fields[dw::field::kScale].empty()) s.title.fields[dw::field::kScale] = dw::ScaleText(place->scale);
+            main = front.id;
+        }
+    });
+    d->selectedView = main;
+}
+
+void AddIsoView(AppContext& app) {
+    DrawingState* d = ActiveDrawing(app);
+    if (!d) return;
+    const ObjectId model = ModelForViews(app, *d);
+    if (!model) return;
+    std::string problem;
+    const auto bounds = DrawingViews::Of(*d).ModelBounds(app.workspace, *d, model, &problem);
+    if (!bounds) {
+        app.notes.Error(problem);
+        return;
+    }
+    const dw::SheetLayout layout = dw::LayoutSheet(d->Sheet(), d->SheetNumber(), static_cast<int>(d->drawing.sheets.size()));
+    const dw::Room room = dw::RoomOf(layout, ViewBoxes(app, *d));
+    const Box2 e = dw::Extent(dw::ViewDirection::Iso, BoxOf(*bounds));
+    // The scale of the views already there, or the largest that fits; smaller until a place is free.
+    double limit = 1e9;
+    for (const dw::View& v : dw::ViewsOf(d->Sheet())) limit = std::min(limit, v.scale.Value());
+    for (const dw::Scale& sc : dw::StandardScales()) {
+        if (sc.Value() > limit * (1 + 1e-9)) continue;
+        const double s = sc.Value();
+        const auto spot = dw::FreeSpot(room, (e.max - e.min) * s);
+        if (!spot) continue;
+        const ObjectId sheet = d->Sheet().id;
+        ObjectId added;
+        d->Change(Tr("Изометрия"), [&](dw::Drawing& dr) {
+            for (dw::Sheet& sh : dr.sheets) {
+                if (sh.id != sheet) continue;
+                dw::View v;
+                v.id        = dr.Ids().Next();
+                v.model     = model;
+                v.direction = dw::ViewDirection::Iso;
+                v.scale     = sc;
+                v.at        = *spot - e.min * s;
+                v.hidden    = false;   // ГОСТ 2.305: an isometry without hidden lines
+                v.axes      = false;
+                sh.views.push_back(dw::MakeViewItem(v));
+                added = v.id;
+            }
+        });
+        d->selectedView = added;
+        return;
+    }
+    app.notes.Info(Tr("Изометрия не помещается на лист: возьмите формат больше или освободите место"));
+}
+
+/// Changes one view of the sheet shown (an undo step).
+void ChangeView(DrawingState& d, ObjectId id, const std::string& label, const std::function<void(dw::View&)>& change) {
+    const ObjectId sheet = d.Sheet().id;
+    d.Change(label, [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets)
+            if (s.id == sheet)
+                if (dw::Item* item = dw::FindViewItem(s, id))
+                    if (auto v = dw::ReadView(*item)) {
+                        change(*v);
+                        dw::WriteView(*item, *v);
+                    }
+    });
+}
+
+void DeleteView(DrawingState& d, ObjectId id) {
+    const ObjectId sheet = d.Sheet().id;
+    d.Change(Tr("Удалить вид"), [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets) {
+            if (s.id != sheet) continue;
+            std::erase_if(s.views, [&](const dw::Item& i) {
+                const auto v = dw::ReadView(i);
+                return v && v->id == id;
+            });
+            // Views in projection with it stay, on their own.
+            for (dw::Item& item : s.views)
+                if (auto v = dw::ReadView(item); v && v->parent == id) {
+                    v->parent = {};
+                    dw::WriteView(item, *v);
+                }
+        }
+    });
+    if (d.selectedView == id) d.selectedView = {};
+}
+
+/// The menu of a view (right click on it or on its row in the tree).
+void ViewMenu(DrawingState& d) {
+    if (!ImGui::BeginPopup("##view-menu")) return;
+    const auto views = dw::ViewsOf(d.Sheet());
+    const auto it = std::find_if(views.begin(), views.end(), [&](const dw::View& v) { return v.id == d.selectedView; });
+    if (it == views.end()) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const dw::View v = *it;
+    ImGui::TextDisabled("%s", ViewTitle(v).c_str());
+    ImGui::Separator();
+    if (ImGui::MenuItem(Tr("Невидимые линии"), nullptr, v.hidden))
+        ChangeView(d, v.id, Tr("Невидимые линии"), [](dw::View& x) { x.hidden = !x.hidden; });
+    if (ImGui::MenuItem(Tr("Осевые линии"), nullptr, v.axes))
+        ChangeView(d, v.id, Tr("Осевые линии"), [](dw::View& x) { x.axes = !x.axes; });
+    // The scale goes to the whole group in projection: the main view and the ones with it.
+    const ObjectId main = v.parent ? v.parent : v.id;
+    if (ImGui::BeginMenu(Tr("Масштаб"))) {
+        for (const dw::Scale& sc : dw::StandardScales()) {
+            if (sc.Value() > 20 || sc.Value() < 0.01) continue;   // the usual ones in the menu
+            if (!ImGui::MenuItem(dw::ScaleText(sc).c_str(), nullptr, sc == v.scale)) continue;
+            const ObjectId sheet = d.Sheet().id;
+            d.Change(Tr("Масштаб вида"), [&](dw::Drawing& dr) {
+                for (dw::Sheet& s : dr.sheets) {
+                    if (s.id != sheet) continue;
+                    std::optional<dw::View> head;
+                    if (dw::Item* item = dw::FindViewItem(s, main)) head = dw::ReadView(*item);
+                    for (dw::Item& item : s.views) {
+                        auto x = dw::ReadView(item);
+                        if (!x || (x->id != main && x->parent != main)) continue;
+                        // The ones in projection keep their place from the main view, scaled.
+                        if (head && x->id != main) x->at = head->at + (x->at - head->at) * (sc.Value() / x->scale.Value());
+                        x->scale = sc;
+                        dw::WriteView(item, *x);
+                    }
+                }
+            });
+        }
+        ImGui::EndMenu();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(Tr("Удалить вид"), "Delete")) DeleteView(d, v.id);
+    ImGui::EndPopup();
+}
+
+/// Dragging a view: it and the views in projection with it.
+struct ViewDrag {
+    ObjectId view;
+    Vec2     start;   ///< the sheet point grabbed
+    bool     lockX = false, lockY = false;   ///< a view in projection moves along its link only
+    std::vector<std::pair<ObjectId, Vec2>> from;   ///< the views moved and where they were
+    bool     moved = false;
+};
+
+ViewDrag& Drag() {
+    static ViewDrag drag;   // one sheet under the mouse at a time
+    return drag;
+}
+
+/// The positions of the dragged views, set without an undo step (one comes on release).
+void PlaceDragged(DrawingState& d, const ViewDrag& drag, Vec2 delta) {
+    dw::Sheet& s = d.Sheet();
+    for (const auto& [id, at] : drag.from)
+        if (dw::Item* item = dw::FindViewItem(s, id))
+            if (auto v = dw::ReadView(*item)) {
+                v->at = at + delta;
+                dw::WriteView(*item, *v);
+            }
 }
 
 // --- the tree -------------------------------------------------------------------
@@ -219,6 +550,11 @@ void RegisterDrawingActions(AppContext& app) {
                });
                d->zoom = 0;
            }});
+    a.Add({"drawing.standardViews", N_("Стандартные виды"), "ds-hidden-lines", 0,
+           N_("Главный вид, вид сверху и вид слева по детали чертежа (ГОСТ 2.305), в масштабе, который помещается на лист"), inDrawing,
+           [&app] { AddStandardViews(app); }, 0, N_("вид спереди сверху слева проекции")});
+    a.Add({"drawing.isoView", N_("Изометрия"), "ui-cube", 0, N_("Изометрия детали (ГОСТ 2.317) на свободном месте листа"), inDrawing,
+           [&app] { AddIsoView(app); }, 0, N_("аксонометрия вид")});
     a.Add({"file.exportPdf", N_("Экспорт в PDF"), "export", 0, N_("Все листы чертежа — страницами в натуральную величину, для печати и отправки"),
            inDrawing, [&app] { ExportDocument(app, ExportFormat::Pdf); }, 0, N_("пдф печать вывод")});
     a.Add({"drawing.removeSheet", N_("Удалить лист"), "ui-trash", 0, N_("Убрать текущий лист из чертежа (Ctrl+Z вернёт)"),
@@ -239,10 +575,10 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
     switch (app.shell.ribbonTab) {
         case RibbonTab::Model:   // «Виды»
             sink.BeginGroup(N_("Ассоциативные виды"));
-            sink.LargeLater("ds-hidden-lines", N_("Стандартные\nвиды"));
+            sink.Large("drawing.standardViews", N_("Стандартные\nвиды"));
             sink.LargeLater("ui-frame", N_("Проекционный\nвид"));
             sink.LargeLater("ui-arrow-left", N_("Вид по\nстрелке"));
-            sink.LargeLater("ui-cube", N_("Изометрия"));
+            sink.Large("drawing.isoView", N_("Изометрия"));
             sink.EndGroup();
             sink.BeginGroup(N_("Разрезы"));
             sink.LargeLater("section", N_("Разрез /\nсечение"));
@@ -302,11 +638,30 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         if (twice) app.Later([&app] { OpenSheetDialog(app); });
         y += ui.S(30);
         if (active) {
-            // What is on it: views and annotations come with the next steps of ADR-0012.
-            const std::size_t newer = sheet.views.size() + sheet.annotations.size();
-            const std::string what = newer > 0 ? Trf("Объектов из более новой версии: {}", newer) : std::string(Tr("Видов пока нет"));
-            TreeRow(ui, "##views", nullptr, what, x + ui.S(24), y, width - ui.S(24), false, true);
-            y += ui.S(30);
+            // Its views; what this version does not know is counted, kept as it is.
+            const std::vector<dw::View> views = dw::ViewsOf(sheet);
+            for (const dw::View& v : views) {
+                ImGui::PushID(static_cast<int>(v.id.value));
+                const bool picked = d.selectedView == v.id;
+                const float indent = ui.S(v.parent ? 40 : 24);
+                if (TreeRow(ui, "##view", v.direction == dw::ViewDirection::Iso ? "ui-cube" : "ui-frame", ViewTitle(v), x + indent, y,
+                            width - indent, picked, false))
+                    d.selectedView = v.id;
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                    d.selectedView = v.id;
+                    ImGui::OpenPopup("##view-menu");
+                }
+                y += ui.S(30);
+                ImGui::PopID();
+            }
+            const std::size_t newer = sheet.views.size() - views.size() + sheet.annotations.size();
+            if (newer > 0) {
+                TreeRow(ui, "##newer", nullptr, Trf("Объектов из более новой версии: {}", newer), x + ui.S(24), y, width - ui.S(24), false, true);
+                y += ui.S(30);
+            } else if (views.empty()) {
+                TreeRow(ui, "##views", nullptr, Tr("Видов пока нет"), x + ui.S(24), y, width - ui.S(24), false, true);
+                y += ui.S(30);
+            }
         }
         ImGui::PopID();
     }
@@ -318,7 +673,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         ImGui::SetCursorScreenPos({x + ui.S(6), y});
         ImGui::PushTextWrapPos(x + width);
         ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(c.textMuted));
-        ImGui::TextUnformatted(Tr("Нет. Откройте деталь или сборку и выберите «Создать чертёж» в меню «Файл»."));
+        ImGui::TextUnformatted(Tr("Нет. «Стандартные виды» на вкладке «Виды» предложат выбрать деталь."));
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
     }
@@ -330,6 +685,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         y += ui.S(30);
         ImGui::PopID();
     }
+    ViewMenu(d);
     ImGui::SetCursorScreenPos({pos.x, y});
     ImGui::Dummy({1, ui.S(8)});
     EndArea();
@@ -349,12 +705,16 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     ui::Ui& ui = app.ui;
     const ui::ThemeColors& c = ui.C();
     DrawingState& d = *session.drawing;
+    DrawingViews& views = DrawingViews::Of(d);
+    views.Poll();
     ImDrawList* dl = BeginArea("##drawing-sheet", pos, size, c.sheetDesk);
     const dw::Sheet& sheet = d.Sheet();
-    const dw::SheetLayout layout = dw::LayoutSheet(sheet, d.SheetNumber(), static_cast<int>(d.drawing.sheets.size()));
+    const dw::SheetLayout layout =
+        dw::LayoutSheetWithViews(sheet, d.SheetNumber(), static_cast<int>(d.drawing.sheets.size()), LinesSource(app, d));
     if (d.zoom <= 0) FitInto(d, layout, size, ui.S(24), ui.S(36));
 
-    // The canvas takes the mouse: wheel — zoom about the cursor, any button dragged — move the sheet.
+    // The canvas takes the mouse: wheel — zoom about the cursor; a view dragged
+    // with the left button — moved; the sheet dragged with any button — moved.
     ImGui::SetCursorScreenPos(pos);
     ImGui::InvisibleButton("##sheet-canvas", size,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
@@ -370,10 +730,74 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         d.center = d.center + (under - now);
         view.center = d.center;
     }
-    if (ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+
+    // The view under the cursor: the last drawn on top.
+    std::vector<dw::View> onSheet = dw::ViewsOf(sheet);
+    std::vector<Box2> boxes;
+    for (const dw::View& v : onSheet) boxes.push_back(BoxOfView(app, d, v));
+    const auto viewAt = [&](Vec2 p) -> ObjectId {
+        for (std::size_t i = onSheet.size(); i-- > 0;) {
+            const Box2& b = boxes[i];
+            if (p.x >= b.min.x - 2 && p.x <= b.max.x + 2 && p.y >= b.min.y - 2 && p.y <= b.max.y + 2) return onSheet[i].id;
+        }
+        return {};
+    };
+    ViewDrag& drag = Drag();
+    if (hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+        const Vec2 at = view.ToSheet(io.MousePos);
+        d.selectedView = viewAt(at);
+        drag = {};
+        if (d.selectedView && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            const auto v = std::find_if(onSheet.begin(), onSheet.end(), [&](const dw::View& x) { return x.id == d.selectedView; });
+            drag.view  = v->id;
+            drag.start = at;
+            // A view in projection moves along its link with the main one only (ГОСТ 2.305).
+            if (v->parent) {
+                drag.lockX = v->direction == dw::ViewDirection::Top || v->direction == dw::ViewDirection::Bottom;
+                drag.lockY = !drag.lockX;
+            }
+            for (const dw::View& x : onSheet)
+                if (x.id == v->id || (!v->parent && x.parent == v->id)) drag.from.push_back({x.id, x.at});
+        }
+    }
+    if (drag.view && ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        Vec2 delta = view.ToSheet(io.MousePos) - drag.start;
+        if (drag.lockX) delta.x = 0;
+        if (drag.lockY) delta.y = 0;
+        if (std::abs(delta.x) + std::abs(delta.y) > 0) drag.moved = true;
+        PlaceDragged(d, drag, delta);
+    } else if (ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
         d.center = d.center + Vec2{-io.MouseDelta.x / d.zoom, io.MouseDelta.y / d.zoom};
         view.center = d.center;
     }
+    if (drag.view && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        if (drag.moved) {
+            // One undo step for the whole move: back where they were, then the change.
+            std::vector<std::pair<ObjectId, Vec2>> to;
+            for (const auto& [id, at] : drag.from)
+                for (const dw::View& v : dw::ViewsOf(d.Sheet()))
+                    if (v.id == id) to.push_back({id, v.at});
+            PlaceDragged(d, drag, {0, 0});
+            const ObjectId sheetId = d.Sheet().id;
+            d.Change(Tr("Сдвинуть вид"), [&](dw::Drawing& dr) {
+                for (dw::Sheet& s : dr.sheets)
+                    if (s.id == sheetId)
+                        for (const auto& [id, at] : to)
+                            if (dw::Item* item = dw::FindViewItem(s, id))
+                                if (auto v = dw::ReadView(*item)) {
+                                    v->at = at;
+                                    dw::WriteView(*item, *v);
+                                }
+            });
+        }
+        drag = {};
+    }
+    // Right click on a view (not a drag of the sheet): its menu.
+    if (hovered && d.selectedView && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+        ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0 && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).y == 0)
+        ImGui::OpenPopup("##view-menu");
+    if (d.selectedView && (hovered || ImGui::IsWindowFocused()) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
+        DeleteView(d, d.selectedView);
     // Double click on the title block: fill it in (as in КОМПАС).
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         const Vec2 at = view.ToSheet(io.MousePos);
@@ -383,19 +807,41 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     }
 
     ImGui::PushClipRect(pos, {pos.x + size.x, pos.y + size.y}, true);
-    DrawSheet(dl, ui, view, layout);
+    // Drawn from the layout of this frame's start; a view being dragged is drawn where it is now.
+    const dw::SheetLayout now = drag.moved ? dw::LayoutSheetWithViews(d.Sheet(), d.SheetNumber(), static_cast<int>(d.drawing.sheets.size()),
+                                                                       LinesSource(app, d))
+                                           : layout;
+    DrawSheet(dl, ui, view, now);
+    // The views: the picked one framed; one without lines says why.
+    for (const dw::View& v : dw::ViewsOf(d.Sheet())) {
+        const Box2 b = BoxOfView(app, d, v);
+        if (v.id == d.selectedView) {
+            const ImVec2 a = view.ToScreen({b.min.x - 2, b.max.y + 2}), z = view.ToScreen({b.max.x + 2, b.min.y - 2});
+            dl->AddRect(a, z, ui::ToU32(c.accent), ui.S(2), 0, ui.S(1.5f));
+        }
+        if (!views.Lines(app.workspace, d, v)) {
+            const std::string why = views.Problem(v.id);
+            const ImVec2 at = view.ToScreen({(b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2});
+            const ImVec2 ts = ui.fonts.body->CalcTextSizeA(ui.S(12), FLT_MAX, 0, why.c_str());
+            dl->AddText(ui.fonts.body, ui.S(12), {at.x - ts.x / 2, at.y - ts.y / 2}, ui::ToU32(c.textMuted), why.c_str());
+        }
+    }
     ImGui::PopClipRect();
 
-    // A note at the top, as over the part's view: what this sheet can do now.
-    const std::size_t newer = sheet.views.size() + sheet.annotations.size();
-    const std::string note = newer > 0 ? Trf("На листе есть виды из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer)
-                                       : std::string(Tr("Виды из модели и размеры — в следующих версиях. Сейчас: формат листа и основная "
-                                                        "надпись (двойной щелчок по ней)"));
-    const ImVec2 ns = ui.fonts.body->CalcTextSizeA(ui.S(12), FLT_MAX, 0, note.c_str());
-    const ImVec2 n0{pos.x + (size.x - ns.x) / 2 - ui.S(14), pos.y + ui.S(12)};
-    dl->AddRectFilled(n0, {n0.x + ns.x + ui.S(28), n0.y + ns.y + ui.S(14)}, ui::ToU32(c.floatingButton), ui.S(14));
-    dl->AddText(ui.fonts.body, ui.S(12), {n0.x + ui.S(14), n0.y + ui.S(7)}, ui::ToU32(c.textSecondary), note.c_str());
+    // A note at the top, as over the part's view: what to do now.
+    const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size();
+    std::string note;
+    if (newer > 0) note = Trf("На листе есть объекты из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer);
+    else if (onSheet.empty()) note = Tr("«Стандартные виды» на вкладке «Виды» — главный вид, сверху и слева по детали. Двойной щелчок по надписи — заполнить её");
+    else if (views.Busy()) note = Tr("Виды считаются…");
+    if (!note.empty()) {
+        const ImVec2 ns = ui.fonts.body->CalcTextSizeA(ui.S(12), FLT_MAX, 0, note.c_str());
+        const ImVec2 n0{pos.x + (size.x - ns.x) / 2 - ui.S(14), pos.y + ui.S(12)};
+        dl->AddRectFilled(n0, {n0.x + ns.x + ui.S(28), n0.y + ns.y + ui.S(14)}, ui::ToU32(c.floatingButton), ui.S(14));
+        dl->AddText(ui.fonts.body, ui.S(12), {n0.x + ui.S(14), n0.y + ui.S(7)}, ui::ToU32(c.textSecondary), note.c_str());
+    }
 
+    ViewMenu(d);
     // The whole sheet again: a button in the corner, as «Домой» over the model.
     ImGui::SetCursorScreenPos({pos.x + size.x - ui.S(48), pos.y + ui.S(12)});
     if (ui::IconButton(ui, "##sheet-fit", "view-fit", 36, 20, Tr("Лист целиком (F)"))) d.zoom = 0;

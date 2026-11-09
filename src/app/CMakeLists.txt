@@ -73,6 +73,8 @@ set(BZ_APP_SOURCES
     shell/HomeScreen.cpp
     shell/LeftPanels.cpp
     shell/ModuleWindows.cpp
+    drawing/DrawingEditor.cpp
+    drawing/DrawingState.cpp
     shell/Ribbon.cpp
     shell/Splash.cpp
     shell/TouchpadSettings.cpp
@@ -115,7 +117,7 @@ if(ANDROID)
     add_library(breezecad SHARED android/AndroidMain.cpp android/AndroidInput.cpp Application_android.cpp Application_mobile.cpp shell/Splash_android.cpp
                 ${BZ_APP_SOURCES})
     target_link_libraries(breezecad PRIVATE
-        bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
+        bz::core bz::document bz::drawing bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
         bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg android EGL GLESv3 log)
     # The glue's entry point is called by the system, not by our code: keep it.
     target_link_options(breezecad PRIVATE "-uANativeActivity_onCreate")
@@ -139,7 +141,7 @@ if(IOS)
     add_executable(breezecad ios/IosMain.mm Application_mobile.cpp Application_ios.mm shell/Splash_android.cpp ${BZ_APP_SOURCES})
     set_source_files_properties(ios/IosMain.mm Application_ios.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(breezecad PRIVATE
-        bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
+        bz::core bz::document bz::drawing bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
         bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg bz::occt_visual
         # OCCT is static on iOS: the system frameworks its toolkits use come here.
         "-framework Foundation" "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreText"
@@ -163,7 +165,7 @@ if(WIN32)
     endif()
 endif()
 target_link_libraries(breezecad PRIVATE
-    bz::core bz::document bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
+    bz::core bz::document bz::drawing bz::assembly bz::kernel bz::modules bz::render bz::ui bz::platform
     bz::imgui bz::miniz bz::json bz::qrcodegen lunasvg::lunasvg glfw OpenGL::GL)
 bz_set_warnings(breezecad)
 

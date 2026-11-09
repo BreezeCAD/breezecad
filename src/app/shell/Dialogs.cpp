@@ -13,6 +13,7 @@
 #include "app/ShortcutPresets.h"
 #include "app/Backgrounds.h"
 #include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/shell/Shell.h"
 #include "app/shell/TouchpadSettings.h"
 #include "app/mobile/MobileLayout.h"
@@ -2083,6 +2084,7 @@ void DrawDialogs(AppContext& app) {
     DrawChangeDialog(app);
     DrawHandoff(app);
     DrawModulePanels(app);
+    DrawDrawingDialogs(app);
 
     // --- Save changes? ---
     bool unsavedOpen = app.shell.closeRequest.has_value();

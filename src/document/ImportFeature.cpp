@@ -113,16 +113,17 @@ Status ImportFeature::LoadFields(const Json& in) {
         !json_io::ReadMember(in, "originalTriangles", f.originalTriangles))
         return Error{"Импортированное тело: повреждены сведения об исходном файле"};
 
-    // The geometry itself: a damaged block keeps the feature (and the rest of
-    // the part) loadable; the rebuild then says what is wrong.
+    // The geometry itself. A damaged block is an error: the loader then keeps
+    // the whole feature verbatim (UnknownFeature), the rest of the part opens.
     std::string text;
     std::uint64_t size = 0;
     std::uint32_t crc = 0;
     std::string bytes;
-    const bool readable = json_io::ReadMember(in, "data", text) && json_io::ReadMember(in, "dataSize", size) &&
-                          json_io::ReadMember(in, "dataCrc32", crc) && DecodeBase64(text, bytes);
-    f.damaged = !readable || bytes.size() != size || Crc32(bytes) != crc || bytes.empty();
-    if (!f.damaged) f.data = std::make_shared<const std::string>(std::move(bytes));
+    if (!in.contains("data") || !json_io::ReadMember(in, "data", text) || !json_io::ReadMember(in, "dataSize", size) ||
+        !json_io::ReadMember(in, "dataCrc32", crc) || !DecodeBase64(text, bytes) || bytes.empty() || bytes.size() != size ||
+        Crc32(bytes) != crc)
+        return Error{"данные импортированного тела повреждены — обновите его из исходного файла"};
+    f.data = std::make_shared<const std::string>(std::move(bytes));
 
     kind = f.kind;
     source = std::move(f.source);
@@ -132,7 +133,6 @@ Status ImportFeature::LoadFields(const Json& in) {
     triangles = f.triangles;
     originalTriangles = f.originalTriangles;
     data = std::move(f.data);
-    damaged = f.damaged;
     return Status::Ok();
 }
 

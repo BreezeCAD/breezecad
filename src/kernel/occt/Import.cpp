@@ -820,7 +820,6 @@ Expected<ImportedSummary> SummarizeImported(const doc::ImportFeature& feature) {
 namespace occt {
 
 Expected<std::vector<TopoDS_Shape>> DecodeImported(const doc::ImportFeature& feature) {
-    if (feature.damaged) return Error{"Данные импортированного тела в файле повреждены — обновите его из исходного файла"};
     if (!feature.data || feature.data->empty()) return Error{"Импортированное тело пусто"};
     std::string_view tag;
     Expected<std::string> raw = Unpack(*feature.data, tag);

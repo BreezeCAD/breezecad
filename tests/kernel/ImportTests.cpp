@@ -189,7 +189,6 @@ TEST_CASE("STEP cube imports as one solid of the right volume and survives save 
     CHECK(again.Volume() == doctest::Approx(8000.0).epsilon(1e-6));
     const auto* back = dynamic_cast<const doc::ImportFeature*>(loaded->Features().front().get());
     REQUIRE(back);
-    CHECK_FALSE(back->damaged);
     CHECK(back->source == f.source);
 }
 
@@ -388,7 +387,7 @@ TEST_CASE("broken files give a clear message, not a crash") {
     }
 }
 
-TEST_CASE("a damaged data block in the part file keeps the part openable") {
+TEST_CASE("a damaged data block in the part file keeps the part openable and the bytes unchanged") {
     const fs::path path = TempFile("cube-damaged.step");
     WriteStep(BRepPrimAPI_MakeBox(20, 20, 20).Shape(), path);
     doc::Document d;
@@ -398,24 +397,34 @@ TEST_CASE("a damaged data block in the part file keeps the part openable") {
     AddExtrude(d, sk.id, "5");
 
     nlohmann::json json = nlohmann::json::parse(doc::DocumentToJson(d));
-    bool changed = false;
+    std::string damagedData;
     for (auto& f : json["features"])
         if (f.value("type", "") == "importedBody") {
             std::string& data = f["data"].get_ref<std::string&>();
             data[data.size() / 2] = data[data.size() / 2] == 'A' ? 'B' : 'A';
-            changed = true;
+            damagedData = data;
         }
-    REQUIRE(changed);
-    Expected<doc::Document> loaded = doc::DocumentFromJson(json.dump());
+    REQUIRE_FALSE(damagedData.empty());
+    doc::LoadReport report;
+    Expected<doc::Document> loaded = doc::DocumentFromJson(json.dump(), &report);
     REQUIRE(loaded);
+    CHECK_FALSE(report.warnings.empty());
     kernel::Model m;
     m.Rebuild(*loaded);
-    const auto* f = dynamic_cast<const doc::ImportFeature*>(loaded->Features().front().get());
-    REQUIRE(f);
-    CHECK(f->damaged);
-    CHECK(f->status.state == FeatureState::Error);
-    CHECK(f->status.message.find("повреждены") != std::string::npos);
+    // Kept the way the container keeps any operation it cannot read: as it is
+    // in the file, not built, with the reason.
+    const doc::Feature& f = *loaded->Features().front();
+    CHECK(f.Type() == doc::ImportFeature::kType);
+    CHECK(dynamic_cast<const doc::ImportFeature*>(&f) == nullptr);
+    CHECK(f.status.state == FeatureState::Error);
+    CHECK(f.status.message.find("повреждены") != std::string::npos);
     CHECK(m.Bodies().size() == 1);   // the rest of the part is still there
+    // Saved again: the damaged bytes go back unchanged (they may still be rescued).
+    const nlohmann::json again = nlohmann::json::parse(doc::DocumentToJson(*loaded));
+    bool same = false;
+    for (const auto& g : again["features"])
+        if (g.value("type", "") == "importedBody") same = g.value("data", "") == damagedData;
+    CHECK(same);
 }
 
 TEST_CASE("an import can be cancelled") {
@@ -740,5 +749,73 @@ TEST_CASE("an imported part saves to .bzc and opens elsewhere without the source
         const auto* f = dynamic_cast<const doc::ImportFeature*>(loaded->Features().front().get());
         REQUIRE(f);
         CHECK(fs::file_size(part) < f->data->size() * 2 + 64 * 1024);
+    }
+}
+
+// --- Golden files ----------------------------------------------------------------
+// Parts with imported bodies saved by the first version of the format. They
+// must always open with the same geometry: the data block (tags BZB1 and
+// BZM1, BinTools version 3) is part of the file format. Never delete them;
+// a new block version gets new files next to these.
+
+namespace {
+const fs::path kGolden = fs::path(BZ_SOURCE_DIR) / "tests" / "data" / "import" / "v1";   // like tests/data/drawings/v1
+
+/// The parts the golden files were made from.
+doc::Document GoldenStep() {
+    const fs::path step = TempFile("golden.step");
+    WriteStep(BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(10, 30).Shape(), BRepPrimAPI_MakeCylinder(4, 30).Shape()).Shape(), step,
+              "INCH");   // the file says inches: 10 × 30 inch, 4 inch hole
+    doc::Document d;
+    AddImported(d, Imported(step));
+    return d;
+}
+doc::Document GoldenStl() {
+    const fs::path stl = TempFile("golden.stl");
+    WriteBinaryStl(stl, Sphere(10, 12, 16));
+    doc::Document d;
+    AddImported(d, Imported(stl));
+    return d;
+}
+} // namespace
+
+TEST_CASE("write the import golden files" * doctest::skip()) {   // run with --no-skip -tc="write the import*"
+    fs::create_directories(kGolden);
+    REQUIRE(doc::SaveBzc(GoldenStep(), kGolden / "step-inch-cylinder.bzc", "golden"));
+    REQUIRE(doc::SaveBzc(GoldenStl(), kGolden / "stl-sphere.bzc", "golden"));
+}
+
+TEST_CASE("golden files of imported bodies (format v1) open with the same geometry") {
+    SUBCASE("STEP in inches: exact solid") {
+        Expected<doc::Document> d = doc::LoadBzc(kGolden / "step-inch-cylinder.bzc");
+        REQUIRE(d);
+        const auto* f = dynamic_cast<const doc::ImportFeature*>(d->Features().front().get());
+        REQUIRE(f);
+        CHECK(f->kind == doc::ImportKind::Brep);
+        CHECK(f->sourceUnit == "INCH");
+        CHECK(f->data->substr(0, 4) == "BZB1");
+        kernel::Model m;
+        m.Rebuild(*d);
+        CHECK(f->status.state == FeatureState::Ok);
+        REQUIRE(m.Bodies().size() == 1);
+        CHECK(m.Volume() == doctest::Approx(std::numbers::pi * (100 - 16) * 30 * 25.4 * 25.4 * 25.4).epsilon(1e-6));
+    }
+    SUBCASE("STL: mesh") {
+        Expected<doc::Document> d = doc::LoadBzc(kGolden / "stl-sphere.bzc");
+        REQUIRE(d);
+        const auto* f = dynamic_cast<const doc::ImportFeature*>(d->Features().front().get());
+        REQUIRE(f);
+        CHECK(f->kind == doc::ImportKind::Mesh);
+        CHECK(f->data->substr(0, 4) == "BZM1");
+        kernel::Model m;
+        m.Rebuild(*d);
+        CHECK(f->status.state == FeatureState::Ok);
+        REQUIRE(m.Bodies().size() == 1);
+        // The same as the part the file was made from, to the last digit.
+        kernel::Model fresh;
+        doc::Document made = GoldenStl();
+        fresh.Rebuild(made);
+        CHECK(m.Volume() == doctest::Approx(fresh.Volume()).epsilon(1e-12));
+        CHECK(f->triangles == 368);   // 2·12·16, minus 16 slivers at one pole
     }
 }

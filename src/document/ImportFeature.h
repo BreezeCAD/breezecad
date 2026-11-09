@@ -10,6 +10,12 @@
 // JSON) and checks it was not damaged (CRC-32). The block is shared between
 // copies of the document (undo, background rebuild): it never changes after
 // import, a new import makes a new block.
+//
+// File format: a feature of the part document in the container shared by
+// .bzc, .bza and .bzd (document/BzcFile.h) — the container is not changed.
+// Keys are only ever added. A block that fails its check makes LoadFields
+// fail, so the loader keeps the feature as it is in the file (UnknownFeature:
+// written back unchanged, not built) — the damaged bytes are never lost.
 
 #include "document/Feature.h"
 
@@ -38,9 +44,6 @@ public:
 
     /// Encoded geometry (kernel/Import). Null or empty: nothing imported.
     std::shared_ptr<const std::string> data;
-    /// Set on loading when the stored block failed its check; the kernel
-    /// then reports the feature broken instead of reading garbage.
-    bool damaged = false;
 
     std::string_view Type() const override { return kType; }
     void SaveFields(nlohmann::json& out) const override;

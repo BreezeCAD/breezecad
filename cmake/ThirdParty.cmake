@@ -32,6 +32,13 @@ target_include_directories(bz_monocypher SYSTEM PUBLIC ${BZ_THIRD_PARTY}/monocyp
 set_target_properties(bz_monocypher PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(bz::monocypher ALIAS bz_monocypher)
 
+# QR Code generator (Project Nayuki, MIT) — the QR of «Продолжить на
+# устройстве» drawn on the computer's screen.
+add_library(bz_qrcodegen STATIC ${BZ_THIRD_PARTY}/qrcodegen/qrcodegen.cpp)
+target_include_directories(bz_qrcodegen SYSTEM PUBLIC ${BZ_THIRD_PARTY}/qrcodegen)
+set_target_properties(bz_qrcodegen PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(bz::qrcodegen ALIAS bz_qrcodegen)
+
 # doctest — unit tests.
 add_library(bz_doctest INTERFACE)
 target_include_directories(bz_doctest SYSTEM INTERFACE ${BZ_THIRD_PARTY}/doctest)

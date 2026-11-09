@@ -87,8 +87,8 @@ add_executable(bz_tests
     sketch/StressTests.cpp
     sketch/TrimTests.cpp)
 target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
-target_link_libraries(bz_tests PRIVATE bz::occt_exchange)   # ImportTests write their own STEP files
 add_dependencies(bz_tests bz_example_module bz_example_module_fail)
+target_link_libraries(bz_tests PRIVATE bz::occt_exchange)   # ImportTests write their own STEP files
 if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop only (GLFW)
     # The assembly as the program runs it (solving, adaptivity, undo): its
     # state and the part sessions in it, without a window.

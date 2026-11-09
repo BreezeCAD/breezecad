@@ -8,6 +8,7 @@ add_library(bz_drawing STATIC
     DrawingView.cpp
     Pdf.cpp
     SheetLayout.cpp
+    Specification.cpp
     TrueType.cpp
     ViewPlacement.cpp)
 target_link_libraries(bz_drawing

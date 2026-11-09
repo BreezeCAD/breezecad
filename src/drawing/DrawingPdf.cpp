@@ -20,14 +20,12 @@ double EmOf(const Label& label, const TrueTypeFont& font) {
     return label.height / 0.72 * font.unitsPerEm / std::max(1, font.ascent - font.descent);
 }
 
-std::string TitleOf(const Drawing& drawing) {
+std::string TitleOf(const Drawing& drawing, const SheetContent& content) {
     if (drawing.sheets.empty()) return {};
-    const auto& fields = drawing.sheets.front().title.fields;
-    const auto get = [&](const char* key) {
-        const auto it = fields.find(key);
-        return it == fields.end() ? std::string{} : it->second;
-    };
-    const std::string designation = get(field::kDesignation), name = get(field::kName);
+    const Sheet& first = drawing.sheets.front();
+    Fields fields = content.fields ? content.fields(first) : Fields{};
+    for (const auto& [key, value] : first.title.fields) fields[key] = value;   // the user's win
+    const std::string designation = fields[field::kDesignation], name = fields[field::kName];
     return designation.empty() ? name : name.empty() ? designation : designation + " " + name;
 }
 
@@ -43,11 +41,10 @@ std::vector<double> DashOf(LineStyle style) {
 }
 
 std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont& font, std::string_view producer,
-                                     const ViewLinesSource& views) {
+                                     const SheetContent& content) {
     PdfWriter pdf(font, "BreezeCADSans");
-    const int count = static_cast<int>(drawing.sheets.size());
-    for (int i = 0; i < count; ++i) {
-        const SheetLayout l = LayoutSheetWithViews(drawing.sheets[static_cast<std::size_t>(i)], i + 1, count, views);
+    for (const Page& page : PagesOf(drawing, content)) {
+        const SheetLayout l = LayoutPage(drawing, page, content);
         pdf.BeginPage(l.width, l.height);
         for (const Stroke& s : l.strokes) pdf.Line(s.a, s.b, s.weight == LineWeight::Thick ? kThick : kThin);
         for (const Polyline& p : l.polylines) pdf.Polyline(p.points, p.weight == LineWeight::Thick ? kThick : kThin, DashOf(p.style));
@@ -63,12 +60,12 @@ std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont&
             pdf.Text(label.text, at, em, label.rotation, squeeze);
         }
     }
-    return pdf.Finish(TitleOf(drawing), producer);
+    return pdf.Finish(TitleOf(drawing, content), producer);
 }
 
 Status ExportDrawingPdf(const Drawing& drawing, const std::filesystem::path& target, const TrueTypeFont& font,
-                        std::string_view producer, const ViewLinesSource& views) {
-    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer, views);
+                        std::string_view producer, const SheetContent& content) {
+    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer, content);
     std::filesystem::path temp = target;
     temp += ".part";
     {

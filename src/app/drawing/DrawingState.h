@@ -9,10 +9,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace bz::app {
+
+struct DrawingViewsState;   // app/drawing/DrawingViews.h
 
 class DrawingState {
 public:
@@ -46,6 +49,9 @@ public:
     // --- the camera of the sheet ------------------------------------------------
     Vec2   center;          ///< sheet point in the middle of the canvas, mm
     double zoom = 0;        ///< pixels per mm; 0 — fit the sheet on the next frame
+
+    /// The views of models: their computed lines, the one picked (ViewsOf() makes it).
+    std::shared_ptr<DrawingViewsState> views;
 
     /// Model paths for a drawing written to `target` (was at `from`, empty
     /// before its first save): relative to the new folder, '/' between folders.

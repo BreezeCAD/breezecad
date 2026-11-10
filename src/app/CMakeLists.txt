@@ -75,6 +75,8 @@ set(BZ_APP_SOURCES
     shell/ModuleWindows.cpp
     drawing/DrawingEditor.cpp
     drawing/DrawingState.cpp
+    drawing/DrawingViews.cpp
+    drawing/DrawingViewsUi.cpp
     shell/Ribbon.cpp
     shell/Splash.cpp
     shell/TouchpadSettings.cpp

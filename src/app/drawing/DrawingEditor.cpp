@@ -4,9 +4,11 @@
 #include "app/Operations.h"
 #include "app/Session.h"
 #include "app/Workspace.h"
+#include "app/drawing/DrawingViewsUi.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "core/PathText.h"
+#include "drawing/ModelView.h"
 #include "drawing/SheetLayout.h"
 #include "ui/Ui.h"
 #include "ui/Widgets.h"
@@ -233,13 +235,14 @@ void RegisterDrawingActions(AppContext& app) {
                });
                d->zoom = 0;
            }});
+    RegisterDrawingViewActions(app);   // views of the model (DrawingViewsUi)
 }
 
 void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
     switch (app.shell.ribbonTab) {
         case RibbonTab::Model:   // «Виды»
             sink.BeginGroup(N_("Ассоциативные виды"));
-            sink.LargeLater("ds-hidden-lines", N_("Стандартные\nвиды"));
+            sink.Large("drawing.standardViews", N_("Стандартные\nвиды"));
             sink.LargeLater("ui-frame", N_("Проекционный\nвид"));
             sink.LargeLater("ui-arrow-left", N_("Вид по\nстрелке"));
             sink.LargeLater("ui-cube", N_("Изометрия"));
@@ -302,11 +305,21 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         if (twice) app.Later([&app] { OpenSheetDialog(app); });
         y += ui.S(30);
         if (active) {
-            // What is on it: views and annotations come with the next steps of ADR-0012.
-            const std::size_t newer = sheet.views.size() + sheet.annotations.size();
-            const std::string what = newer > 0 ? Trf("Объектов из более новой версии: {}", newer) : std::string(Tr("Видов пока нет"));
-            TreeRow(ui, "##views", nullptr, what, x + ui.S(24), y, width - ui.S(24), false, true);
-            y += ui.S(30);
+            // What is on it: the views of the model (DrawingViewsUi), then what a newer version put there.
+            const std::vector<ViewRow> views = SheetViewRows(d);
+            for (const ViewRow& row : views) {
+                ImGui::PushID(static_cast<int>(row.id.value));
+                if (TreeRow(ui, "##view", "ds-hidden-lines", row.title, x + ui.S(24), y, width - ui.S(24), row.selected, false))
+                    SelectView(d, row.id);
+                ImGui::PopID();
+                y += ui.S(30);
+            }
+            const std::size_t newer = dw::UnknownItemCount(sheet);
+            if (newer > 0 || views.empty()) {
+                const std::string what = newer > 0 ? Trf("Объектов из более новой версии: {}", newer) : std::string(Tr("Видов пока нет"));
+                TreeRow(ui, "##views", nullptr, what, x + ui.S(24), y, width - ui.S(24), false, true);
+                y += ui.S(30);
+            }
         }
         ImGui::PopID();
     }
@@ -370,7 +383,8 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         d.center = d.center + (under - now);
         view.center = d.center;
     }
-    if (ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+    const bool holdsView = SheetViewsInput(app, session, {view.middle, view.center, view.zoom}, hovered);   // a view dragged: not the sheet
+    if (!holdsView && ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
         d.center = d.center + Vec2{-io.MouseDelta.x / d.zoom, io.MouseDelta.y / d.zoom};
         view.center = d.center;
     }
@@ -384,13 +398,13 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
 
     ImGui::PushClipRect(pos, {pos.x + size.x, pos.y + size.y}, true);
     DrawSheet(dl, ui, view, layout);
+    DrawSheetViews(app, session, dl, {view.middle, view.center, view.zoom});
     ImGui::PopClipRect();
 
     // A note at the top, as over the part's view: what this sheet can do now.
-    const std::size_t newer = sheet.views.size() + sheet.annotations.size();
+    const std::size_t newer = dw::UnknownItemCount(d.Sheet());
     const std::string note = newer > 0 ? Trf("На листе есть виды из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer)
-                                       : std::string(Tr("Виды из модели и размеры — в следующих версиях. Сейчас: формат листа и основная "
-                                                        "надпись (двойной щелчок по ней)"));
+                                       : SheetViewsNote(d);
     const ImVec2 ns = ui.fonts.body->CalcTextSizeA(ui.S(12), FLT_MAX, 0, note.c_str());
     const ImVec2 n0{pos.x + (size.x - ns.x) / 2 - ui.S(14), pos.y + ui.S(12)};
     dl->AddRectFilled(n0, {n0.x + ns.x + ui.S(28), n0.y + ns.y + ui.S(14)}, ui::ToU32(c.floatingButton), ui.S(14));

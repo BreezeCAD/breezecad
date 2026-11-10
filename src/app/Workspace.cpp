@@ -6,6 +6,7 @@
 #include "app/Notifications.h"
 #include "app/Settings.h"
 #include "app/assembly/InPlace.h"
+#include "app/drawing/DrawingViews.h"
 #include "core/I18n.h"
 #include "core/Log.h"
 #include "core/Monitor.h"
@@ -46,7 +47,8 @@ const Expected<drawing::TrueTypeFont>& PdfFont() {
     return font;
 }
 
-bool ExportPdf(const Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
+bool ExportPdf(const Session& session, const OpenSessions& open, const std::filesystem::path& target, Notifications& notes,
+               std::string* error) {
     const auto fail = [&](const std::string& message) {
         if (error) *error = message;
         notes.Error(Tr(message));
@@ -54,7 +56,8 @@ bool ExportPdf(const Session& session, const std::filesystem::path& target, Noti
     };
     const Expected<drawing::TrueTypeFont>& font = PdfFont();
     if (!font) return fail(font.GetError().message);
-    const Status status = drawing::ExportDrawingPdf(session.drawing->drawing, target, *font, std::format("BreezeCAD {}", Version()));
+    const drawing::ViewImages& views = DrawingViewImages(*session.drawing, &open);   // the model views, up to date
+    const Status status = drawing::ExportDrawingPdf(session.drawing->drawing, target, *font, std::format("BreezeCAD {}", Version()), &views);
     if (!status) return fail(status.GetError().message);
     if (!platform::FileWritten(target)) {
         const std::string message = Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));
@@ -391,7 +394,7 @@ bool Workspace::ExportTo(Session& session, ExportFormat format, const std::files
         notes.Info(Tr(empty));
         return false;
     }
-    if (format == ExportFormat::Pdf) return ExportPdf(session, target, notes, error);
+    if (format == ExportFormat::Pdf) return ExportPdf(session, sessions, target, notes, error);
     // A long export (a threaded part as STEP on a phone) is work, not a hang: no hang
     // report, and on Android the watchdog does not offer to close the app meanwhile.
     const mon::Waiting waiting;

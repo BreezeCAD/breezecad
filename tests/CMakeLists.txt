@@ -95,9 +95,11 @@ if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop o
     # The assembly as the program runs it (solving, adaptivity, undo): its
     # state and the part sessions in it, without a window.
     target_sources(bz_tests PRIVATE app/AssemblyAdaptTests.cpp app/ChangeQueueTests.cpp app/DrawingSessionTests.cpp
+        app/DrawingViewTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/AssemblyState.cpp
         ${PROJECT_SOURCE_DIR}/src/app/Session.cpp
         ${PROJECT_SOURCE_DIR}/src/app/drawing/DrawingState.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/drawing/DrawingViews.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchRepair.cpp
         app/SketchSnapTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchPick.cpp

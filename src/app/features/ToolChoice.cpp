@@ -78,6 +78,7 @@ int ToolChoice(AppContext& app, const char* id, const char* title, std::span<con
         // The mockup 8a: bordered squares; the chosen one tinted with an accent border; one that
         // cannot be chosen now pale (colour icons are not tinted by ImGui, so drawn by hand).
         const bool clicked = ImGui::InvisibleButton("##choice", {button, button});
+        if (ui::probeName) ui::probeName("choice", std::string(id) + "|" + items[i].label);
         const bool hovered = ImGui::IsItemHovered();
         const ui::ThemeColors& c = ui.C();
         const ImVec2 b{at.x + button, at.y + button};

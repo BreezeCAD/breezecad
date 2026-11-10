@@ -6,6 +6,7 @@
 #include "platform/OpenFiles.h"
 #include "core/Monitor.h"
 #include "app/Operations.h"
+#include "app/testing/UiProbe.h"
 #include "app/shell/Shell.h"
 #include "app/shell/FilePreviews.h"
 #include "app/shell/Splash.h"
@@ -386,7 +387,8 @@ int Application::Run() {
             // A message on screen wakes the loop when it starts to fade out.
             const double wait = std::min(WaitsForBackground() ? 1.0 / 30.0 : 1.0,
                                          myNotes.SecondsToNextChange(platform::Window::Time()) + 0.001);
-            platform::Window::WaitEvents(wait);
+            // The test bench asks through files: look often while it is on.
+            platform::Window::WaitEvents(probe::Enabled() ? std::min(wait, 0.02) : wait);
         }
         const double now = platform::Window::Time();
 #if defined(BZ_MOBILE)
@@ -412,6 +414,12 @@ int Application::Run() {
             myFramesToDraw = std::max(myFramesToDraw, 3);
         }
         PollShotRequest();
+        if (probe::Enabled()) {
+            bool answered = false;
+            myRecovery.Remember(*myContext);
+            myRecovery.Run(*myContext, "команда стенда", [&] { answered = probe::Poll(*myContext); });
+            if (answered) myFramesToDraw = std::max(myFramesToDraw, 3);
+        }
         for (std::filesystem::path& f : platform::TakeOpenRequests()) myInput.dropped.push_back(std::move(f));
         if (!myInput.dropped.empty()) {   // a module package or documents dragged in
             const std::vector<std::filesystem::path> files = std::move(myInput.dropped);
@@ -713,6 +721,7 @@ void Application::Frame() {
     ImGui_ImplGlfw_NewFrame();
 #endif
     ImGui::NewFrame();
+    probe::BeginFrame();
 
     AppContext& app = *myContext;
     app.now = now;
@@ -759,6 +768,7 @@ void Application::Frame() {
     myBusy = myNotes.Draw(*myUi, corner, now) || myBusy || myShell.animateUi;
 
     ImGui::Render();
+    probe::EndFrame();
     smooth(myStats.uiMs, msSince(uiStart));
     if (myWorkspace.Active() && !myWorkspace.ShowsHome() && myViewport.NeedsRender()) {
         const double sceneStart = platform::Window::Time();

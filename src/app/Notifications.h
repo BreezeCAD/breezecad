@@ -27,6 +27,17 @@ public:
     /// longer than that); a large number when there are none.
     double SecondsToNextChange(double now) const;
 
+    /// The messages on screen now, oldest first (the test bench reads them).
+    struct Shown {
+        std::string text;
+        Kind        kind;
+    };
+    std::vector<Shown> Current() const {
+        std::vector<Shown> out;
+        for (const Note& n : myNotes) out.push_back({n.text, n.kind});
+        return out;
+    }
+
 private:
     struct Note {
         std::string text;

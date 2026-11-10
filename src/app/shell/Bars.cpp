@@ -1,5 +1,6 @@
 // Bottom bars: open documents as tabs and the information line.
 
+#include "app/testing/UiProbe.h"
 #include "app/Format.h"
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
@@ -72,6 +73,7 @@ void DrawProjectTabs(AppContext& app, ImVec2 pos, float width) {
         // and while the cross is held.
         ImGui::SetNextItemAllowOverlap();
         const bool clicked = ImGui::InvisibleButton("##doc-tab", {w, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        probe::Name("doc", title);
         const bool hovered =
             ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         if (clicked && ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) {

@@ -92,6 +92,10 @@ bool EnterPressed(bool repeat = true);
 /// Small grey caption above a control ("Операция", "Расстояние").
 void FieldLabel(Ui& ui, const char* text);
 
+/// The test bench (app/testing/UiProbe) names the item just laid out: widgets
+/// that draw their own text are "##value" to Dear ImGui. Null outside test runs.
+extern void (*probeName)(std::string_view kind, std::string_view text);
+
 /// Shows a styled tooltip for the last item after the usual delay.
 void ItemTooltip(Ui& ui, const char* text);
 

@@ -9,6 +9,13 @@
 #include <cstring>
 
 namespace bz::ui {
+
+void (*probeName)(std::string_view kind, std::string_view text) = nullptr;
+
+namespace {
+std::string gLastFieldLabel;   // for probeName only: the caption a value field stands under
+}
+
 namespace {
 
 ImVec2 Add(ImVec2 a, ImVec2 b) { return {a.x + b.x, a.y + b.y}; }
@@ -147,6 +154,7 @@ int Segmented(Ui& ui, const char* id, std::span<const char* const> labels, int c
         ImGui::SetCursorScreenPos(p);
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("seg", {cellW, cellH}) && !disabled) result = i;
+        if (probeName) probeName("seg", std::string(id) + "|" + labels[i]);
         const bool hovered = !disabled && ImGui::IsItemHovered();
         ImGui::PopID();
 
@@ -355,6 +363,7 @@ FieldResult ExpressionField(Ui& ui, const char* id, std::string& text, std::stri
     result.edited = caretAtEnd ? ImGui::InputText("##value", &text, ImGuiInputTextFlags_CallbackAlways, toEnd)
                                : ImGui::InputText("##value", &text, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_CallbackAlways,
                                                   ApplyCaretRequest, &ui);
+    if (probeName) probeName("field", std::string(id) + "|" + gLastFieldLabel);
     result.active = ImGui::IsItemActive();
     const bool enter = EnterPressed(false);
     result.submitted = enter && (result.active || ImGui::IsItemDeactivated());
@@ -472,6 +481,7 @@ bool EnterPressed(bool repeat) {
 }
 
 void FieldLabel(Ui& ui, const char* text) {
+    if (probeName) gLastFieldLabel = text ? text : "";
     FontScope font(ui.fonts.bodySmall);
     ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(ui.C().textSecondary));
     ImGui::TextUnformatted(text);

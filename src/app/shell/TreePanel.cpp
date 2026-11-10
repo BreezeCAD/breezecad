@@ -6,6 +6,7 @@
 #include "core/PathText.h"
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
+#include "app/testing/UiProbe.h"
 #include "app/assembly/AssemblyIssues.h"
 #include "app/Format.h"
 #include "app/Operations.h"
@@ -78,6 +79,7 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     r.clicked = ImGui::InvisibleButton("##row", {width, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    probe::Name("tree", name);
     r.hovered = ImGui::IsItemHovered();
     r.doubleClicked = r.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     ImGui::PopID();

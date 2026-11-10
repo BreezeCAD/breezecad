@@ -1,5 +1,7 @@
 #include "drawing/Drawing.h"
 
+#include "drawing/ModelView.h"
+
 #include <algorithm>
 #include <array>
 #include <format>
@@ -187,9 +189,7 @@ Expected<Drawing> FromJson(std::string_view text, ReadReport* report) {
         first.name = "Лист 1";
         d.sheets.push_back(std::move(first));
     }
-    const bool unknown = std::any_of(d.sheets.begin(), d.sheets.end(), [](const Sheet& s) {
-        return !s.views.empty() || !s.annotations.empty();
-    });
+    const bool unknown = UnknownItemCount(d) > 0;   // model views (ModelView.h) are known since step 3
     if (unknown && warnings)
         warnings->push_back("В чертеже есть виды или обозначения, которые эта версия не показывает. Они сохранятся без изменений.");
     return d;

@@ -34,13 +34,19 @@ std::string TitleOf(const Drawing& drawing) {
 
 } // namespace
 
-std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont& font, std::string_view producer) {
+std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont& font, std::string_view producer,
+                                     const ViewImages* views) {
     PdfWriter pdf(font, "BreezeCADSans");
     const int count = static_cast<int>(drawing.sheets.size());
     for (int i = 0; i < count; ++i) {
         const SheetLayout l = LayoutSheet(drawing.sheets[static_cast<std::size_t>(i)], i + 1, count);
         pdf.BeginPage(l.width, l.height);
         for (const Stroke& s : l.strokes) pdf.Line(s.a, s.b, s.weight == LineWeight::Thick ? kThick : kThin);
+        if (views)   // the model views: seen lines thick, hidden ones dashed thin (ViewLayout.h)
+            for (const PlacedView& view : LayoutViews(drawing.sheets[static_cast<std::size_t>(i)], *views))
+                for (const ViewPath& path : view.paths)
+                    for (std::size_t k = 1; k < path.points.size(); ++k)
+                        pdf.Line(path.points[k - 1], path.points[k], path.weight == LineWeight::Thick ? kThick : kThin);
         for (const Label& label : l.labels) {
             if (label.text.empty()) continue;
             const double em = EmOf(label, font), width = pdf.TextWidth(label.text, em);
@@ -57,8 +63,8 @@ std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont&
 }
 
 Status ExportDrawingPdf(const Drawing& drawing, const std::filesystem::path& target, const TrueTypeFont& font,
-                        std::string_view producer) {
-    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer);
+                        std::string_view producer, const ViewImages* views) {
+    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer, views);
     std::filesystem::path temp = target;
     temp += ".part";
     {

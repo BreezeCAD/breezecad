@@ -339,8 +339,33 @@ struct Viewport::Impl {
     struct Shown {
         ObjectId                 body;
         Handle(AIS_ColoredShape) shape;   ///< coloured face by face where the look says so
+        int                      depthBias = 0;   ///< see kDepthBiasClasses
     };
     std::vector<Shown> shown;
+
+    /// Faces of different bodies that lie in one plane (bodies touching,
+    /// overlapping, flush) have the same depth: the depth test picks between
+    /// them pixel by pixel by rounding, and the two colours or pictures break
+    /// into stripes and specks that shimmer as the view turns. Each body is
+    /// pushed back by its own few depth steps instead, so one of them always
+    /// wins, the same one everywhere. The push is tiny (tens of steps of the
+    /// 24-bit depth buffer: thousandths of a millimetre), so nothing that is
+    /// truly in front is hidden. A body keeps its class while it is shown;
+    /// bodies with the same class (one in kDepthBiasClasses) are rarely in
+    /// contact with each other.
+    static constexpr int   kDepthBiasClasses = 16;
+    static constexpr float kDepthBiasStep    = 4.0f;   ///< depth steps between two classes
+    int nextDepthBias = 0;
+    /// OCCT's own push of faces (factor 1, units 1: edges are drawn over
+    /// them) plus the body's class. `depthBias` past the classes: behind
+    /// every body (the faded surroundings).
+    static Graphic3d_PolygonOffset DepthBias(int depthBias) {
+        Graphic3d_PolygonOffset offset;
+        offset.Mode = Aspect_POM_Fill;
+        offset.Factor = 1.0f;
+        offset.Units = 1.0f + kDepthBiasStep * static_cast<float>(depthBias);
+        return offset;
+    }
     /// Bodies shown a moment ago, hidden but kept with their meshes: closing
     /// an operation without applying it brings the old shapes back at once.
     std::vector<Shown> spare;
@@ -593,6 +618,8 @@ struct Viewport::Impl {
         const doc::Appearance* bodyLook = look.OfBody(s.body);
         ApplyStyle(s.shape, s.body == hovered, bodyLook);
         s.shape->ClearCustomAspects();
+        // Before the faces' own looks: they copy the body's aspect.
+        s.shape->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
         if (style == DisplayStyle::Wireframe || style == DisplayStyle::HiddenLines) return;
         const TopoDS_Shape& shape = s.shape->Shape();
 
@@ -613,6 +640,7 @@ struct Viewport::Impl {
             aspects->SetupOwnShadingAspect();
             aspects->ShadingAspect()->SetMaterial(MaterialOf(colour, a->finish));
             aspects->ShadingAspect()->SetColor(ToQuantity(colour));
+            aspects->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
             if (style != DisplayStyle::Transparent) aspects->ShadingAspect()->SetTransparency(1.0 - a->face.a);
         }
         if (bodyLook && bodyLook->HasPicture())
@@ -625,7 +653,8 @@ struct Viewport::Impl {
             if (texture.IsNull()) continue;   // picture missing: the body's colour stays
             for (const TopoDS_Face& face : faces) s.shape->CustomAspects(face)->SetHidden(true);
             const double transparency = style == DisplayStyle::Transparent ? 0.55 : 1.0 - a->face.a;
-            Handle(TexturedFaces) skin = new TexturedFaces(faces, texture, a->pictureSize, MaterialOf(Color::Hex(0xFFFFFF), a->finish), transparency);
+            Handle(TexturedFaces) skin = new TexturedFaces(faces, texture, a->pictureSize, MaterialOf(Color::Hex(0xFFFFFF), a->finish), transparency,
+                                                     DepthBias(s.depthBias));
             // Picked as the faces it covers (hidden on the body), unless the
             // original body before an operation is what is picked now.
             context->Display(skin, 0, original.active ? -1 : AIS_Shape::SelectionMode(TopAbs_FACE), false);
@@ -835,9 +864,11 @@ void Viewport::Sync(const kernel::Model& model) {
             continue;
         }
         Handle(AIS_ColoredShape) ais = new BodyShape(body.shape);
-        m.ApplyLook({body.id, ais});
+        const Impl::Shown fresh{body.id, ais, m.nextDepthBias};
+        m.nextDepthBias = (m.nextDepthBias + 1) % Impl::kDepthBiasClasses;
+        m.ApplyLook(fresh);
         m.context->Display(ais, AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
-        m.shown.push_back({body.id, ais});
+        m.shown.push_back(fresh);
     }
     for (const auto& s : previous) {
         if (s.shape.IsNull()) continue;
@@ -1491,6 +1522,9 @@ void Viewport::SetContext(const kernel::Model* model) {
         drawer->SetFaceBoundaryUpperContinuity(GeomAbs_C1);
         drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(m.colors.edges), Aspect_TOL_SOLID, 0.8));
         ais->SetTransparency(0.7);
+        // Behind every body: where the edited part touches a faded one, the
+        // edited part's face is the one seen.
+        drawer->ShadingAspect()->Aspect()->SetPolygonOffset(Impl::DepthBias(Impl::kDepthBiasClasses + 1));
         // Displayed with its edges selectable, then switched off unless an
         // edge of it is being picked: shown with no selection mode (-1), it
         // is never loaded into the selector, and a later Activate is ignored

@@ -7,6 +7,7 @@ add_library(bz_kernel STATIC
     ComponentPattern.cpp
     Model.cpp
     ProjectionSources.cpp
+    drawing/ViewProjection.cpp
     occt/Coil.cpp
     occt/Section.cpp
     occt/EdgeMatch.cpp
@@ -31,7 +32,7 @@ add_library(bz_kernel STATIC
     occt/Thread.cpp
     occt/Topology.cpp)
 target_link_libraries(bz_kernel
-    PUBLIC  bz::document bz::assembly bz::sheetmetal bz::occt_modeling
-    PRIVATE bz::occt_exchange bz::miniz TKService TKV3d)   # TKV3d: text outlines on OCCT 7.x
+    PUBLIC  bz::document bz::assembly bz::sheetmetal bz::drawing bz::occt_modeling
+    PRIVATE bz::occt_exchange bz::miniz TKService TKV3d TKHLR)   # TKV3d: text outlines on OCCT 7.x; TKHLR: drawing views
 bz_set_warnings(bz_kernel)
 add_library(bz::kernel ALIAS bz_kernel)

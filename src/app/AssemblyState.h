@@ -85,6 +85,11 @@ public:
         /// moved, to be judged and tuned) until Применить / Готово keep it
         /// or Отмена / Esc take it back.
         ObjectId                preview;
+        /// Применить found the trial not holding (it contradicts constraints
+        /// already there) or adding nothing: what to say in the panel, and the
+        /// user's choice to keep it anyway (Inventor refuses such a constraint).
+        std::string             conflict;
+        bool                    force = false;
     } creating;
 
     /// AutoDrop: a screw from the library waits for a click on a hole's rim.

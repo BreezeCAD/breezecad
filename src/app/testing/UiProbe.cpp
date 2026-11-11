@@ -102,7 +102,10 @@ Json StateOf(AppContext& app) {
     j["home"] = app.workspace.ShowsHome();
     j["documents"] = app.workspace.sessions.size();
     j["popup_open"] = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    j["text_input"] = io.WantTextInput;
+    // A text field holds the keyboard. Not io.WantTextInput: that is one frame
+    // late, and the program draws no frame without a reason.
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    j["text_input"] = io.WantTextInput || (g.ActiveId != 0 && g.ActiveId == g.InputTextState.ID);
     Json notes = Json::array();
     for (const Notifications::Shown& n : app.notes.Current())
         notes.push_back({{"text", n.text}, {"kind", n.kind == Notifications::Kind::Error ? "error" : n.kind == Notifications::Kind::Success ? "success" : "info"}});

@@ -323,6 +323,16 @@ void StartSketch(AppContext& app) {
         app.sketch.CreateAndEdit(app, *s, {s->selectedFeature, *frame, false, {}});
         return;
     }
+    // One flat face chosen in the view: the sketch goes on it, as in Inventor
+    // (the face first, then "Начать эскиз"), without asking for the plane again.
+    if (s->mode == EditMode::Model && s->selectedFaces.size() == 1) {
+        const render::SelectedFace face = s->selectedFaces.front();
+        if (const std::optional<Frame> plane = app.viewport.PlaneOfFace(face)) {
+            s->selectedFaces.clear();
+            app.sketch.CreateAndEdit(app, *s, {face.body, *plane, true, {plane->normal, face.face.point}});
+            return;
+        }
+    }
     s->mode = EditMode::PickPlane;
 }
 

@@ -229,13 +229,17 @@ class Bench:
         self._x("mousemove", int(x), int(y))
         time.sleep(pause)
 
-    def click_at(self, x, y, button: int = 1, double: bool = False, pause: float = 0.25):
-        self.journal.append(f"click {int(x)},{int(y)} b{button}{' x2' if double else ''}")
+    def click_at(self, x, y, button: int = 1, double: bool = False, pause: float = 0.25, held: tuple = ()):
+        self.journal.append(f"click {int(x)},{int(y)} b{button}{' x2' if double else ''} {'+'.join(held)}")
         self.move(x, y)
+        for k in held:
+            self._x("keydown", k)
         if double:
             self._x("click", "--repeat", 2, "--delay", 80, button)
         else:
             self._x("click", button)
+        for k in held:
+            self._x("keyup", k)
         time.sleep(pause)
         self._alive()
 
@@ -247,9 +251,12 @@ class Bench:
         self.click_at(*self.center(it), button=button, double=double)
         return it
 
-    def drag(self, x0, y0, x1, y1, button: int = 1, steps: int = 8, hold: float = 0.1):
-        self.journal.append(f"drag {int(x0)},{int(y0)} -> {int(x1)},{int(y1)} b{button}")
+    def drag(self, x0, y0, x1, y1, button: int = 1, steps: int = 8, hold: float = 0.1, held: tuple = ()):
+        """Press, move, release; `held`: keys kept down meanwhile ("shift")."""
+        self.journal.append(f"drag {int(x0)},{int(y0)} -> {int(x1)},{int(y1)} b{button} {'+'.join(held)}")
         self.move(x0, y0)
+        for k in held:
+            self._x("keydown", k)
         self._x("mousedown", button)
         time.sleep(hold)
         for i in range(1, steps + 1):
@@ -257,6 +264,8 @@ class Bench:
             time.sleep(0.03)
         time.sleep(hold)
         self._x("mouseup", button)
+        for k in held:
+            self._x("keyup", k)
         time.sleep(0.25)
         self._alive()
 

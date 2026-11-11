@@ -956,6 +956,19 @@ bool Viewport::SameFace(ObjectId body, const doc::FaceReference& a, const doc::F
     return false;
 }
 
+std::optional<Frame> Viewport::PlaneOfFace(const SelectedFace& chosen) const {
+    for (const auto& s : myImpl->shown) {
+        if (s.body != chosen.body) continue;
+        const auto face = kernel::occt::ResolveAnyFace(s.shape->Shape(), chosen.face);
+        if (!face) return std::nullopt;
+        std::optional<Frame> frame = PlanarFaceFrame(*face);
+        // The side the face was chosen from (the same rule as a click in PickPlane).
+        if (frame && chosen.face.IsSet() && frame->normal.Dot(chosen.face.normal) < 0) frame->normal = -frame->normal;
+        return frame;
+    }
+    return std::nullopt;
+}
+
 void Viewport::SetBackgroundPicture(int width, int height, std::span<const std::uint8_t> rgba) {
     Impl& m = *myImpl;
     Handle(Graphic3d_Texture2D) texture;

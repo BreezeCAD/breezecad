@@ -282,6 +282,10 @@ kernel::AssemblyPick PickFor(assembly::ConstraintType type) {
         case assembly::ConstraintType::Insert:
         case assembly::ConstraintType::Rotational: return kernel::AssemblyPick::Circle;
         case assembly::ConstraintType::AxisMate:   return kernel::AssemblyPick::Line;
+        // Joints along an axis: a round edge (its centre) or a cylinder — never
+        // a flat face, whose "axis" through the click would stand off by the radius.
+        case assembly::ConstraintType::Cylindrical:
+        case assembly::ConstraintType::Slider:     return kernel::AssemblyPick::Axis;
         // Inventor's mate takes what is under the cursor: a vertex, an edge or the face.
         case assembly::ConstraintType::Mate:
         case assembly::ConstraintType::Angle:

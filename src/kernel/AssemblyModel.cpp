@@ -533,6 +533,15 @@ std::optional<GeometryRef> AssemblyModel::GeometryAt(const assembly::Assembly& a
             if (want == AssemblyPick::Any && tolerance > 0) g = NearestVertex(part->shape, local, tolerance);
             if (!g && (want == AssemblyPick::Any || want == AssemblyPick::Line) && tolerance > 0)
                 g = NearestEdge(part->shape, local, tolerance, want == AssemblyPick::Line);
+            // An axis picked on a round edge: the edge's own axis, through its
+            // centre (the faces at the edge may be a ring and a cylinder: the
+            // ring has none, and the click is on both).
+            if (!g && want == AssemblyPick::Axis)
+                if (auto rim = NearestCircle(part->shape, local, std::max(tolerance, 1e-6))) {
+                    g = rim;
+                    g->kind = GeometryKind::Axis;
+                    g->source = assembly::PickSource::Edge;
+                }
             if (!g)
                 if (auto face = NearestFace(part->shape, ToPnt(local), 0.5))
                     g = FromFace(*face, local, want == AssemblyPick::Axis || want == AssemblyPick::Line);
@@ -603,6 +612,11 @@ bool AssemblyModel::Refresh(const assembly::Assembly& a, GeometryRef& ref) const
     try {
         if (ref.source == assembly::PickSource::Vertex) {
             found = NearestVertex(part->shape, ref.origin, 1e300);
+        } else if (ref.source == assembly::PickSource::Edge && ref.kind == GeometryKind::Axis && ref.radius > 0) {
+            // The axis of a round edge: the circle of the same size nearest where it was.
+            found = NearestCircle(part->shape, ref.origin, 1e300);
+            if (found && std::abs(found->radius - ref.radius) > 1e-6) found.reset();
+            if (found) found->kind = GeometryKind::Axis;
         } else if (ref.source == assembly::PickSource::Edge && ref.kind == GeometryKind::Axis) {
             // The straight edge along the same direction nearest where it was.
             found = NearestEdge(part->shape, ref.pick, 1e300, true, ref.direction.Normalized());

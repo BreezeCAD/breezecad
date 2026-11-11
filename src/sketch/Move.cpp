@@ -74,6 +74,77 @@ std::vector<ObjectId> WithHelpers(const Sketch& sk, std::span<const ObjectId> en
     return out;
 }
 
+namespace {
+
+ConstraintType Swapped(ConstraintType t) {
+    switch (t) {
+        case ConstraintType::Horizontal:    return ConstraintType::Vertical;
+        case ConstraintType::Vertical:      return ConstraintType::Horizontal;
+        case ConstraintType::Parallel:      return ConstraintType::Perpendicular;
+        case ConstraintType::Perpendicular: return ConstraintType::Parallel;
+        case ConstraintType::DistanceX:     return ConstraintType::DistanceY;
+        case ConstraintType::DistanceY:     return ConstraintType::DistanceX;
+        default:                            return t;
+    }
+}
+
+// The `moved` points have just turned by `angle`; constraints that tie their
+// directions to the sketch axes or to geometry left in place follow, as in
+// Inventor. Half and whole turns change nothing. An odd number of quarter
+// turns swaps horizontal and vertical (lines, point pairs, their distances)
+// and parallel and perpendicular to a line left in place. Any other angle:
+// horizontal / vertical lines that turned together keep their angles to
+// each other (parallel / perpendicular to the first of them); the rest that
+// could not hold any more is dropped.
+void TurnConstraints(Sketch& sk, IdGenerator& ids, const std::unordered_set<ObjectId>& moved, double angle) {
+    const double quarter = angle / (kPi / 2);
+    const double whole = std::round(quarter);
+    const bool square = std::abs(quarter - whole) <= 1e-9;
+    if (square && std::fmod(std::abs(whole), 2.0) < 0.5) return;
+    const bool swap = square;   // odd quarter turns
+    const auto movedLine = [&](ObjectId id) {
+        const Line* l = sk.FindLine(id);
+        return l && moved.contains(l->start) && moved.contains(l->end);
+    };
+    ObjectId reference;
+    bool referenceHorizontal = true;
+    std::vector<Constraint> replacements;
+    std::unordered_set<ObjectId> dropped;
+    for (Constraint& c : sk.constraints) {
+        const bool hv = c.type == ConstraintType::Horizontal || c.type == ConstraintType::Vertical;
+        const bool axial = c.type == ConstraintType::DistanceX || c.type == ConstraintType::DistanceY;
+        if (hv && !c.refs[1]) {   // a line
+            if (!movedLine(c.refs[0])) continue;
+            if (swap) { c.type = Swapped(c.type); continue; }
+            dropped.insert(c.id);
+            const bool horizontal = c.type == ConstraintType::Horizontal;
+            if (!reference) {
+                reference = c.refs[0];
+                referenceHorizontal = horizontal;
+                continue;
+            }
+            Constraint r;
+            r.type = horizontal == referenceHorizontal ? ConstraintType::Parallel : ConstraintType::Perpendicular;
+            r.refs = {reference, c.refs[0], {}};
+            replacements.push_back(r);
+        } else if (hv || axial) {   // two points
+            const bool a = moved.contains(c.refs[0]), b = moved.contains(c.refs[1]);
+            if (!a && !b) continue;
+            if (a && b && swap) c.type = Swapped(c.type);
+            else dropped.insert(c.id);
+        } else if (c.type == ConstraintType::Parallel || c.type == ConstraintType::Perpendicular) {
+            // Between two turned lines (or two left in place) it still holds.
+            if (movedLine(c.refs[0]) == movedLine(c.refs[1])) continue;
+            if (swap) c.type = Swapped(c.type);
+            else dropped.insert(c.id);
+        }
+    }
+    std::erase_if(sk.constraints, [&](const Constraint& c) { return dropped.contains(c.id); });
+    for (Constraint& r : replacements) sk.AddConstraint(ids, std::move(r));
+}
+
+} // namespace
+
 bool MoveEntities(Sketch& sk, IdGenerator& ids, std::span<const ObjectId> chosen, const Motion& motion) {
     const std::vector<ObjectId> all = WithHelpers(sk, chosen);
     const std::span<const ObjectId> entities(all);
@@ -85,38 +156,7 @@ bool MoveEntities(Sketch& sk, IdGenerator& ids, std::span<const ObjectId> chosen
     for (Constraint& c : sk.constraints)
         if (c.type == ConstraintType::Fix && set.contains(c.refs[0])) c.fixedAt = motion.Apply(c.fixedAt);
 
-    // Rotation: horizontal / vertical lines that turned with the rest keep
-    // their angles to each other instead.
-    const double quarter = motion.angle / (kPi / 2);
-    if (std::abs(quarter - std::round(quarter)) > 1e-9) {
-        const auto movedLine = [&](ObjectId id) {
-            const Line* l = sk.FindLine(id);
-            return l && set.contains(l->start) && set.contains(l->end);
-        };
-        ObjectId reference;
-        bool referenceHorizontal = true;
-        std::vector<Constraint> replacements;
-        std::vector<ObjectId> dropped;
-        for (const Constraint& c : sk.constraints) {
-            const bool hv = c.type == ConstraintType::Horizontal || c.type == ConstraintType::Vertical;
-            if (!hv || c.refs[1] || !movedLine(c.refs[0])) continue;
-            dropped.push_back(c.id);
-            const bool horizontal = c.type == ConstraintType::Horizontal;
-            if (!reference) {
-                reference = c.refs[0];
-                referenceHorizontal = horizontal;
-                continue;
-            }
-            Constraint r;
-            r.type = horizontal == referenceHorizontal ? ConstraintType::Parallel : ConstraintType::Perpendicular;
-            r.refs = {reference, c.refs[0]};
-            replacements.push_back(r);
-        }
-        std::erase_if(sk.constraints, [&](const Constraint& c) {
-            return std::find(dropped.begin(), dropped.end(), c.id) != dropped.end();
-        });
-        for (Constraint& r : replacements) sk.AddConstraint(ids, std::move(r));
-    }
+    TurnConstraints(sk, ids, set, motion.angle);
     return true;
 }
 
@@ -217,17 +257,10 @@ std::vector<ObjectId> CopyEntities(Sketch& sk, IdGenerator& ids, std::span<const
             }
         if (inside) sk.AddConstraint(ids, copy);
     }
-    // A rotated copy cannot keep horizontal / vertical lines.
-    const double quarter = motion.angle / (kPi / 2);
-    if (std::abs(quarter - std::round(quarter)) > 1e-9) {
-        std::erase_if(sk.constraints, [&](const Constraint& c) {
-            const bool hv = c.type == ConstraintType::Horizontal || c.type == ConstraintType::Vertical;
-            if (!hv) return false;
-            for (ObjectId id : created)
-                if (c.refs[0] == id) return true;
-            return false;
-        });
-    }
+    // The copies turned: their horizontal / vertical constraints follow.
+    std::unordered_set<ObjectId> copiedPoints;
+    for (const auto& entry : pointCopy) copiedPoints.insert(entry.second);
+    TurnConstraints(sk, ids, copiedPoints, motion.angle);
     return created;
 }
 

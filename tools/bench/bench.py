@@ -111,11 +111,26 @@ class Bench:
             time.sleep(0.25)
         else:
             raise BenchError("the window did not appear")
+        # The probe clears its folder when it comes on, a request sent before
+        # that is lost: wait for it to say it is on.
+        while time.time() < deadline and not self.log_lines("Test probe: on"):
+            self._alive()
+            time.sleep(0.1)
         win = self._x("search", "--name", "BreezeCAD").stdout.split()[0]
         self._x("windowmove", win, 0, 0)
         self._x("windowsize", win, *self.size)
-        time.sleep(0.8)
-        self.state()   # the probe answers: the program is up
+        # Items are where the last frame put them: wait for a frame at the new
+        # size, or the first click goes where a button was before the resize.
+        deadline = time.time() + 20
+        while True:
+            st = self.state()
+            if [int(v) for v in st["display"]] == list(self.size):
+                break
+            if time.time() > deadline:
+                raise BenchError(f"the window did not take its size: {st['display']}")
+            self._x("mousemove", 5 + int(time.time() * 10) % 3, 5)   # an event, so a frame is drawn
+            time.sleep(0.2)
+        self.settle()
         return self
 
     def stop(self):

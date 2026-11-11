@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 from bench import Bench, BenchError, check, close
 
@@ -62,8 +63,11 @@ def clean(b: Bench, what: str):
 
 def new_part(b: Bench):
     b.click("home-part")
+    deadline = time.time() + 10   # a busy machine may take a while to open it
+    while b.state().get("type") != "part":
+        check(time.time() < deadline, "новая деталь не открылась")
+        time.sleep(0.2)
     b.settle()
-    check(b.state().get("type") == "part", "новая деталь не открылась")
 
 
 def start_sketch_on_xy(b: Bench):

@@ -603,7 +603,7 @@ std::optional<bool> WantsOpposed(const Constraint& c, const WorldGeometry& a, co
 bool TurnOverBackwards(Assembly& assembly) {
     bool turned = false;
     for (const Constraint& c : assembly.constraints) {
-        if (c.suppressed || IsTransmission(c.type) || c.type == ConstraintType::Symmetry) continue;
+        if (c.Inactive() || IsTransmission(c.type) || c.type == ConstraintType::Symmetry) continue;
         if (!assembly.Exists(c.first.component) || !assembly.Exists(c.second.component)) continue;
         if (c.first.component == c.second.component) continue;
         const WorldGeometry wa = ToWorld(assembly.PlacementOf(c.first.component), c.first);
@@ -630,11 +630,11 @@ bool TurnOverBackwards(Assembly& assembly) {
 }
 
 bool Usable(const Assembly& a, const Constraint& c) {
-    if (c.suppressed) return false;
+    if (c.Inactive()) return false;
     if (IsTransmission(c.type)) {
         const Constraint* d = a.FindConstraint(c.drive);
         const Constraint* n = a.FindConstraint(c.driven);
-        return d && n && IsJoint(d->type) && IsJoint(n->type) && !d->suppressed && !n->suppressed;
+        return d && n && IsJoint(d->type) && IsJoint(n->type) && !d->Inactive() && !n->Inactive();
     }
     return a.Exists(c.first.component) && a.Exists(c.second.component) &&
            (c.type != ConstraintType::Symmetry || a.Exists(c.third.component));
@@ -873,7 +873,7 @@ void AnalyzeSystem(System& s) {
 
 void ResetStates(Assembly& a) {
     for (Constraint& c : a.constraints) {
-        c.state = c.suppressed ? ConstraintState::Unknown : ConstraintState::Satisfied;
+        c.state = c.Inactive() ? ConstraintState::Unknown : ConstraintState::Satisfied;
         c.error = 0.0;
     }
 }

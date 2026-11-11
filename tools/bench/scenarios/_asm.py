@@ -326,8 +326,16 @@ def plane_of(b: Bench, cid: int, normal) -> dict:
 
 def menu_item(b: Bench, nth: int):
     """A context-menu row by its place (the rows carry no names): the popup has just been opened."""
-    it = b.wait_for("##item", window="Popup", nth=nth)
-    b.click_at(*b.center(it))
+    import time
+    end = time.time() + 8
+    while True:
+        rows = [i for i in b.items() if "Popup" in i["window"] and (i["label"] == "##item" or i["label"].startswith("menu:"))
+                and i["rect"][2] - i["rect"][0] > 2]
+        if len(rows) > nth or time.time() > end:
+            break
+        time.sleep(0.1)
+    check(len(rows) > nth, "в контекстном меню нет строки №%d" % nth)
+    b.click_at(*b.center(rows[nth]))
     b.settle()
 
 

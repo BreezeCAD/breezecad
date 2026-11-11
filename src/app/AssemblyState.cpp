@@ -504,7 +504,11 @@ std::vector<AssemblyState::Issue> AssemblyState::Issues() const {
     }
     for (const assembly::Constraint& c : assembly.constraints) {
         if (c.suppressed) continue;
-        if (c.state == assembly::ConstraintState::Failed)
+        if (c.lostReference)
+            out.push_back({Issue::Kind::FailedConstraint, c.id, c.name,
+                           "Потеряна ссылка: грани или кромки, на которую она наложена, в детали больше нет. "
+                           "Укажите её заново (ПКМ → Переопределить) или удалите зависимость"});
+        else if (c.state == assembly::ConstraintState::Failed)
             out.push_back({Issue::Kind::FailedConstraint, c.id, c.name, "Зависимость не выполняется: детали нельзя поставить так, как она требует"});
         else if (c.state == assembly::ConstraintState::Redundant)
             out.push_back({Issue::Kind::RedundantConstraint, c.id, c.name, "Лишняя зависимость: повторяет то, что уже задают другие"});

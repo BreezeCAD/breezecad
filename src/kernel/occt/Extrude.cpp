@@ -171,6 +171,9 @@ Expected<TopoDS_Shape> MakeExtrusion(const std::vector<TopoDS_Face>& faces, cons
                                      const Frame& frame, double throughAllLength, const std::optional<Frame>& target,
                                      const std::optional<TopoDS_Face>& untilFace) {
     if (faces.empty()) return Error{"Нет замкнутого контура для выдавливания"};
+    // At ±90° the side walls lie in the sketch plane; past it the prism turns
+    // inside out (95° made a body far bigger than the profile, 180° a plain one).
+    if (std::abs(f.taper.value) >= kPi / 2 - 1e-9) return Error{"Уклон должен быть больше −90° и меньше 90°"};
     if (f.extent == doc::ExtentType::ToPlane && untilFace) {
         // Up to a curved face: far enough towards it, then cut off by it.
         // Towards the place where the face was picked (as it is now): the

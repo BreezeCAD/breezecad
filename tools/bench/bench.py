@@ -308,7 +308,7 @@ class Bench:
 
     def type(self, text: str, pause: float = 0.2):
         self.journal.append(f"type {text!r}")
-        self._x("type", "--delay", 40, str(text))
+        self._x("type", "--delay", 40, "--", str(text))   # "--": a text starting with "-" is not an option
         time.sleep(pause)
 
     def enter(self, value, select_all: bool = True):

@@ -36,6 +36,11 @@ std::uint64_t ContextKey(const AssemblyModel& geometry, const assembly::Assembly
 struct AdaptResult {
     int moved = 0;   ///< curves put where their source edges project now
     int lost = 0;    ///< source edges no longer found (their curves stay)
+    /// Projected curves of one sketch that cannot all be where their edges
+    /// project (they share a point the edges put in two places): the sketch
+    /// stays as it was, these curves drawn red. Placing them would move one
+    /// another back and forth for ever.
+    int conflicting = 0;
     bool changed() const { return moved > 0; }
 };
 /// Puts the adaptive projections of `doc` (the part of `target`) where their

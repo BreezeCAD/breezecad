@@ -21,8 +21,10 @@ Handle(Graphic3d_Texture2D) MakePictureTexture(int width, int height, std::span<
 class TexturedFaces : public AIS_InteractiveObject {
 public:
     /// `tile`: millimetres one copy of the picture covers on the part.
+    /// `tint`: the picture's colours are multiplied by it (white: as they are).
     TexturedFaces(std::vector<TopoDS_Face> faces, Handle(Graphic3d_Texture2D) texture, double tile,
-                  const Graphic3d_MaterialAspect& material, double transparency);
+                  const Graphic3d_MaterialAspect& material, double transparency,
+                  const Quantity_Color& tint = Quantity_Color(Quantity_NOC_WHITE));
 
     bool AcceptDisplayMode(const Standard_Integer mode) const override { return mode == 0; }
 
@@ -39,6 +41,7 @@ private:
     double                      myTile;
     Graphic3d_MaterialAspect    myMaterial;
     double                      myTransparency;
+    Quantity_Color              myTint;
 };
 
 } // namespace bz::render

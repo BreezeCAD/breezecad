@@ -363,7 +363,10 @@ FieldResult ExpressionField(Ui& ui, const char* id, std::string& text, std::stri
     result.edited = caretAtEnd ? ImGui::InputText("##value", &text, ImGuiInputTextFlags_CallbackAlways, toEnd)
                                : ImGui::InputText("##value", &text, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_CallbackAlways,
                                                   ApplyCaretRequest, &ui);
-    if (probeName) probeName("field", std::string(id) + "|" + gLastFieldLabel);
+    if (probeName) {
+        probeName("field", std::string(id) + "|" + gLastFieldLabel);
+        gLastFieldLabel.clear();   // a caption names the one field under it, not the next ones
+    }
     result.active = ImGui::IsItemActive();
     const bool enter = EnterPressed(false);
     result.submitted = enter && (result.active || ImGui::IsItemDeactivated());

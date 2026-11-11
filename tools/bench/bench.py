@@ -36,10 +36,10 @@ class BenchError(AssertionError):
 
 
 class Bench:
-    def __init__(self, file: str | None = None, *, binary: str | None = None, display: str = ":99",
+    def __init__(self, file: str | None = None, *, binary: str | None = None, display: str | None = None,
                  size: tuple[int, int] = (1440, 900), work: str | None = None, settings: dict | None = None,
                  env: dict | None = None, lang: str = "ru"):
-        self.display = display
+        self.display = display or os.environ.get("BZ_BENCH_DISPLAY", ":99")
         self.size = size
         self.work = Path(work or tempfile.mkdtemp(prefix="bz-bench-"))
         self.probe_dir = self.work / "probe"
@@ -75,8 +75,15 @@ class Bench:
 
     def start(self):
         # One program per display: a leftover of a failed run would answer too.
-        subprocess.run(["pkill", "-x", "breezecad"], capture_output=True)
-        time.sleep(0.3)
+        # Only this bench's own leftover: other displays run their own benches.
+        self.work.mkdir(parents=True, exist_ok=True)
+        lock = Path(f"/tmp/bz-bench-display{self.display.replace(':', '-')}.pid")
+        try:
+            old = int(lock.read_text())
+            os.kill(old, signal.SIGKILL)
+            time.sleep(0.3)
+        except (OSError, ValueError):
+            pass
         shutil.rmtree(self.probe_dir, ignore_errors=True)
         for d in (self.probe_dir, self.shots, self.home / ".config" / "breezecad"):
             d.mkdir(parents=True, exist_ok=True)
@@ -95,6 +102,7 @@ class Bench:
         args = [str(self.binary)] + ([self._file] if self._file else [])
         self._proc = subprocess.Popen(args, cwd=str(self.binary.parent), env=env, stdout=open(self.log, "w"),
                                       stderr=subprocess.STDOUT)
+        Path(f"/tmp/bz-bench-display{self.display.replace(':', '-')}.pid").write_text(str(self._proc.pid))
         deadline = time.time() + 40
         while time.time() < deadline:
             if self._x("search", "--name", "BreezeCAD").stdout.strip():
@@ -336,6 +344,30 @@ class Bench:
 
     def scene(self) -> list[float]:
         return self.state()["scene"]
+
+    # ------------------------------------------------------- looking around
+    def panel(self) -> list[str]:
+        """Labels of what stands in the left panel now (tree rows, an operation's fields)."""
+        out = []
+        for it in self.items():
+            r = it["rect"]
+            if r[0] >= 48 and r[2] <= 346 and r[1] >= 174 and r[3] <= 842 and not it["label"].startswith("##root"):
+                out.append(it["label"] + ("[D]" if it.get("disabled") else "") + ("[C]" if it.get("checked") else ""))
+        return out
+
+    def labels(self, window: str = "") -> list[str]:
+        """Labels of every item whose window name contains `window` ("ribbon", "Popup", "dialog"...)."""
+        return [it["label"] + ("[D]" if it.get("disabled") else "") for it in self.items()
+                if window in it["window"] and not it["label"].startswith("##root")]
+
+    def windows(self) -> list[str]:
+        return sorted({it["window"] for it in self.items()})
+
+    def brief(self) -> dict:
+        """The state in a few words: what a person would say is on screen."""
+        s = self.state()
+        return {k: s[k] for k in ("home", "type", "title", "mode", "sketch_tool", "text_input", "popup_open", "notes",
+                                  "operation", "modified", "rebuilding") if s.get(k) not in (None, [], False)}
 
     # ------------------------------------------------------------- waiting
     def settle(self, timeout: float = 60.0, quiet: float = 0.25):

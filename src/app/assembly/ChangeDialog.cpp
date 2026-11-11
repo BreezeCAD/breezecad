@@ -283,9 +283,18 @@ void DrawPreview(ui::Ui& ui, ImDrawList* dl, ImVec2 p0, ImVec2 p1, ChangeDialogS
         } else if (pr.kind == 0) {
             const Color shade{body.r * pr.light, body.g * pr.light, body.b * pr.light, 1.0f};
             dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(shade));
-        } else {
-            dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(sourceTint.WithAlpha(0.06f)));
         }
+    }
+    // The source's faces: a faint tint over everything, in one layer. Sorted in
+    // with the part's triangles it went over some and under others (their
+    // middles are not their depth): wedges across the face. Without
+    // anti-aliased fill: the fringes of its triangles would overlap in lines.
+    {
+        const ImDrawListFlags aa = dl->Flags;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        for (const Prim& pr : prims)
+            if (pr.kind == 2) dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(sourceTint.WithAlpha(0.06f)));
+        dl->Flags = aa;
     }
     // The source's new contour: blue dashes.
     for (std::size_t i = 0; i + 1 < d.contour.size(); i += 2) {

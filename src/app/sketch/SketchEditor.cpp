@@ -721,6 +721,7 @@ void SketchEditor::StartInlineEdit(const sketch::Constraint& c) {
     myEditFocus = true;
     myEditTyped = false;
     myCaretFrames = 0;
+    myPlacedBefore.reset();
 }
 
 void SketchEditor::HandleInlineEdit(AppContext& app, Session& session, const SketchView& view) {
@@ -837,6 +838,13 @@ void SketchEditor::HandleInlineEdit(AppContext& app, Session& session, const Ske
     }
     f->sketch = std::move(trial);
     session.doc.MarkChanged(static_cast<std::size_t>(session.doc.IndexOf(f->id)));
+    // A dimension placed just now (nothing done since): placing it and its
+    // value are one step, one Ctrl+Z takes the dimension back.
+    if (myPlacedBefore && session.history.GetMark() == myPlacedMark && myPlacedMark.first == myPlacedAt.first) {
+        session.history.RollBack(myPlacedAt);
+        before = std::move(myPlacedBefore);
+    }
+    myPlacedBefore.reset();
     session.CommitInPlaceEdit(std::move(before), Trf("Размер {}", c->parameter.name));
     myEditDimension = {};
     KeepSketchInView(app, session);

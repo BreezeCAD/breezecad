@@ -103,6 +103,26 @@ TEST_CASE("cycles and bad expressions are reported per parameter") {
     CHECK_FALSE(plate.doc.variables[0].HasError());
 }
 
+TEST_CASE("a parameter using a variable whose expression is wrong is wrong too, keeping its value") {
+    // As in Inventor: the dimension that uses «width» says so, instead of a
+    // model that looks current with the last good width.
+    Plate plate;
+    REQUIRE(plate.doc.EvaluateParameters() == 0);
+    auto* sk = plate.doc.FindAs<SketchFeature>(plate.sketchId);
+    Parameter& usesWidth = sk->sketch.constraints[5].parameter;   // "width"
+    REQUIRE(usesWidth.value == doctest::Approx(60.0));
+    plate.doc.variables[0].expression = "abc";
+    CHECK(plate.doc.EvaluateParameters() >= 2);   // the variable, and each dimension using it, at any depth
+    CHECK(plate.doc.variables[0].HasError());
+    REQUIRE(usesWidth.HasError());
+    CHECK(usesWidth.error.find("width") != std::string::npos);
+    CHECK(usesWidth.value == doctest::Approx(60.0));
+    // Fixed: both evaluate again.
+    plate.doc.variables[0].expression = "70";
+    CHECK(plate.doc.EvaluateParameters() == 0);
+    CHECK(usesWidth.value == doctest::Approx(70.0));
+}
+
 TEST_CASE("recompute solves sketches from expressions") {
     Plate plate;
     RecomputeModel(plate.doc);

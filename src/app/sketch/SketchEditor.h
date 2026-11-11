@@ -138,6 +138,10 @@ public:
     /// Makes the selected lines осевые (or normal again).
     void ToggleCenterline(Session& session);
     bool HasSelection() const { return !mySelection.empty(); }
+    /// Ctrl+A (as in Inventor): every point and curve of the sketch chosen.
+    /// A drawing tool gives way to "Выбор"; the tools that act on the
+    /// selection (move, rotate, copy, scale, mirror, patterns) keep going.
+    void SelectAll(AppContext& app, Session& session);
 
     // --- The clipboard (22.10.2026, as in KOMPAS) ----------------------------
     // «Копировать» (Ctrl+C): the chosen shapes, then a click — their base

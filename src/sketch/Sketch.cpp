@@ -136,6 +136,19 @@ EntityKind Sketch::KindOf(ObjectId id) const {
     return EntityKind::None;
 }
 
+std::vector<ObjectId> Sketch::Entities() const {
+    std::vector<ObjectId> out;
+    for (const Point& p : points)
+        if (!p.isOrigin) out.push_back(p.id);
+    for (const Line& l : lines) out.push_back(l.id);
+    for (const Circle& c : circles) out.push_back(c.id);
+    for (const Arc& a : arcs) out.push_back(a.id);
+    for (const Spline& s : splines) out.push_back(s.id);
+    for (const Text& t : texts) out.push_back(t.id);
+    for (const Ellipse& e : ellipses) out.push_back(e.id);
+    return out;
+}
+
 Point*            Sketch::FindPoint(ObjectId id)            { return FindIn(points, id); }
 const Point*      Sketch::FindPoint(ObjectId id) const      { return FindIn(points, id); }
 Line*             Sketch::FindLine(ObjectId id)             { return FindIn(lines, id); }

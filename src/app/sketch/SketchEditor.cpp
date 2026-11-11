@@ -696,6 +696,25 @@ void SketchEditor::HandleSelect(AppContext& app, Session& session, const SketchV
     (void)view;
 }
 
+void SketchEditor::SelectAll(AppContext& app, Session& session) {
+    doc::SketchFeature* f = Active(session);
+    if (!f) return;
+    switch (myTool) {
+        case SketchTool::Select:
+        case SketchTool::Move:
+        case SketchTool::Rotate:
+        case SketchTool::Copy:
+        case SketchTool::Scale:
+        case SketchTool::Mirror:
+        case SketchTool::PatternRect:
+        case SketchTool::PatternCircular: break;
+        default: SetTool(app, session, SketchTool::Select); break;
+    }
+    mySelection.clear();
+    for (const ObjectId id : f->sketch.Entities()) mySelection.insert(id);
+    log::Info("Sketch: all chosen, {}", mySelection.size());
+}
+
 void SketchEditor::StartInlineEdit(const sketch::Constraint& c) {
     myEditDimension = c.id;
     myEditText = c.parameter.expression;

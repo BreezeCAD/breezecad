@@ -205,6 +205,9 @@ void RegisterActions(AppContext& app) {
            [&app] {
                if (Session* s = app.Doc()) app.sketch.StartCopy(app, *s);
            }});
+    a.Add({"edit.selectAll", N_("Выделить всё"), "", Ctrl(ImGuiKey_A), {}, inSketch, [&app] {
+               if (Session* s = app.Doc()) app.sketch.SelectAll(app, *s);
+           }});
     a.Add({"edit.paste", N_("Вставить"), "ui-copy", Ctrl(ImGuiKey_V), {}, [&app, inSketch] { return inSketch() && app.sketch.HasClipboard(); },
            [&app] { app.sketch.StartPaste(app); }});
     a.Add({"edit.escape", "", "", ImGuiKey_Escape, {}, {}, [&app] {

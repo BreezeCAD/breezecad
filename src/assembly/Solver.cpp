@@ -600,12 +600,14 @@ std::optional<bool> WantsOpposed(const Constraint& c, const WorldGeometry& a, co
 /// is a dead point for the solver: no small turn makes it better, it cannot
 /// start. Such a part is turned over first — half a turn about an axis
 /// square to its direction, through its point. True when a part was turned.
+bool Usable(const Assembly& a, const Constraint& c);
+
 bool TurnOverBackwards(Assembly& assembly) {
     bool turned = false;
     for (const Constraint& c : assembly.constraints) {
         if (c.Inactive() || IsTransmission(c.type) || c.type == ConstraintType::Symmetry) continue;
         if (!assembly.Exists(c.first.component) || !assembly.Exists(c.second.component)) continue;
-        if (c.first.component == c.second.component) continue;
+        if (c.first.component == c.second.component || !Usable(assembly, c)) continue;
         const WorldGeometry wa = ToWorld(assembly.PlacementOf(c.first.component), c.first);
         const WorldGeometry wb = ToWorld(assembly.PlacementOf(c.second.component), c.second);
         const std::optional<bool> opposed = WantsOpposed(c, wa, wb);
@@ -638,6 +640,18 @@ bool Usable(const Assembly& a, const Constraint& c) {
     }
     return a.Exists(c.first.component) && a.Exists(c.second.component) &&
            (c.type != ConstraintType::Symmetry || a.Exists(c.third.component));
+}
+
+/// A constraint of a part drawn from others (a follower): the part stands
+/// where its sources put it, so the constraint only records where that is.
+/// It holds, adds nothing and is not "redundant" for it.
+bool TiesFollower(const Assembly& a, const Constraint& c) {
+    if (IsTransmission(c.type)) return false;
+    const auto follows = [&a](ObjectId id) {
+        const Component* k = a.FindComponent(id);
+        return k && k->follower;
+    };
+    return follows(c.first.component) || follows(c.second.component);
 }
 
 /// The groups: constraints that share a free component belong together.
@@ -867,7 +881,8 @@ void AnalyzeSystem(System& s) {
             echelon.emplace(leadCol, std::move(v));
             adds = true;
         }
-        if (!adds && c->state == ConstraintState::Satisfied) c->state = ConstraintState::Redundant;
+        if (!adds && c->state == ConstraintState::Satisfied && !TiesFollower(s.assembly, *c))
+            c->state = ConstraintState::Redundant;
     }
 }
 

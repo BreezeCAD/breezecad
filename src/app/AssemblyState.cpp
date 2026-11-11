@@ -208,25 +208,44 @@ void AssemblyState::RollBack(const Mark& mark) {
     ForgetAdaptState();
 }
 
-bool AssemblyState::Undo() {
-    if (myUndo.empty()) return false;
-    myRedo.push_back({assembly::AssemblyToJson(assembly), myUndo.back().label, {}});
-    Restore(myUndo.back().json);
-    // The parts that followed because of that step, as they were (their
-    // sketches too: solving them again where the sources are back would not
-    // bring the free geometry back where it was).
-    for (const auto& [file, json] : myUndo.back().partsBefore) {
+std::vector<std::pair<std::filesystem::path, std::string>>
+AssemblyState::SwapParts(const std::vector<std::pair<std::filesystem::path, std::string>>& parts) {
+    std::vector<std::pair<std::filesystem::path, std::string>> now;
+    for (const auto& [file, json] : parts) {
         PartEdit* edit = EditOf(file);
         if (!edit || !edit->session) continue;
         Expected<doc::Document> was = doc::DocumentFromJson(json);
         if (!was) continue;
+        now.emplace_back(file, doc::DocumentToJson(edit->session->doc));
         edit->session->doc = std::move(*was);
         edit->session->doc.MarkChanged(0);
         edit->session->RebuildNow();
         edit->session->history.MarkUnsaved();
     }
-    if (!myUndo.back().partsBefore.empty()) ForgetAdaptState();
+    if (!parts.empty()) ForgetAdaptState();
+    return now;
+}
+
+std::string AssemblyState::Snapshot() const { return assembly::AssemblyToJson(assembly); }
+
+void AssemblyState::RecordPartEdit(std::string label, std::string assemblyBefore, const std::filesystem::path& file,
+                                   std::string partBefore) {
+    mon::Action("assembly", label);
+    myUndo.push_back({std::move(assemblyBefore), std::move(label), {{file, std::move(partBefore)}}});
+    if (myUndo.size() > kMaxUndo) myUndo.erase(myUndo.begin());
+    myRedo.clear();
+    myAdaptRounds = 0;
+    myAdaptStopped = false;
+}
+
+bool AssemblyState::Undo() {
+    if (myUndo.empty()) return false;
+    Step step = std::move(myUndo.back());
     myUndo.pop_back();
+    Step redo{assembly::AssemblyToJson(assembly), step.label, {}};
+    Restore(step.json);
+    redo.partsBefore = SwapParts(step.partsBefore);   // redo puts them as they are now
+    myRedo.push_back(std::move(redo));
     myAdaptRounds = 0;
     myAdaptStopped = false;
     return true;
@@ -240,9 +259,14 @@ bool AssemblyState::Discard() {
 
 bool AssemblyState::Redo() {
     if (myRedo.empty()) return false;
-    myUndo.push_back({assembly::AssemblyToJson(assembly), myRedo.back().label, {}});
-    Restore(myRedo.back().json);
+    Step step = std::move(myRedo.back());
     myRedo.pop_back();
+    Step undo{assembly::AssemblyToJson(assembly), step.label, {}};
+    Restore(step.json);
+    undo.partsBefore = SwapParts(step.partsBefore);
+    myUndo.push_back(std::move(undo));
+    myAdaptRounds = 0;
+    myAdaptStopped = false;
     return true;
 }
 

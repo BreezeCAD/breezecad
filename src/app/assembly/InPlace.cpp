@@ -128,6 +128,8 @@ bool EditInPlace(AppContext& app, Session& as, ObjectId id, std::string* why) {
         st.geometry.UsePartInMemory(file, &edit->session->doc, &edit->session->model);
     }
     Session& part = *edit->session;
+    // As it all is now: if the part changes, coming back is one undo step.
+    st.inPlaceStart = {file, st.Snapshot(), doc::DocumentToJson(part.doc)};
     part.host = &as;
     part.inPlaceOf = id;
     part.SetMeshQuality(app.settings.graphics);
@@ -161,7 +163,16 @@ void ReturnToAssembly(AppContext& app) {
         as.assembly->selected = now.component->id;
     }
     part.inPlaceOf = {};
-    as.assembly->inPlace = {};
+    AssemblyState& st = *as.assembly;
+    st.inPlace = {};
+    // The edit is one step of the assembly: undo takes the part back and the
+    // positions with it (not the part's edit with the old positions).
+    if (!st.inPlaceStart.file.empty() && doc::DocumentToJson(part.doc) != st.inPlaceStart.part)
+        st.RecordPartEdit("Правка детали на месте", std::move(st.inPlaceStart.assembly), st.inPlaceStart.file,
+                          std::move(st.inPlaceStart.part));
+    st.inPlaceStart = {};
+    // Left on purpose: the sketches «Ручное редактирование» was going to open are not forced on.
+    st.manual = {};
     app.shell.ribbonTab = RibbonTab::Model;
     app.shell.leftTab = LeftTab::Tree;
     mon::Action("assembly", "возврат в сборку");

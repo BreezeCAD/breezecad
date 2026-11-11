@@ -128,6 +128,18 @@ public:
     /// Remembers the assembly as it is, before a change (one undo step).
     void Checkpoint(std::string label);
     bool Undo();
+    /// A part edited in place (or changed by the change dialog) as one step:
+    /// the assembly and the part as they were before it. Undo brings both back
+    /// together, redo both forward — not the part's edit with old positions.
+    void RecordPartEdit(std::string label, std::string assemblyBefore, const std::filesystem::path& file, std::string partBefore);
+    /// The assembly as JSON now (what RecordPartEdit takes as "before").
+    std::string Snapshot() const;
+    /// The part edited in place as it was when the edit began (ReturnToAssembly
+    /// records it as one step if it changed).
+    struct InPlaceStart {
+        std::filesystem::path file;
+        std::string           assembly, part;
+    } inPlaceStart;
     /// Undo that leaves nothing to redo: a trial (a constraint previewed) taken back.
     bool Discard();
     bool Redo();
@@ -227,8 +239,10 @@ public:
 private:
     struct Step {
         std::string json, label;
-        /// Parts that followed their sources because of this step, as they
-        /// were before: undo puts them back too (the sketches with them).
+        /// Parts that changed with this step, as they are to be put back when
+        /// it is applied (before it on the undo list, after it on the redo
+        /// list): their sketches with them — solving again where the sources
+        /// are back would not bring the free geometry back where it was.
         std::vector<std::pair<std::filesystem::path, std::string>> partsBefore;
         std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now();
     };
@@ -271,6 +285,8 @@ private:
     std::array<std::uint64_t, 3>   myContextKey{~std::uint64_t{0}, 0, 0};
 
     void Restore(const std::string& json);
+    /// The parts of `parts` as they are now (for the other list), then put as in `parts`.
+    std::vector<std::pair<std::filesystem::path, std::string>> SwapParts(const std::vector<std::pair<std::filesystem::path, std::string>>& parts);
 };
 
 } // namespace bz::app

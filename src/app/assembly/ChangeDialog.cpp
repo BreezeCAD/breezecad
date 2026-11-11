@@ -356,6 +356,7 @@ void LeadManualEdit(AppContext& app, Session& as) {
     if (st.inPlace != st.manual.component) {
         if (st.inPlace || part != &as) return;   // another part is being edited
         if (!EditInPlace(app, as, st.manual.component)) st.manual = {};
+        else app.Later([] {});   // one more frame: the first sketch opens on it, not on the next mouse move
         return;
     }
     if (!part || part->host != &as || part->mode != EditMode::Model) return;   // a sketch is still open
@@ -395,6 +396,9 @@ const char* ChoiceNote(ChangeChoice c) {
 
 void DrawChangeDialog(AppContext& app) {
     Session* as = app.Doc();
+    // A part edited in place is active then: its assembly leads the manual edit
+    // (the sketches to open are in the part being edited).
+    if (as && as->host) as = as->host;
     if (!as || !as->assembly) return;
     AssemblyState& st = *as->assembly;
     LeadManualEdit(app, *as);

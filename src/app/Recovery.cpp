@@ -218,6 +218,9 @@ void Recovery::Recover(AppContext& app, const char* stage, const std::string& re
 
     CloseTools(app);
     PutBack(app);
+    for (DocState& d : myState.docs)
+        if (app.workspace.IsOpen(d.session)) d.session->recoveredSinceSave = true;
+    if (myState.tab && TabOpen(app.workspace, myState.tab)) myState.tab->recoveredSinceSave = true;
     if (crashed) {
         // A crash may have left the view or the parts' geometry half-way
         // through a change: shown again from scratch.

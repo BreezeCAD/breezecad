@@ -19,6 +19,7 @@ add_executable(bz_tests
     ${PROJECT_SOURCE_DIR}/src/app/mobile/TouchText.cpp
     ${PROJECT_SOURCE_DIR}/src/app/features/ExtrudeDirection.cpp
     drawing/DrawingTests.cpp
+    drawing/DrawingViewTests.cpp
     drawing/PdfTests.cpp
     assembly/AssemblyFileTests.cpp
     assembly/HandoffTests.cpp
@@ -49,6 +50,7 @@ add_executable(bz_tests
     kernel/CoilTests.cpp
     kernel/FilletTests.cpp
     kernel/SeamTests.cpp
+    kernel/HiddenLinesTests.cpp
     kernel/HoleTests.cpp
     kernel/LoftTests.cpp
     kernel/MaterialSideTests.cpp

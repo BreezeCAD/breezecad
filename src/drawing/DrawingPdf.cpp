@@ -1,7 +1,6 @@
 #include "drawing/DrawingPdf.h"
 
 #include "drawing/Pdf.h"
-#include "drawing/SheetLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,13 +33,24 @@ std::string TitleOf(const Drawing& drawing) {
 
 } // namespace
 
-std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont& font, std::string_view producer) {
+std::vector<double> DashOf(LineStyle style) {
+    switch (style) {
+        case LineStyle::Solid:   return {};
+        case LineStyle::Dashed:  return {4, 1.5};        // strokes 2–8 mm, gaps 1–2
+        case LineStyle::DashDot: return {12, 3, 1, 3};   // strokes 5–30 mm, gaps 3–5
+    }
+    return {};
+}
+
+std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont& font, std::string_view producer,
+                                     const ViewLinesSource& views) {
     PdfWriter pdf(font, "BreezeCADSans");
     const int count = static_cast<int>(drawing.sheets.size());
     for (int i = 0; i < count; ++i) {
-        const SheetLayout l = LayoutSheet(drawing.sheets[static_cast<std::size_t>(i)], i + 1, count);
+        const SheetLayout l = LayoutSheetWithViews(drawing.sheets[static_cast<std::size_t>(i)], i + 1, count, views);
         pdf.BeginPage(l.width, l.height);
         for (const Stroke& s : l.strokes) pdf.Line(s.a, s.b, s.weight == LineWeight::Thick ? kThick : kThin);
+        for (const Polyline& p : l.polylines) pdf.Polyline(p.points, p.weight == LineWeight::Thick ? kThick : kThin, DashOf(p.style));
         for (const Label& label : l.labels) {
             if (label.text.empty()) continue;
             const double em = EmOf(label, font), width = pdf.TextWidth(label.text, em);
@@ -57,8 +67,8 @@ std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont&
 }
 
 Status ExportDrawingPdf(const Drawing& drawing, const std::filesystem::path& target, const TrueTypeFont& font,
-                        std::string_view producer) {
-    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer);
+                        std::string_view producer, const ViewLinesSource& views) {
+    const std::vector<std::uint8_t> bytes = DrawingPdf(drawing, font, producer, views);
     std::filesystem::path temp = target;
     temp += ".part";
     {

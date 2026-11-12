@@ -9,10 +9,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace bz::app {
+
+class DrawingViews;
 
 class DrawingState {
 public:
@@ -42,6 +45,11 @@ public:
     /// The file the model paths are relative to (the drawing's own file);
     /// empty before the first save — then they are full paths.
     std::filesystem::path savedAt;
+
+    /// The view picked on the sheet or in the tree (not saved).
+    ObjectId selectedView;
+    /// The lines of the views, computed from the models (app/drawing/DrawingViews).
+    std::shared_ptr<DrawingViews> views;
 
     // --- the camera of the sheet ------------------------------------------------
     Vec2   center;          ///< sheet point in the middle of the canvas, mm

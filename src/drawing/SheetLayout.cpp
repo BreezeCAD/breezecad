@@ -1,5 +1,6 @@
 #include "drawing/SheetLayout.h"
 
+#include <cmath>
 #include <format>
 #include <utility>
 
@@ -150,6 +151,60 @@ SheetLayout LayoutSheet(const Sheet& sheet, int number, int count) {
     // Under the frame: «Копировал» and the size.
     out.labels.push_back({"Копировал", {}, {right - 110, 1.25}, 2.5, Align::Left});
     out.labels.push_back({std::format("Формат {}", SizeId(sheet.size)), {}, {right - 40, 1.25}, 2.5, Align::Left});
+    return out;
+}
+
+namespace {
+
+constexpr double kAxisOverrun = 3;     // ГОСТ 2.305: centre lines go 2–5 mm past the contour
+constexpr double kSmallCircle = 12;    // ГОСТ 2.303: below this diameter, centre lines are solid thin
+
+} // namespace
+
+void AddView(SheetLayout& out, const View& view, const ViewLines& lines) {
+    const double s = view.scale.Value();
+    const auto place = [&](Vec2 p) { return view.at + p * s; };
+    const auto add = [&](const std::vector<Vec2>& points, LineWeight w, LineStyle style) {
+        if (points.size() < 2) return;
+        Polyline line{{}, w, style};
+        line.points.reserve(points.size());
+        for (Vec2 p : points) line.points.push_back(place(p));
+        out.polylines.push_back(std::move(line));
+    };
+    if (view.hidden)
+        for (const auto& l : lines.hidden) add(l, LineWeight::Thin, LineStyle::Dashed);
+    for (const auto& l : lines.visible) add(l, LineWeight::Thick, LineStyle::Solid);
+    if (!view.axes) return;
+    for (const ViewLines::Mark& m : lines.marks) {
+        const Vec2 c = place(m.center);
+        const double r = m.radius * s + kAxisOverrun;
+        const LineStyle style = 2 * m.radius * s < kSmallCircle ? LineStyle::Solid : LineStyle::DashDot;
+        out.polylines.push_back({{c - Vec2{r, 0}, c + Vec2{r, 0}}, LineWeight::Thin, style});
+        out.polylines.push_back({{c - Vec2{0, r}, c + Vec2{0, r}}, LineWeight::Thin, style});
+    }
+    for (const ViewLines::Axis& a : lines.axes) {
+        const Vec2 p = place(a.a), q = place(a.b), d = q - p;
+        const double len = std::hypot(d.x, d.y);
+        if (len < 1e-9) continue;
+        const Vec2 step = d * (kAxisOverrun / len);
+        out.polylines.push_back({{p - step, q + step}, LineWeight::Thin, LineStyle::DashDot});
+    }
+}
+
+Box2 ViewBox(const View& view, const ViewLines& lines) {
+    SheetLayout l;
+    AddView(l, view, lines);
+    Box2 box;
+    for (const Polyline& p : l.polylines)
+        for (Vec2 v : p.points) box.Include(v);
+    return box;
+}
+
+SheetLayout LayoutSheetWithViews(const Sheet& sheet, int number, int count, const ViewLinesSource& lines) {
+    SheetLayout out = LayoutSheet(sheet, number, count);
+    if (!lines) return out;
+    for (const View& v : ViewsOf(sheet))
+        if (const ViewLines* l = lines(sheet, v)) AddView(out, v, *l);
     return out;
 }
 

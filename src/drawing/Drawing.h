@@ -41,9 +41,9 @@ struct ModelRef {
     Json        extra = Json::object();   ///< keys of a newer version, written back as they were
 };
 
-/// A view or an annotation as the file holds it. This version has no types
-/// of its own yet (views come with step 3 of ADR-0012): every one is kept
-/// whole and written back; the editor shows it as «из более новой версии».
+/// A view or an annotation as the file holds it. The types this version
+/// knows are read from it (views: DrawingView.h); any other is kept whole
+/// and written back, and the editor shows it as «из более новой версии».
 struct Item {
     Json json;   ///< the object as read, "type" included
     std::string Type() const;

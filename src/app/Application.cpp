@@ -15,6 +15,7 @@
 #include "app/shell/ModuleWindows.h"
 #include "app/drawing/DrawingEditor.h"
 #include "app/scripting/Scripting.h"
+#include "app/drawing/DrawingViews.h"
 #include "core/Image.h"
 #include "app/viewport/ViewportPanel.h"
 #include "core/Log.h"
@@ -576,6 +577,7 @@ bool Application::WaitsForBackground() const {
     // Only the document on screen: another one takes its result when shown.
     const Session* s = myWorkspace.Active();
     if (s && s->RebuildingInBackground()) return true;
+    if (s && s->drawing && s->drawing->views && s->drawing->views->Busy()) return true;   // a view of the drawing being computed
     return FilePreviewsBusy();   // the home page's pictures, read on another thread
 }
 

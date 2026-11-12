@@ -38,6 +38,7 @@
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Wire.hxx>
 #include <format>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
@@ -54,9 +55,48 @@ bool IsEmpty(const TopoDS_Shape& shape) {
     return !it.More();
 }
 
+TopoDS_Shape Sweep(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper);
+
+/// A face with holes, drafted: LocOpe_DPrism drops the holes (the solid came
+/// out filled), so the outline and every hole are swept on their own and the
+/// holes cut out. The holes are drafted the other way, so the material
+/// narrows (or widens) the same way everywhere, as in Inventor.
+TopoDS_Shape SweepWithHoles(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper) {
+    const TopoDS_Wire outer = BRepTools::OuterWire(face);
+    const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+    const auto alone = [&](const TopoDS_Wire& wire) {
+        BRepBuilderAPI_MakeFace make(surface, wire, Standard_True);
+        if (!make.IsDone()) throw Standard_Failure("a contour of the profile cannot be made a face");
+        TopoDS_Face f = make.Face();
+        // A hole's wire runs the other way round: turn it into a face of its own.
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(f, props);
+        if (props.Mass() < 0) f = TopoDS::Face(make.Face().Reversed());
+        BRepGProp::SurfaceProperties(f, props);
+        if (props.Mass() < 0) {
+            BRepBuilderAPI_MakeFace again(surface, TopoDS::Wire(wire.Reversed()), Standard_True);
+            if (!again.IsDone()) throw Standard_Failure("a contour of the profile cannot be made a face");
+            f = again.Face();
+        }
+        return f;
+    };
+    TopoDS_Shape solid = Sweep(alone(outer), dir, length, taper);
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) {
+        const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+        if (wire.IsSame(outer)) continue;
+        BRepAlgoAPI_Cut cut(solid, Sweep(alone(wire), dir, length, -taper));
+        if (!cut.IsDone()) throw Standard_Failure("a hole of the profile cannot be cut");
+        solid = cut.Shape();
+    }
+    return solid;
+}
+
 /// One face swept along `dir` by `length`, optionally with a draft angle.
 TopoDS_Shape Sweep(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper) {
     if (std::abs(taper) < 1e-9) return BRepPrimAPI_MakePrism(face, dir * length).Shape();
+    int wires = 0;
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) ++wires;
+    if (wires > 1) return SweepWithHoles(face, dir, length, taper);
 
     // LocOpe_DPrism sweeps along the face normal; orient the face so its
     // normal points where we want to go. Positive taper narrows the solid.

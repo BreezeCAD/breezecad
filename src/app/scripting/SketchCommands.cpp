@@ -505,7 +505,7 @@ Json Project(AppContext& app, const Json& args) {
 
 Json Get(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const doc::SketchFeature& f  = SketchOf(s, args);
     const sketch::Sketch&     sk = f.sketch;
     Json out = Describe(f);

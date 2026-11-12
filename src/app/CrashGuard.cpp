@@ -20,7 +20,9 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -54,6 +56,10 @@ std::string           gSystem;
 std::string           gGraphics;
 std::filesystem::path gHangReport;
 std::filesystem::path gProgramPath;
+
+/// Known long work is given this many times the usual patience before a
+/// loop that stands still is called a hang (15 s → 30 s without a step).
+constexpr double kWorkPatience = 2.0;
 
 constexpr int kKeepReports = 20;   ///< crash and hang reports kept in the reports folder (not the testers' sessions)
 
@@ -116,12 +122,32 @@ Guard& G() {
     return guard;
 }
 
-void WriteHangReport(double stalled) {
+/// "command: Переменные" as a person reads it: «Команда: Переменные».
+std::string HumanAction(std::string_view action) {
+    static constexpr std::pair<std::string_view, std::string_view> kSources[] = {
+        {"command", "Команда"},   {"module", "Команда модуля"}, {"edit", "Правка"},        {"undo", "Отмена"},
+        {"redo", "Повтор"},       {"open", "Открытие файла"},   {"action", "Действие"},    {"key", "Клавиша"},
+        {"assembly", "Сборка"},   {"sketch", "Эскиз"},          {"view", "Вид"},           {"select", "Выбор"},
+        {"appearance", "Внешний вид"}, {"hot menu", "Меню у курсора"}, {"touch", "Касание"}, {"window", "Окно"},
+        {"recovery", "Восстановление"}};
+    const auto colon = action.find(": ");
+    if (colon == std::string_view::npos) return std::string(action);
+    for (const auto& [source, human] : kSources)
+        if (action.substr(0, colon) == source) return std::string(human) + std::string(action.substr(colon));
+    return std::string(action);
+}
+
+void WriteHangReport(double stalled, const mon::WorkState& work) {
     std::ofstream out(gHangReport, std::ios::binary | std::ios::trunc);
     std::string header = gHeader;
     if (const auto first = header.find('\n'); first != std::string::npos) header.replace(0, first, "BreezeCAD hang report");
     out << header << "Hang: no response for " << static_cast<int>(stalled) << " s\n"
-        << "Last action: " << mon::LastAction() << "\n";
+        << "Last action: " << HumanAction(mon::LastAction()) << "\n";
+    if (const std::string detail = mon::LastActionDetail(); !detail.empty()) out << "Details: " << detail << "\n";
+    // The long work it was in the middle of, and for how long that has not moved.
+    if (work.active)
+        out << "Working on: " << mon::DescribeWork(work) << "\n"
+            << "No progress for: " << static_cast<int>(work.secondsSinceStep) << " s\n";
 }
 
 void Watch() {
@@ -153,8 +179,15 @@ void Watch() {
             }
             continue;
         }
-        if (stalled < g.seconds || now < quietUntil || now - pausedAt < stalled) continue;
-        WriteHangReport(stalled);
+        // Known long work under way (a rebuild, an export): the loop standing
+        // still is that work, not a hang, for as long as its steps go on.
+        // Only when neither the loop beats nor the work moves for twice the
+        // usual time (30 s) is it reported — with the work named.
+        const mon::WorkState work = mon::CurrentWork();
+        const double quiet = work.active ? std::min(stalled, work.secondsSinceStep) : stalled;
+        const double limit = work.active ? g.seconds * kWorkPatience : g.seconds;
+        if (quiet < limit || now < quietUntil || now - pausedAt < stalled) continue;
+        WriteHangReport(stalled, work);
 #if defined(BZ_MOBILE)
         // No window of ours here: the watchdog process (":crash") sees the
         // beat stop and offers "wait / close and send a report" (ADR-0004).

@@ -45,6 +45,12 @@ struct State {
     std::condition_variable wake;
     bool                    stopping = false;
     char                    action[256] = {};   // copy for crash handlers
+    std::string             actionDetail;       // under `mutex`
+    std::mutex              workMutex;          // the known long work under way (Work)
+    bool                    working = false;
+    std::string             workWhat, workStep;
+    std::size_t             workDone = 0, workTotal = 0;
+    long long               workStepNs = 0;     // when its step last changed
     std::filesystem::path   dumpDir;
 };
 
@@ -162,13 +168,58 @@ void Action(std::string_view source, std::string_view name) {
         std::lock_guard lock(s.mutex);
         std::snprintf(s.action, sizeof s.action, "%.*s: %.*s", static_cast<int>(source.size()), source.data(),
                       static_cast<int>(name.size()), name.data());
+        s.actionDetail.clear();
     }
     if (Enabled()) Emit("act", std::format("\"src\":{},\"name\":{}", Quote(source), Quote(name)));
 }
 
 std::string_view LastAction() { return S().action; }
 
+void ActionDetail(std::string_view detail) {
+    State& s = S();
+    std::lock_guard lock(s.mutex);
+    s.actionDetail = detail;
+}
+
+std::string LastActionDetail() {
+    State& s = S();
+    std::lock_guard lock(s.mutex);
+    return s.actionDetail;
+}
+
 void Beat() { S().beatNs.store(Nanos(), std::memory_order_relaxed); }
+
+void Work(std::string_view what, std::string_view step, std::size_t done, std::size_t total) {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    if (!s.working || s.workDone != done || s.workStep != step || s.workWhat != what) s.workStepNs = Nanos();
+    s.working = true;
+    s.workWhat = what;
+    s.workStep = step;
+    s.workDone = done;
+    s.workTotal = total;
+}
+
+void WorkDone() {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    s.working = false;
+}
+
+WorkState CurrentWork() {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    if (!s.working) return {};
+    return {true, s.workWhat, s.workStep, s.workDone, s.workTotal, static_cast<double>(Nanos() - s.workStepNs) * 1e-9};
+}
+
+std::string DescribeWork(const WorkState& work) {
+    if (!work.active) return {};
+    std::string out = work.what;
+    if (!work.step.empty()) out += std::format(": «{}»", work.step);
+    if (work.total > 1) out += std::format(", операция {} из {}", std::min(work.done + 1, work.total), work.total);
+    return out;
+}
 
 double SecondsSinceBeat() {
     const State& s = S();

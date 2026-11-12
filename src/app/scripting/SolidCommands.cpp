@@ -54,7 +54,7 @@ Json Finish(Session& s, std::unique_ptr<doc::SketchSolidFeature> f, const Json& 
 
 Json Extrude(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::ExtrudeFeature>();
     FillSolid(s, args, *f);
     static const std::vector<std::string> kExtents = {"distance", "symmetric", "through_all", "asymmetric"};
@@ -85,7 +85,7 @@ Json Extrude(AppContext& app, const Json& args) {
 
 Json Revolve(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::RevolveFeature>();
     FillSolid(s, args, *f);
     const auto& sk = s.doc.FindAs<doc::SketchFeature>(f->sketch)->sketch;
@@ -110,7 +110,7 @@ Json Revolve(AppContext& app, const Json& args) {
 
 Json Sweep(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::SweepFeature>();
     FillSolid(s, args, *f);
     f->path = Id(args, "path");
@@ -121,7 +121,7 @@ Json Sweep(AppContext& app, const Json& args) {
 
 Json Coil(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::CoilFeature>();
     FillSolid(s, args, *f);
     const auto& sk = s.doc.FindAs<doc::SketchFeature>(f->sketch)->sketch;
@@ -154,7 +154,7 @@ Vec3 Point3(const Json& args, const char* key, std::optional<Vec3> fallback) {
 /// face itself (doc::CylinderTouch), the same way a click in the viewport does.
 Json Thread(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     if (s.model.Bodies().empty()) Fail("В детали нет тела, на котором делать резьбу");
     const Vec3   point    = Point3(args, "axis_point", std::nullopt);
     Vec3         dir      = Point3(args, "axis_dir", Vec3{0, 0, 1});
@@ -184,13 +184,13 @@ Json Thread(AppContext& app, const Json& args) {
     }
     const ObjectId id = f->id;
     s.Execute(doc::AddFeature(std::move(f), s.doc.EndMarker()));
-    s.RebuildNow();
+    Rebuild(s);
 
     auto* made = s.doc.FindAs<doc::ThreadFeature>(id);
     if (!made->site) {   // no cylinder there: take the step back rather than leave a broken feature
         const std::string why = made->status.message;
         s.Undo();
-        s.RebuildNow();
+        Rebuild(s);
         Fail(std::format("Резьба не построена: {} (ось через [{}, {}, {}], Ø{}). Проверьте ось и диаметр по part.properties / sketch.get",
                          why.empty() ? "цилиндрическая грань не найдена" : why, point.x, point.y, point.z, diameter));
     }

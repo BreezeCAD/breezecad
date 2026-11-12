@@ -4,6 +4,7 @@
 #include "app/features/SheetMetalEditors.h"
 
 #include "app/Format.h"
+#include "app/Import.h"
 #include "app/features/OperationEditors.h"
 #include "app/mobile/MobileLayout.h"
 #include "app/mobile/PhoneHome.h"
@@ -112,6 +113,7 @@ void OpenDropped(AppContext& app, const std::filesystem::path& file) {
     if (ext == u8".bzmod" || ext == u8".zip") InstallModule(app, file);
     else if (ext == u8".bzp") OpenProject(app, file);
     else if (ext == u8".bzlib") InstallStandardPack(app, file);
+    else if (IsImportable(file)) StartImport(app, file);   // STEP and STL: a new part (never taken from the slicers' associations)
     else OpenDocument(app, file);
 }
 
@@ -127,12 +129,17 @@ void OpenDocument(AppContext& app, std::optional<std::filesystem::path> file) {
         }
         file = platform::ShowOpenDialog(Tr("Открыть документ"),
                                         {{Tr("Документ BreezeCAD"), doc::DocumentTypeRegistry::Default().OpenPatterns() + " *.bzp"},
-                                         {Tr("Проект BreezeCAD"), "*.bzp"}},
+                                         {Tr("Проект BreezeCAD"), "*.bzp"},
+                                         {Tr("STEP и STL (импорт)"), "*.step *.stp *.stl *.STEP *.STP *.STL"}},
                                         folder);
         if (!file) return;
     }
     if (std::u8string ext = file->extension().u8string(); ext == u8".bzp" || ext == u8".BZP") {
         OpenProject(app, *file);
+        return;
+    }
+    if (IsImportable(*file)) {
+        StartImport(app, *file);
         return;
     }
     EndEditing(app);
@@ -616,7 +623,9 @@ void EscapePressed(AppContext& app) {
     }
     Session* s = app.Doc();
     if (!s) return;
-    if (OperationEditor* open = app.ops.Active()) {
+    if (s->importing && ImportsRunning(app)) {
+        CancelImport(*s);
+    } else if (OperationEditor* open = app.ops.Active()) {
         open->Cancel(app, *s);
     } else if (app.shell.measuring) {
         app.shell.measuring = false;

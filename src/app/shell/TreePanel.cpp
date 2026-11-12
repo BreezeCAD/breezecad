@@ -34,6 +34,8 @@
 #include "app/assembly/InPlace.h"
 #include "app/sketch/SketchRepair.h"
 #include "assembly/AssemblyFile.h"
+#include "app/Import.h"
+#include "document/ImportFeature.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
 
@@ -197,6 +199,9 @@ std::string FeatureMeta(const doc::Feature& f, const doc::Document& d) {
     }
     if (const auto* sk = dynamic_cast<const doc::SketchFeature*>(&f); sk && sk->analysis.degreesOfFreedom > 0)
         return "\xE2\x89\x88" + std::to_string(sk->analysis.degreesOfFreedom);   // ≈N: not fully defined
+    if (const auto* imp = dynamic_cast<const doc::ImportFeature*>(&f))   // STEP · 3, STL
+        return imp->kind == doc::ImportKind::Mesh || imp->bodyCount <= 1 ? imp->sourceFormat
+                                                                         : imp->sourceFormat + " \xC2\xB7 " + std::to_string(imp->bodyCount);
     return {};
 }
 
@@ -483,6 +488,8 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
     }
     ImGui::PopStyleVar();
     ImGui::EndGroup();
+    // An imported body chosen in the tree: where it came from, «Обновить из файла».
+    if (session.selectedFeature) DrawImportProperties(app, session, session.selectedFeature, width);
 }
 
 // --- assembly -------------------------------------------------------------------
@@ -864,6 +871,7 @@ const char* FeatureIcon(const doc::Feature& f) {
     if (dynamic_cast<const doc::SheetMetalFeature*>(&f)) return "tree-sheet";
     if (dynamic_cast<const doc::FlangeFeature*>(&f)) return "tree-flange";
     if (dynamic_cast<const doc::SheetCutFeature*>(&f)) return "tree-sheet-cut";
+    if (const auto* imp = dynamic_cast<const doc::ImportFeature*>(&f)) return imp->kind == doc::ImportKind::Mesh ? "tree-mesh" : "tree-import";
     return "tree-unknown";
 }
 

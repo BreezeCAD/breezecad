@@ -5,6 +5,7 @@
 #include "app/Session.h"
 #include "app/scripting/Commands.h"
 #include "core/I18n.h"
+#include "document/ImportFeature.h"
 #include "document/Commands.h"
 #include "document/JsonIO.h"
 
@@ -67,6 +68,9 @@ Json FeatureFields(AppContext& app, const Json& args) {
     Json                out = Describe(f);
     Json                fields;
     f.SaveFields(fields);
+    // An imported body's geometry is megabytes of base64: its size, not the bytes.
+    if (f.Type() == doc::ImportFeature::kType && fields.contains("data"))
+        fields["data"] = std::format("<{} байт геометрии внутри детали>", fields.value("dataSize", std::uint64_t{0}));
     out["fields"] = std::move(fields);
     return out;
 }

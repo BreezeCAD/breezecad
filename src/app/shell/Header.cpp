@@ -53,6 +53,7 @@ void MainMenu(AppContext& app) {
     MenuAction(app, "file.new");
     MenuAction(app, "drawing.fromModel");   // the drawing of what is open (ADR-0012)
     MenuAction(app, "file.open");
+    MenuAction(app, "file.import");
     if (ui::BeginSubmenu(ui, Tr("Последние"), "ui-file", !app.settings.recentFiles.empty())) {
         for (const auto& file : app.settings.recentFiles) {
             const std::u8string name = file.filename().u8string();

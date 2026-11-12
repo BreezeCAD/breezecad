@@ -19,6 +19,7 @@ add_library(bz_kernel STATIC
     occt/FaceMatch.cpp
     occt/Fillet.cpp
     occt/Hole.cpp
+    occt/Import.cpp
     occt/Loft.cpp
     occt/Measure.cpp
     occt/Points.cpp

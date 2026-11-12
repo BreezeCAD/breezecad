@@ -4,6 +4,7 @@
 #include "app/viewport/Section.h"
 #include "app/Application.h"
 #include "app/BetaTesting.h"
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/features/DxfEditor.h"
 #include "app/assembly/AssemblyUi.h"
@@ -118,6 +119,8 @@ void RegisterActions(AppContext& app) {
         a.Add({j.id, j.title, j.icon, 0, j.tip, asmDoc, [&app, type] { StartConstraint(app, type); }});
     }
     a.Add({"file.open", N_("Открыть…"), "ui-open", Ctrl(ImGuiKey_O), {}, {}, [&app] { OpenDocument(app); }});
+    a.Add({"file.import", N_("Импорт…"), "ui-import", Ctrl(ImGuiKey_I), N_("STEP (.step, .stp) — точная деталь, STL (.stl) — сетка"), {},
+           [&app] { StartImport(app); }});
     a.Add({"file.save", N_("Сохранить"), "ui-save", Ctrl(ImGuiKey_S), {}, hasDoc, [&app] { SaveDocument(app, false); }});
     a.Add({"file.saveAs", N_("Сохранить как…"), "ui-save", CtrlShift(ImGuiKey_S), {}, hasDoc, [&app] { SaveDocument(app, true); }});
     a.Add({"file.close", N_("Закрыть документ"), "ui-close", Ctrl(ImGuiKey_W), {}, hasDoc,

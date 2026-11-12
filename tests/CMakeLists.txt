@@ -54,6 +54,7 @@ add_executable(bz_tests
     kernel/SeamTests.cpp
     kernel/HiddenLinesTests.cpp
     kernel/HoleTests.cpp
+    kernel/ImportTests.cpp
     kernel/LoftTests.cpp
     kernel/MaterialSideTests.cpp
     kernel/MeasureTests.cpp
@@ -93,6 +94,7 @@ add_executable(bz_tests
     sketch/TrimTests.cpp)
 target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::drawing bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
 add_dependencies(bz_tests bz_example_module bz_example_module_fail)
+target_link_libraries(bz_tests PRIVATE bz::occt_exchange)   # ImportTests write their own STEP files
 if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop only (GLFW)
     # The assembly as the program runs it (solving, adaptivity, undo): its
     # state and the part sessions in it, without a window.

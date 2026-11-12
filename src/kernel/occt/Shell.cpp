@@ -3,6 +3,11 @@
 #include "kernel/occt/Extrude.h"
 
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepOffset_Analyse.hxx>
+#include <BRepOffset_MakeOffset.hxx>
+#include <BRep_Builder.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS_Shell.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepGProp_Face.hxx>
@@ -18,6 +23,7 @@
 #include <GeomAbs_JoinType.hxx>
 #include <Standard_Failure.hxx>
 #include <TopTools_ListOfShape.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
 #include <algorithm>
@@ -103,6 +109,89 @@ bool IsHollowed(const TopoDS_Shape& body, const TopoDS_Shape& result, bool outwa
     return outward || after < before;
 }
 
+/// The solid between `faces` and their offset by `distance` (OCCT
+/// thickening): a slab under one face, or the sharp corner under a group.
+std::optional<TopoDS_Shape> Thicken(const TopoDS_Shape& faces, double distance) {
+    BRepOffset_MakeOffset offset;
+    offset.Initialize(faces, distance, kTolerance, BRepOffset_Skin, false, false, GeomAbs_Intersection, true);
+    offset.MakeOffsetShape();
+    if (!offset.IsDone() || offset.Shape().IsNull()) return std::nullopt;
+    return offset.Shape();
+}
+
+/// A shell of the body's own faces, which already share their edges.
+TopoDS_Shell ShellOf(const TopTools_IndexedMapOfShape& faces) {
+    TopoDS_Shell shell;
+    BRep_Builder builder;
+    builder.MakeShell(shell);
+    for (int i = 1; i <= faces.Extent(); ++i) builder.Add(shell, faces(i));
+    return shell;
+}
+
+/// Inward shell made of booleans, for bodies the OCCT offset cannot take:
+/// the offset walls of two contours run into each other (a slot 2 mm from
+/// the outer wall with a 2 mm shell — the tube and the wall touch). The
+/// walls are the body in common with the union of slabs `thickness` deep
+/// under every face that stays; where two faces meet at a concave edge or
+/// vertex, the slab of the faces together fills the sharp corner. Colliding
+/// walls simply overlap in the union.
+Expected<TopoDS_Shape> ShellBySlabs(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& open, double thickness) {
+    TopTools_IndexedMapOfShape removed;
+    for (const TopoDS_Face& f : open) removed.Add(f);
+    std::vector<TopoDS_Shape> slabs;
+    const auto add = [&](const TopoDS_Shape& faces) {
+        const std::optional<TopoDS_Shape> slab = Thicken(faces, -thickness);
+        if (slab) slabs.push_back(*slab);
+        return slab.has_value();
+    };
+    for (TopExp_Explorer f(body, TopAbs_FACE); f.More(); f.Next())
+        if (!removed.Contains(f.Current()) && !add(f.Current())) return Error{kFailed};
+
+    const BRepOffset_Analyse analyse(body, 1.0 * 3.14159265358979 / 180);
+    const auto concave = [&](const TopoDS_Shape& edge) {
+        const BRepOffset_ListOfInterval& types = analyse.Type(TopoDS::Edge(edge));
+        return !types.IsEmpty() && types.First().Type() == ChFiDS_Concave;
+    };
+    // The faces around a corner, or nothing if one of them is removed: the
+    // corner is open there.
+    const auto corner = [&](const TopTools_ListOfShape& around) {
+        TopTools_IndexedMapOfShape faces;
+        for (const TopoDS_Shape& f : around) {
+            if (removed.Contains(f)) return TopTools_IndexedMapOfShape{};
+            faces.Add(f);
+        }
+        return faces;
+    };
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces, vertexEdges, vertexFaces;
+    TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    TopExp::MapShapesAndAncestors(body, TopAbs_VERTEX, TopAbs_EDGE, vertexEdges);
+    TopExp::MapShapesAndAncestors(body, TopAbs_VERTEX, TopAbs_FACE, vertexFaces);
+    for (int i = 1; i <= edgeFaces.Extent(); ++i) {
+        if (!concave(edgeFaces.FindKey(i))) continue;
+        const TopTools_IndexedMapOfShape faces = corner(edgeFaces(i));
+        if (faces.Extent() == 2 && !add(ShellOf(faces))) return Error{kFailed};
+    }
+    for (int i = 1; i <= vertexEdges.Extent(); ++i) {
+        TopTools_IndexedMapOfShape edges;
+        for (const TopoDS_Shape& e : vertexEdges(i))
+            if (concave(e)) edges.Add(e);
+        if (edges.Extent() < 2) continue;
+        const TopTools_IndexedMapOfShape faces = corner(vertexFaces.FindFromKey(vertexEdges.FindKey(i)));
+        if (faces.Extent() > 2 && !add(ShellOf(faces))) return Error{kFailed};
+    }
+    if (slabs.empty()) return Error{kFailed};
+    const TopoDS_Shape first = slabs.front();
+    slabs.erase(slabs.begin());
+    const Expected<TopoDS_Shape> walls = ApplyBoolean(first, slabs, doc::BooleanOp::Join);
+    if (!walls) return Error{kFailed};
+    return ApplyBoolean(body, *walls, doc::BooleanOp::Intersect);
+}
+
+/// Whether the shell made by OCCT can be taken as it is.
+bool Accepted(const TopoDS_Shape& body, const TopoDS_Shape& result, bool outward) {
+    return !result.IsNull() && BRepCheck_Analyzer(result).IsValid() && IsHollowed(body, result, outward);
+}
+
 } // namespace
 
 Expected<TopoDS_Shape> MakeShell(const TopoDS_Shape& body, const std::vector<TopoDS_Face>& open, double thickness, bool outward) {
@@ -115,32 +204,40 @@ Expected<TopoDS_Shape> MakeShell(const TopoDS_Shape& body, const std::vector<Top
     // "succeeds" there but gives faces turned the wrong way, so it is not
     // used: the message says why and how to get the part another way.
     const auto failed = [&] { return Error{HasMixedEdges(body) ? kMixedEdges : kFailed}; };
+    TopoDS_Shape result;
     try {
-        TopoDS_Shape result;
         if (open.empty()) {
             // Closed hollow: cut the inner offset from the body (or the body
             // from the outer offset).
             const Expected<TopoDS_Shape> other = Offset(body, outward ? thickness : -thickness);
-            if (!other) return failed();
-            const Expected<TopoDS_Shape> cut =
-                outward ? ApplyBoolean(*other, body, doc::BooleanOp::Cut) : ApplyBoolean(body, *other, doc::BooleanOp::Cut);
-            if (!cut) return Error{kFailed};
-            result = *cut;
+            if (other) {
+                const Expected<TopoDS_Shape> cut =
+                    outward ? ApplyBoolean(*other, body, doc::BooleanOp::Cut) : ApplyBoolean(body, *other, doc::BooleanOp::Cut);
+                if (cut) result = *cut;
+            }
         } else {
             TopTools_ListOfShape faces;
             for (const TopoDS_Face& f : open) faces.Append(f);
             BRepOffsetAPI_MakeThickSolid solid;
             solid.MakeThickSolidByJoin(body, faces, outward ? thickness : -thickness, kTolerance, BRepOffset_Skin, false,
                                        false, GeomAbs_Intersection);
-            if (!solid.IsDone() || solid.Shape().IsNull()) return failed();
-            result = solid.Shape();
+            if (solid.IsDone()) result = solid.Shape();
         }
-        if (!BRepCheck_Analyzer(result).IsValid()) return Error{kFailed};
-        if (!IsHollowed(body, result, outward)) return failed();
-        return result;
     } catch (const Standard_Failure&) {
-        return failed();
+        result.Nullify();
     }
+    if (Accepted(body, result, outward)) return result;
+    // The OCCT offset fails, or "succeeds" with an invalid body, where the
+    // inner walls of two contours meet (a slot 2 mm from the outer wall). An
+    // inward shell is then made of booleans. Not for the mixed edges of a
+    // loft: there the message explains the way around.
+    if (outward || HasMixedEdges(body)) return failed();
+    try {
+        const Expected<TopoDS_Shape> slabs = ShellBySlabs(body, open, thickness);
+        if (slabs && Accepted(body, *slabs, outward)) return *slabs;
+    } catch (const Standard_Failure&) {
+    }
+    return Error{kFailed};
 }
 
 } // namespace bz::kernel::occt

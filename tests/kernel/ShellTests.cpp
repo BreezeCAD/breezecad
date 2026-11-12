@@ -74,10 +74,10 @@ TEST_CASE("too thick a shell is an error, not a crash") {
     CHECK(c.shell->status.state == FeatureState::Error);
 }
 
-// Not passing yet: OCCT's thick solid and offset both fail on the slot
-// (flat walls running tangentially into half-cylinders); BRepCheck rejects
-// the result. Kept skipped as the reproduction for the fix.
-TEST_CASE("shell open at the top of a plate with a through hole and a slot: they get tube walls" * doctest::skip()) {
+// The slot ends 2 mm from the outer wall, so with a 2 mm shell its tube
+// touches the wall: the OCCT offset fails there and the shell is made of
+// booleans (ShellBySlabs).
+TEST_CASE("shell open at the top of a plate with a through hole and a slot: they get tube walls") {
     // Found on Windows (MCP): a 60x40x12 plate with a hole, shell 2 mm open
     // at the top failed with "too thick". Inventor builds it: the hole
     // becomes a tube with a 2 mm wall, the floor is 2 mm thick.

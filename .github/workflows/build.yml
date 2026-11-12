@@ -140,7 +140,7 @@ jobs:
           # No modules inside: they are separate packages (.bzmod) the user
           # installs in "Настройки → Модули".
           bash scripts/deploy-runtime.sh dist/BreezeCAD breezecad.exe "$(cygpath -u "$OCCT_PREFIX")/bin"
-          ls dist/BreezeCAD/TK*.dll > /dev/null || { echo "::error title=Package::no OCCT libraries in the package"; exit 1; }
+          ls dist/BreezeCAD/*TK*.dll > /dev/null || { echo "::error title=Package::no OCCT libraries in the package"; exit 1; }
           # File Explorer previews and file-type icons: registered by the
           # installer, unused by the portable copy (a few hundred KB).
           mkdir -p dist/BreezeCAD/shell
@@ -170,7 +170,7 @@ jobs:
               echo "::error title=Windows start check::a library is missing from the package (exit $status): $(tail -3 start.log | tr '\n' ' ' | cut -c1-300)"
               exit 1 ;;
           esac
-          echo "::notice title=Windows start check::the package loaded its own $(ls dist/BreezeCAD/*.dll | wc -l) DLLs (OCCT: $(ls dist/BreezeCAD/TK*.dll | wc -l)) and ran (exit $status$([ -f shots/windows.ppm ] && echo ', drew a frame'))"
+          echo "::notice title=Windows start check::the package loaded its own $(ls dist/BreezeCAD/*.dll | wc -l) DLLs (OCCT: $(ls dist/BreezeCAD/*TK*.dll | wc -l)) and ran (exit $status$([ -f shots/windows.ppm ] && echo ', drew a frame'))"
       - name: Zip for the release
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
@@ -302,7 +302,7 @@ jobs:
               - conda-forge
           create-args: >-
             cmake ninja gxx_linux-64=13 sysroot_linux-64=2.28
-            freetype fontconfig glfw libgl-devel xorg-libx11 xorg-libxi
+            freetype fontconfig expat glfw libgl-devel xorg-libx11 xorg-libxi
             xorg-libxrandr xorg-libxinerama xorg-libxcursor xorg-libxext xorg-xorgproto
           cache-environment: true
       # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,

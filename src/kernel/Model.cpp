@@ -1548,7 +1548,14 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
             f.status = {FeatureState::Error, "Геометрическое ядро не смогло выполнить операцию (сбой внутри OpenCASCADE): измените параметры или геометрию"};
             log::Error("{}: OCCT fault ({}) — operation skipped", f.name, fault);
         }
-        if (f.status.state == FeatureState::Error) log::Warn("{}: {}", f.name, f.status.message);
+        if (f.status.state == FeatureState::Error) {
+            log::Warn("{}: {}", f.name, f.status.message);
+            // An operation that failed changes nothing: no half-applied cut
+            // (the first of two bodies already cut), and nothing for a
+            // pattern or a mirror to copy — "копируются операции без ошибок".
+            if (!skip) bodies = before;
+            impl.tools.erase(f.id);
+        }
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - featureStart).count();
         if (!skip) impl.costMs[f.id] = ms;
         if (ms > 50) log::Info("Rebuild: {} took {:.0f} ms", f.name, ms);

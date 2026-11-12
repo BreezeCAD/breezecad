@@ -83,6 +83,16 @@ double DistanceRow(const Constraint& c, double d) {
     return d - c.value;
 }
 
+/// An angle (without a range) of 0 or 180°: +1 or -1, the way the second
+/// direction should be along the first; nullopt for any other angle.
+std::optional<int> AngleAlong(const Constraint& c) {
+    if (c.type != ConstraintType::Angle || c.limits.enabled) return std::nullopt;
+    const double cosine = std::cos(c.value);
+    if (cosine > 1 - 1e-12) return 1;
+    if (cosine < -1 + 1e-12) return -1;
+    return std::nullopt;
+}
+
 /// Equations of one geometric constraint; all in millimetres. `s`: the
 /// plane of symmetry (Symmetry only). `limits`: with the rows that keep
 /// joints within their limits (not when counting freedom: a limit does not
@@ -119,14 +129,25 @@ void Residuals(const Constraint& c, WorldGeometry a, WorldGeometry b, const Worl
         case ConstraintType::AxisMate:
             Collinear(out, a, b);
             break;
-        case ConstraintType::Angle:
+        case ConstraintType::Angle: {
+            // The angle itself, not its cosine: the cosine does not change at
+            // 0 and 180° (two parallel faces, the usual start), and the
+            // solver could not move the part off them. The angle grows from
+            // there whichever way the part turns. atan2, not acos: exact
+            // near 0 and 180°.
+            const double angle = std::atan2(a.d.Cross(b.d).Length(), a.d.Dot(b.d));
             if (c.limits.enabled) {
-                const double angle = std::acos(std::clamp(a.d.Dot(b.d), -1.0, 1.0));
                 out.push_back(OutsideLimits(JointMotion::Slide, c.limits, angle) * kScale);
+            } else if (const std::optional<int> along = AngleAlong(c)) {
+                // 0 or 180°: parallel, as the directions of a mate (the angle
+                // has a corner there, the solver would not settle on it).
+                Push(out, b.d - a.d * *along, kScale);
             } else {
-                out.push_back((a.d.Dot(b.d) - std::cos(c.value)) * kScale);
+                const double wanted = std::acos(std::clamp(std::cos(c.value), -1.0, 1.0));   // into [0, π]
+                out.push_back((angle - wanted) * kScale);
             }
             break;
+        }
         case ConstraintType::Tangent: {
             if (IsPlane(b) || (b.kind == GeometryKind::Cylinder && a.kind == GeometryKind::Sphere)) std::swap(a, b);
             if (IsPlane(a)) {
@@ -578,57 +599,116 @@ double Norm(const std::vector<double>& v) {
     return std::sqrt(s);
 }
 
-/// Whether `c` wants the directions of its two sides opposed (true) or the
-/// same way (false); nullopt when it has no such rows.
-std::optional<bool> WantsOpposed(const Constraint& c, const WorldGeometry& a, const WorldGeometry& b) {
+/// The direction `c` wants the second side's to have, given the first side
+/// (`s`: the plane of symmetry); nullopt when it has no such rows or either
+/// way will do (two axes on one line).
+std::optional<Vec3> WantedDirection(const Constraint& c, const WorldGeometry& a, const WorldGeometry& b, const WorldGeometry* s) {
     switch (c.type) {
         case ConstraintType::Mate:
-            if (IsPlane(a) && IsPlane(b)) return !c.flipped;
+            if (IsPlane(a) && IsPlane(b)) return c.flipped ? a.d : -a.d;
             return std::nullopt;
         case ConstraintType::Insert:
         case ConstraintType::Rotational:
         case ConstraintType::Slider:
         case ConstraintType::Cylindrical:
         case ConstraintType::Planar:
-        case ConstraintType::Rigid: return !c.flipped;
+        case ConstraintType::Rigid: return c.flipped ? a.d : -a.d;
+        case ConstraintType::Angle:
+            if (const std::optional<int> sign = AngleAlong(c)) return a.d * *sign;
+            return std::nullopt;
+        case ConstraintType::Symmetry: {
+            // Mirrored faces: the mirror of the first's normal (flipped: opposed).
+            if (!IsPlane(a) || !IsPlane(b)) return std::nullopt;
+            const Vec3 n = s ? s->d : Vec3{0, 0, 1};
+            const Vec3 m = a.d - n * (2 * a.d.Dot(n));
+            return c.flipped ? -m : m;
+        }
         default: return std::nullopt;
     }
 }
 
-/// A part that stands exactly the wrong way round for a constraint (its
-/// direction opposed where the constraint wants the same, or the other way)
-/// is a dead point for the solver: no small turn makes it better, it cannot
-/// start. Such a part is turned over first — half a turn about an axis
-/// square to its direction, through its point. True when a part was turned.
+/// Squared error of the constraints that tie `id`, where the parts stand now.
+double ErrorAround(const Assembly& assembly, ObjectId id);
+
+/// A part that stands the wrong way round for a constraint (its direction
+/// opposed to the one the constraint wants) is a dead point for the solver:
+/// no small turn makes it better, it cannot start. Far the wrong way it
+/// starts, but the long turn back does not finish in one solve. Such a part
+/// is turned first, about its point: exactly the wrong way — half a turn
+/// about an axis square to its direction; far the wrong way — the shortest
+/// turn that brings its direction to the wanted one, and only when that
+/// brings the constraints of the part nearer to holding (else two
+/// constraints that want it opposite ways would turn it there and back on
+/// every solve). Fixed parts (grounded, drawn from others) are never turned.
+/// True when a part was turned.
 bool Usable(const Assembly& a, const Constraint& c);
+
+/// "Far the wrong way": more than 150° from the wanted direction.
+constexpr double kTurnFirst = 150.0 * kPi / 180.0;
 
 bool TurnOverBackwards(Assembly& assembly) {
     bool turned = false;
+    const double turnBelow = std::cos(kTurnFirst);
     for (const Constraint& c : assembly.constraints) {
-        if (c.Inactive() || IsTransmission(c.type) || c.type == ConstraintType::Symmetry) continue;
+        if (c.Inactive() || IsTransmission(c.type)) continue;
         if (!assembly.Exists(c.first.component) || !assembly.Exists(c.second.component)) continue;
         if (c.first.component == c.second.component || !Usable(assembly, c)) continue;
         const WorldGeometry wa = ToWorld(assembly.PlacementOf(c.first.component), c.first);
         const WorldGeometry wb = ToWorld(assembly.PlacementOf(c.second.component), c.second);
-        const std::optional<bool> opposed = WantsOpposed(c, wa, wb);
-        if (!opposed) continue;
-        const double along = wa.d.Dot(wb.d);
-        if (!(*opposed ? along > 1 - 1e-6 : along < -1 + 1e-6)) continue;
-        Component* first = assembly.FindComponent(c.first.component);
-        Component* second = assembly.FindComponent(c.second.component);
-        Component* part = first && !first->grounded ? first : second && !second->grounded ? second : nullptr;
+        const bool symmetry = c.type == ConstraintType::Symmetry;
+        const WorldGeometry ws = symmetry ? ToWorld(assembly.PlacementOf(c.third.component), c.third) : WorldGeometry{};
+        const WorldGeometry* plane = symmetry ? &ws : nullptr;
+        const std::optional<Vec3> wanted = WantedDirection(c, wa, wb, plane);
+        if (!wanted) continue;
+        const double along = wb.d.Dot(*wanted);   // -1: exactly the wrong way (the same for either side)
+        if (along > turnBelow) continue;
+        Component* first = assembly.IsFixed(c.first.component) ? nullptr : assembly.FindComponent(c.first.component);
+        Component* second = assembly.IsFixed(c.second.component) ? nullptr : assembly.FindComponent(c.second.component);
+        Component* part = first ? first : second;
         if (!part) continue;
+        // Turning the plane of symmetry with the part would turn the mirror too.
+        if (symmetry && c.third.component == part->id) continue;
         const WorldGeometry& g = part == first ? wa : wb;
-        Vec3 axis = g.x - g.d * g.x.Dot(g.d);
-        if (axis.Length() < 1e-6) {
-            const Vec3 e = std::abs(g.d.x) < 0.9 ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
-            axis = e - g.d * e.Dot(g.d);
+        const Vec3 to = part == first ? *WantedDirection(c, wb, wa, plane) : *wanted;   // where g.d should point
+        const bool exactly = along < -1 + 1e-6;
+        Rotation turn;
+        if (exactly) {
+            Vec3 axis = g.x - g.d * g.x.Dot(g.d);
+            if (axis.Length() < 1e-6) {
+                const Vec3 e = std::abs(g.d.x) < 0.9 ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+                axis = e - g.d * e.Dot(g.d);
+            }
+            turn = Rotation::AxisAngle(axis.Normalized(), kPi);
+        } else {
+            const Vec3 n = g.d.Cross(to);
+            turn = Rotation::AxisAngle(n.Normalized(), std::atan2(n.Length(), g.d.Dot(to)));
         }
-        const Rotation half = Rotation::AxisAngle(axis.Normalized(), kPi);
-        part->placement = {(half * part->placement.rotation).Orthonormalized(), half * (part->placement.translation - g.p) + g.p};
+        const double before = exactly ? 0.0 : ErrorAround(assembly, part->id);
+        const Placement was = part->placement;
+        part->placement = {(turn * part->placement.rotation).Orthonormalized(), turn * (part->placement.translation - g.p) + g.p};
+        if (!exactly && !(ErrorAround(assembly, part->id) < 0.99 * before)) {
+            part->placement = was;
+            continue;
+        }
         turned = true;
     }
     return turned;
+}
+
+double ErrorAround(const Assembly& assembly, ObjectId id) {
+    const System now(const_cast<Assembly&>(assembly));   // only reads it
+    double sum = 0.0;
+    std::vector<double> rows;
+    for (const Constraint& c : assembly.constraints) {
+        if (IsTransmission(c.type) || !Usable(assembly, c)) continue;
+        if (c.first.component != id && c.second.component != id &&
+            !(c.type == ConstraintType::Symmetry && c.third.component == id))
+            continue;
+        rows.clear();
+        now.Rows(c, {}, rows);
+        for (double r : rows) sum += r * r;
+    }
+    return sum;
 }
 
 bool Usable(const Assembly& a, const Constraint& c) {

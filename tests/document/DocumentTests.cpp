@@ -213,6 +213,23 @@ TEST_CASE("end marker follows inserts and moves") {
     CHECK(plate.doc.EndMarker() == 2);
 }
 
+TEST_CASE("a feature below the end marker deleted and brought back stays rolled back") {
+    // Audit: Ctrl+Z after deleting a rolled-back cut made it active again.
+    Plate plate;
+    History history;
+    history.Execute(plate.doc, SetEndMarker(plate.doc, 1));
+    REQUIRE_FALSE(plate.doc.IsActive(1));
+    history.Execute(plate.doc, RemoveFeature(plate.doc, plate.extrudeId));
+    CHECK(plate.doc.EndMarker() == 1);
+    history.Undo(plate.doc);
+    CHECK(plate.doc.IndexOf(plate.extrudeId) == 1);
+    CHECK(plate.doc.EndMarker() == 1);
+    CHECK_FALSE(plate.doc.IsActive(1));
+    history.Redo(plate.doc);
+    CHECK(plate.doc.IndexOf(plate.extrudeId) < 0);
+    CHECK(plate.doc.EndMarker() == 1);
+}
+
 TEST_CASE("json round trip keeps the recipe") {
     Plate plate;
     plate.doc.units.length = LengthUnit::Inch;

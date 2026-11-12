@@ -99,13 +99,22 @@ public:
         : myId(id), myIndex(index), myLabel(std::move(label)) {}
 
     std::string Label() const override { return std::format("Удалить {}", myLabel); }
-    void Do(Document& doc) override { myFeature = doc.Take(myId); }
-    void Undo(Document& doc) override { doc.Insert(std::move(myFeature), myIndex); }
+    void Do(Document& doc) override {
+        myMarker = doc.EndMarker();
+        myFeature = doc.Take(myId);
+    }
+    void Undo(Document& doc) override {
+        doc.Insert(std::move(myFeature), myIndex);
+        // A feature below the end marker comes back rolled back, as it was:
+        // the insert alone would put the marker under it.
+        doc.SetEndMarker(myMarker);
+    }
 
 private:
     std::unique_ptr<Feature> myFeature;
     ObjectId                 myId;
     std::size_t              myIndex;
+    std::size_t              myMarker = 0;
     std::string              myLabel;
 };
 

@@ -198,6 +198,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         bool reached = false, partial = false;
         std::optional<Vec3> sliver;
         for (Body& body : bodies) {
+            if (body.mesh) continue;   // a mesh is not cut: it stays as a reference
             Bnd_Box box;
             BRepBndLib::Add(body.shape, box);
             if (box.IsVoid() || toolBox.IsVoid()) continue;

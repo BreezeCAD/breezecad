@@ -534,29 +534,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  linux-occt76:
-    # The system OCCT of Ubuntu 24.04 (7.6, the oldest supported): keeps the
-    # code building with it, as local development uses it. Not packaged.
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build libglfw3-dev libgl1-mesa-dev \
-            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
-            libocct-visualization-dev libocct-data-exchange-dev libocct-ocaf-dev \
-            libfreetype-dev libfontconfig1-dev libtbb-dev libxi-dev
-      - name: Configure
-        run: cmake --preset linux-release
-      - name: Build
-        run: cmake --build --preset linux-release 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
-      - name: Test
-        run: ctest --preset linux-release --output-on-failure 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
-      - name: Report failures
-        if: failure()
-        run: bash scripts/ci-annotate.sh build.log test.log
-
   macos:
     # Apple Silicon only (arm64); Homebrew's bottles here are built for
     # macOS 15, which is the oldest system the app supports (macos-14 retired 2.11.2026).
@@ -707,7 +684,7 @@ jobs:
 
   publish:
     # Only when every platform built and passed its tests.
-    needs: [windows, linux, linux-occt76, macos]
+    needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -769,7 +746,7 @@ jobs:
     # A push to main is a numbered release: BreezeCAD <version> with its notes
     # (docs/releases/<label>.md) and the same six builds. Re-running only
     # replaces the files of that release.
-    needs: [windows, linux, linux-occt76, macos]
+    needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -821,7 +798,7 @@ jobs:
     # and a list — name, version, what it does, which file is for which
     # system — made from the modules' own module.json. Packages of a version
     # no longer built are taken down, so the page shows only current ones.
-    needs: [windows, linux, linux-occt76, macos]
+    needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/next' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     permissions:

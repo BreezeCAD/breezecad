@@ -357,6 +357,14 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
     // UnifySameDomain never finished, and the line between them stayed.
     const TopoDS_Shape shape = ShareCylinders(input);
     auto* unify = new ShapeUpgrade_UnifySameDomain(shape, true, true, true);
+    // Faces of a real part are "one plane" only up to the sketch solver's
+    // residual and the transforms of a part drawn in an assembly. The
+    // default angular tolerance (1e-12 rad) left such faces apart, with a
+    // seam no fillet could cross (a tower stacked from projected sketches:
+    // 6e-12 rad). 1e-9 rad takes those in; faces further apart (1e-7 mm over
+    // 60 mm) merged into a face the fillet then failed on, so they stay
+    // apart as before. The linear tolerance stays OCCT's 1e-7 mm.
+    unify->SetAngularTolerance(1e-9);
     // Curved faces next to free-form ones (a cylinder cut by a thread
     // groove), or bounded by an intersection curve of two curved surfaces (a
     // tube cut by a ring across it), are left as they are: merging them can

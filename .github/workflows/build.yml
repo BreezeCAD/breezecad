@@ -50,20 +50,52 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-glfw
-            mingw-w64-x86_64-opencascade
+            mingw-w64-x86_64-freetype
             mingw-w64-x86_64-binutils
             mingw-w64-x86_64-gdb
             mingw-w64-x86_64-python
+            git
             zip
+      # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
+      # ADR-0001), kept in the Actions cache. The key: the script and the compiler.
+      - name: OCCT cache key
+        id: occt-key
+        run: |
+          echo "prefix=$(cygpath -m "$GITHUB_WORKSPACE")/.deps/occt" >> "$GITHUB_OUTPUT"
+          echo "key=occt-windows-mingw-gcc$(gcc -dumpfullversion)-${{ hashFiles('scripts/deps/build-occt.sh') }}" >> "$GITHUB_OUTPUT"
+      - name: Restore OCCT
+        id: occt
+        uses: actions/cache/restore@v4
+        with:
+          path: .deps/occt
+          key: ${{ steps.occt-key.outputs.key }}
+      - name: Build OCCT (first run)
+        if: steps.occt.outputs.cache-hit != 'true'
+        run: |
+          set +e
+          CMAKE_PREFIX_PATH=/mingw64 SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh windows .deps/occt > occt.log 2>&1
+          status=$?
+          tail -4 occt.log
+          exit $status
+      # Saved before BreezeCAD builds: a failing build must not cost OCCT again.
+      - name: Save OCCT
+        if: steps.occt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .deps/occt
+          key: ${{ steps.occt-key.outputs.key }}
       - name: Versions
         run: |
           g++ --version | head -1
           cmake --version | head -1
-          grep -h "define OCC_VERSION_COMPLETE" /mingw64/include/opencascade/Standard_Version.hxx
+          occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
+          echo "::notice title=Windows toolchain::$(g++ -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }})"
+          cat .deps/occt/occt-build.txt
+          echo "OCCT_PREFIX=${{ steps.occt-key.outputs.prefix }}" >> "$GITHUB_ENV"
       - name: Configure
         # The online installer looks for its files in the release it belongs to:
         # main → the latest numbered release, anything else → next-build.
-        run: OCCT_DIR=/mingw64/lib/cmake/opencascade cmake --preset windows-mingw -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+        run: OCCT_DIR=$OCCT_PREFIX/lib/cmake/opencascade cmake --preset windows-mingw -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
       - name: Module packages (from their repositories)
         shell: bash   # Git Bash: gh is there, not in MSYS2
         env:
@@ -71,10 +103,13 @@ jobs:
         run: bash scripts/fetch-modules.sh windows build/windows-mingw/packages
       - name: Build
         id: build
-        run: cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+        run: |
+          export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"   # tests listed at build time load OCCT
+          cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Test
         run: |
           set +e +o pipefail   # the msys2 shell runs with -e: keep going to name the crash
+          export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"
           # A time limit: a test that hangs fails with its name instead of
           # holding the job for hours.
           ctest --preset windows-mingw --output-on-failure --timeout 1200 2>&1 | tee test.log
@@ -102,7 +137,8 @@ jobs:
           cp -r build/windows-mingw/bin/breezecad.exe build/windows-mingw/bin/assets dist/BreezeCAD/
           # No modules inside: they are separate packages (.bzmod) the user
           # installs in "Настройки → Модули".
-          bash scripts/deploy-runtime.sh dist/BreezeCAD breezecad.exe /mingw64/bin
+          bash scripts/deploy-runtime.sh dist/BreezeCAD breezecad.exe "$(cygpath -u "$OCCT_PREFIX")/bin"
+          ls dist/BreezeCAD/TK*.dll > /dev/null || { echo "::error title=Package::no OCCT libraries in the package"; exit 1; }
           # File Explorer previews and file-type icons: registered by the
           # installer, unused by the portable copy (a few hundred KB).
           mkdir -p dist/BreezeCAD/shell
@@ -115,6 +151,24 @@ jobs:
           cp -r dist/BreezeCAD/. "$beta/program/"
           cp resources/beta/beta-tester.txt "$beta/program/"
           cp "resources/beta/Запустить BreezeCAD.bat" "resources/beta/ИНСТРУКЦИЯ для тестеров.txt" "$beta/"
+      # The package on its own: only Windows' folders on PATH, so a DLL that
+      # deploy-runtime.sh missed stops the start ("DLL not found", exit 127 /
+      # 0xC0000135). The runner has no OpenGL 3: past the libraries the
+      # program may stop at the window — that is enough here.
+      - name: Start check
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set +e
+          mkdir -p shots
+          BZ_SCREENSHOT="$(cygpath -w "$PWD/shots/windows.ppm"):40" PATH=/c/Windows/system32:/c/Windows \
+            timeout 60 ./dist/BreezeCAD/breezecad.exe > start.log 2>&1
+          status=$?
+          case $status in
+            127|3221225781|-1073741515)
+              echo "::error title=Windows start check::a library is missing from the package (exit $status): $(tail -3 start.log | tr '\n' ' ' | cut -c1-300)"
+              exit 1 ;;
+          esac
+          echo "::notice title=Windows start check::the package loaded its own $(ls dist/BreezeCAD/*.dll | wc -l) DLLs (OCCT: $(ls dist/BreezeCAD/TK*.dll | wc -l)) and ran (exit $status$([ -f shots/windows.ppm ] && echo ', drew a frame'))"
       - name: Zip for the release
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
@@ -220,11 +274,13 @@ jobs:
           retention-days: 3
 
   linux:
-    # The Linux package is built with conda-forge (GCC 13, OCCT, GLFW):
-    # their libraries need glibc 2.28 at most, so the package runs on
-    # distributions from 2019 on; the system's own packages would tie it to
-    # the build machine's glibc.
+    # The Linux package is built with conda-forge's GCC 13 against glibc 2.28
+    # (GLFW and FreeType from conda-forge too; OCCT our own, built with the
+    # same compiler): the package runs on distributions from 2019 on; the
+    # system's own packages would tie it to the build machine's glibc.
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # the OCCT archive for Claude's sandbox goes to the release dev-deps
     defaults:
       run:
         shell: bash -el {0}
@@ -244,17 +300,59 @@ jobs:
               - conda-forge
           create-args: >-
             cmake ninja gxx_linux-64=13 sysroot_linux-64=2.28
-            occt=*=novtk* glfw libgl-devel xorg-libx11 xorg-libxi
+            freetype fontconfig glfw libgl-devel xorg-libx11 xorg-libxi
             xorg-libxrandr xorg-libxinerama xorg-libxcursor xorg-libxext xorg-xorgproto
           cache-environment: true
+      # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
+      # ADR-0001), kept in the Actions cache.
+      - name: Restore OCCT
+        id: occt
+        uses: actions/cache/restore@v4
+        with:
+          path: .deps/occt
+          key: occt-linux-conda-gcc13-glibc228-${{ hashFiles('scripts/deps/build-occt.sh') }}
+      - name: Build OCCT (first run)
+        if: steps.occt.outputs.cache-hit != 'true'
+        run: |
+          set +e
+          CMAKE_PREFIX_PATH="$CONDA_PREFIX" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh linux .deps/occt > occt.log 2>&1
+          status=$?
+          tail -4 occt.log
+          exit $status
+      - name: Save OCCT
+        if: steps.occt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .deps/occt
+          key: ${{ steps.occt.outputs.cache-primary-key }}
+      # The same OCCT for Claude's cloud sandbox (scripts/dev/cloud-setup.sh):
+      # the release dev-deps, replaced when the script changes. Not from pull
+      # requests (no write rights there).
+      - name: OCCT archive for the sandbox
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          want=$(sha256sum scripts/deps/build-occt.sh | cut -d' ' -f1)   # cloud-setup.sh compares the same
+          have=$(gh release download dev-deps -p bz-occt-linux-x64.sha -O - 2>/dev/null || true)
+          if [ "$have" = "$want" ]; then echo "dev-deps already has this OCCT"; exit 0; fi
+          tar -C .deps/occt -I 'xz -6 -T0' -cf bz-occt-linux-x64.tar.xz .
+          echo "$want" > bz-occt-linux-x64.sha
+          gh release view dev-deps > /dev/null 2>&1 || gh release create dev-deps --prerelease --title "Зависимости для облачной песочницы" \
+            --notes "Для разработки, не для пользователей: OCCT для Linux x86_64, тот же, что в сборках (scripts/deps/build-occt.sh). Распаковывает scripts/dev/cloud-setup.sh."
+          gh release upload dev-deps bz-occt-linux-x64.tar.xz bz-occt-linux-x64.sha --clobber
+          echo "::notice title=dev-deps::OCCT archive for the sandbox updated ($(du -h bz-occt-linux-x64.tar.xz | cut -f1))"
       - name: Versions
         run: |
           $CXX --version | head -1
-          occt=$(grep -h "define OCC_VERSION_COMPLETE" "$CONDA_PREFIX"/include/opencascade/Standard_Version.hxx | awk '{print $3}')
-          echo "::notice title=Linux toolchain::$($CXX -dumpfullversion), OCCT $occt, GLFW $(grep -h 'define GLFW_VERSION_M' "$CONDA_PREFIX"/include/GLFW/glfw3.h | awk '{printf "%s.", $3}')"
+          occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
+          echo "::notice title=Linux toolchain::$($CXX -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }}), GLFW $(grep -h 'define GLFW_VERSION_M' "$CONDA_PREFIX"/include/GLFW/glfw3.h | awk '{printf "%s.", $3}')"
+          cat .deps/occt/occt-build.txt
       - name: Configure
-        run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" -DBZ_SETUP_STATIC_GLFW=ON
-          -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+        run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$PWD/.deps/occt;$CONDA_PREFIX" -DOpenCASCADE_DIR="$PWD/.deps/occt/lib/cmake/opencascade"
+          -DBZ_SETUP_STATIC_GLFW=ON -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
       - name: Module packages (from their repositories)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -295,6 +393,8 @@ jobs:
         run: |
           bash scripts/package-linux.sh build/linux-release/bin release
           bash scripts/package-linux.sh build/linux-release/bin release --beta
+          n=$(tar -tzf release/BreezeCAD-linux.tar.gz | grep -c 'lib/libTK' || true)
+          [ "$n" -gt 0 ] || { echo "::error title=Package::no OCCT libraries in the Linux package"; exit 1; }
       # The installer, as on Windows: online (downloads what is chosen) and
       # offline (everything inside), from the same package as a ZIP.
       - name: Installer (Linux)
@@ -356,6 +456,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/start shots && tar -C /tmp/start -xzf release/BreezeCAD-linux.tar.gz
+          mv .deps/occt .deps/occt.away   # the package must not reach the build's OCCT
           set +e
           timeout 120 xvfb-run -a -s "-screen 0 1600x1000x24" env -u LD_LIBRARY_PATH \
             BZ_SCREENSHOT="$PWD/shots/linux.ppm:40" /tmp/start/BreezeCAD/breezecad > start.log 2>&1
@@ -365,6 +466,7 @@ jobs:
             echo "::notice title=Linux start check::the packaged program started and drew a frame ($(grep -m1 'OpenGL' start.log | cut -c1-120)); $(grep -m1 'Touchpad' start.log | cut -c14-200)"
           else
             echo "::warning title=Linux start check::no frame (exit $status): $(tail -5 start.log | tr '\n' ' ' | cut -c1-400)"
+            mv .deps/occt.away .deps/occt
             exit 1
           fi
       # A part opened: the real screen must change (Linux froze on the last
@@ -462,14 +564,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
-        run: brew install ninja glfw opencascade dylibbundler
+        run: brew install ninja glfw freetype dylibbundler
+      # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
+      # ADR-0001), kept in the Actions cache. The key: the script and the compiler.
+      - name: OCCT cache key
+        id: occt-key
+        run: echo "key=occt-macos-arm64-$(clang++ --version | head -1 | tr -cd '[:alnum:].-' | cut -c1-60)-${{ hashFiles('scripts/deps/build-occt.sh') }}" >> "$GITHUB_OUTPUT"
+      - name: Restore OCCT
+        id: occt
+        uses: actions/cache/restore@v4
+        with:
+          path: .deps/occt
+          key: ${{ steps.occt-key.outputs.key }}
+      - name: Build OCCT (first run)
+        if: steps.occt.outputs.cache-hit != 'true'
+        run: |
+          set +e
+          CMAKE_PREFIX_PATH="$(brew --prefix)" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh macos "$PWD/.deps/occt" > occt.log 2>&1
+          status=$?
+          tail -4 occt.log
+          exit $status
+      - name: Save OCCT
+        if: steps.occt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .deps/occt
+          key: ${{ steps.occt-key.outputs.key }}
       - name: Versions
         run: |
           clang++ --version | head -1
-          occt=$(grep -h "define OCC_VERSION_COMPLETE" "$(brew --prefix opencascade)"/include/opencascade/Standard_Version.hxx | awk '{print $3}')
-          echo "::notice title=macOS toolchain::$(sw_vers -productVersion) $(uname -m), $(clang++ --version | head -1), OCCT $occt, GLFW $(brew list --versions glfw | awk '{print $2}')"
+          occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
+          echo "::notice title=macOS toolchain::$(sw_vers -productVersion) $(uname -m), $(clang++ --version | head -1), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }}), GLFW $(brew list --versions glfw | awk '{print $2}')"
+          cat .deps/occt/occt-build.txt
+          echo "BZ_OCCT_PREFIX=$PWD/.deps/occt" >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake --preset macos -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+        run: cmake --preset macos -DCMAKE_PREFIX_PATH="$BZ_OCCT_PREFIX;$(brew --prefix)" -DOpenCASCADE_DIR="$BZ_OCCT_PREFIX/lib/cmake/opencascade"
       - name: Module packages (from their repositories)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -488,6 +617,8 @@ jobs:
         run: |
           bash scripts/package-macos.sh build/macos/bin release
           bash scripts/package-macos.sh build/macos/bin release --beta
+          n=$(unzip -l release/BreezeCAD-macos.zip | grep -c 'Frameworks/libTK' || true)
+          [ "$n" -gt 0 ] || { echo "::error title=Package::no OCCT libraries in the macOS package"; exit 1; }
       # Finder's side: the types are the app's, Quick Look draws the picture a
       # part keeps inside (the thumbnail extension), the disk image mounts.
       - name: File types, thumbnails and the disk image
@@ -523,6 +654,7 @@ jobs:
           mkdir -p /tmp/start shots && ditto -x -k release/BreezeCAD-macos.zip /tmp/start
           cellar="$(brew --prefix)/Cellar"
           sudo mv "$cellar" "$cellar.away"
+          mv "$BZ_OCCT_PREFIX" "$BZ_OCCT_PREFIX.away"
           ( sleep 120; pkill -9 breezecad ) & watchdog=$!
           set +e
           BZ_SCREENSHOT="$PWD/shots/macos.ppm:40" /tmp/start/BreezeCAD.app/Contents/MacOS/breezecad > start.log 2>&1
@@ -530,13 +662,14 @@ jobs:
           set -e
           kill $watchdog 2>/dev/null || true
           sudo mv "$cellar.away" "$cellar"
+          mv "$BZ_OCCT_PREFIX.away" "$BZ_OCCT_PREFIX"
           if [ -f shots/macos.ppm ]; then
             python3 scripts/ppm2png.py shots/macos.ppm shots/start-macos.png && rm shots/macos.ppm
             echo "::notice title=macOS start check::the packaged app started and drew a frame ($(grep -m1 'OpenGL' start.log | cut -c1-120))"
           elif grep -q "starting" start.log && grep -q "suitable pixel format" start.log; then
             # The runners are virtual machines without OpenGL: reaching the
             # window means every library of the bundle loaded and ran.
-            echo "::notice title=macOS start check::the packaged app started with its own libraries (Homebrew moved away) and reached the window; the runner has no OpenGL, so no frame here"
+            echo "::notice title=macOS start check::the packaged app started with its own libraries (Homebrew and the OCCT build moved away) and reached the window; the runner has no OpenGL, so no frame here"
           else
             echo "::warning title=macOS start check::no frame (exit $status): $(tail -5 start.log | tr '\n' ' ' | cut -c1-400)"
             exit 1

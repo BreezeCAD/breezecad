@@ -64,6 +64,7 @@ jobs:
           bash scripts/ios/build-deps.sh ${{ matrix.sdk }} "$BZ_IOS_DEPS" > deps.log 2>&1
           status=$?
           tail -20 deps.log
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' deps.log | head -80
           exit $status
       # Saved before BreezeCAD builds: a failing BreezeCAD build must not
       # cost the hour of OCCT again.

@@ -75,6 +75,7 @@ jobs:
           bash scripts/android/build-deps.sh ${{ matrix.abi }} "$BZ_ANDROID_DEPS" > deps.log 2>&1
           status=$?
           tail -3 deps.log
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' deps.log | head -80
           exit $status
       # Saved before BreezeCAD builds: a failing BreezeCAD build must not
       # cost the hour of OCCT again.

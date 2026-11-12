@@ -76,6 +76,8 @@ jobs:
           CMAKE_PREFIX_PATH=/mingw64 SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh windows .deps/occt > occt.log 2>&1
           status=$?
           tail -4 occt.log
+          # On a failure: the compiler's own lines, not just ninja's last one.
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' occt.log | head -80
           exit $status
       # Saved before BreezeCAD builds: a failing build must not cost OCCT again.
       - name: Save OCCT
@@ -315,9 +317,12 @@ jobs:
         if: steps.occt.outputs.cache-hit != 'true'
         run: |
           set +e
-          CMAKE_PREFIX_PATH="$CONDA_PREFIX" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh linux .deps/occt > occt.log 2>&1
+          # Three at a time, as the BreezeCAD build below: four ran the runner out of memory.
+          JOBS=3 CMAKE_PREFIX_PATH="$CONDA_PREFIX" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh linux .deps/occt > occt.log 2>&1
           status=$?
           tail -4 occt.log
+          # On a failure: the compiler's own lines, not just ninja's last one.
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' occt.log | head -80
           exit $status
       - name: Save OCCT
         if: steps.occt.outputs.cache-hit != 'true'
@@ -560,6 +565,8 @@ jobs:
           CMAKE_PREFIX_PATH="$(brew --prefix)" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh macos "$PWD/.deps/occt" > occt.log 2>&1
           status=$?
           tail -4 occt.log
+          # On a failure: the compiler's own lines, not just ninja's last one.
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' occt.log | head -80
           exit $status
       - name: Save OCCT
         if: steps.occt.outputs.cache-hit != 'true'

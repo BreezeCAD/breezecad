@@ -588,6 +588,13 @@ bool Application::WaitsForBackground() const {
 
 void Application::HandleCloseRequests() {
     if (!myShell.quitRequested || myShell.closeRequest) return;
+    // An operation still open is settled as Ctrl+S settles it: a good one is
+    // applied, a half-done one (with an error) dropped. Else «Сохранить» in
+    // the question below wrote the half-done one into the file.
+    if (Session* s = myWorkspace.Active()) {
+        myContext->ops.Commit(*myContext, *s);
+        EndEditing(*myContext);
+    }
     for (std::size_t i = 0; i < myWorkspace.sessions.size(); ++i) {
         if (myWorkspace.sessions[i]->IsModified()) {
             myWorkspace.Activate(static_cast<int>(i));

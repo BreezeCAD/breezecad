@@ -139,7 +139,7 @@ Json UndoRedo(AppContext& app, bool undo) {
     const std::string step = undo ? s.UndoLabel() : s.RedoLabel();
     if (undo) Undo(app);
     else Redo(app);
-    s.RebuildNow();
+    Rebuild(s);
     return {{undo ? "undone" : "redone", step},
             {"next_undo", s.CanUndo() ? s.UndoLabel() : ""},
             {"can_redo", s.CanRedo()}};

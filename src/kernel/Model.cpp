@@ -6,6 +6,7 @@
 #include "core/FaultGuard.h"
 #include "core/I18n.h"
 #include "core/Log.h"
+#include "core/Monitor.h"
 #include "document/CoilFeature.h"
 #include "document/SectionFeature.h"
 #include "document/EdgeFeature.h"
@@ -155,6 +156,14 @@ std::vector<std::size_t> BodiesMet(const std::vector<Body>& bodies, const TopoDS
 /// is reported: a cut that misses is a warning (nothing changed), a join
 /// goes to the most recent body as a separate piece. The solid is also kept
 /// as the operation's tool for patterns and mirrors.
+/// The warning for a strip a hair wide left by an operation (FindNewSliver).
+std::string SliverMessage(const Vec3& at) {
+    return std::format("Операция оставила полоску тоньше 0,05 мм у точки ({:.2f}; {:.2f}; {:.2f}): две поверхности почти совпадают, "
+                       "но не точно. Такая полоска видна линией и не даёт скруглить рёбра рядом — задайте эти размеры одним выражением "
+                       "(совпадут точно) или разнесите их хотя бы на 0,05 мм",
+                       at.x, at.y, at.z);
+}
+
 void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Model::Impl& impl, std::vector<Body>& bodies,
                   doc::FeatureStatus& status) {
     // A new body copied by a pattern joins the body it started.
@@ -169,12 +178,43 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         status = {FeatureState::Ok, {}};
         return;
     }
+    if (op == doc::BooleanOp::Cut) {
+        // Every body whose box the tool reaches is cut; the cut itself says
+        // whether it reached the material (no intersection of the two first,
+        // as Meets does: on a body with hundreds of faces — a «Пружина» cut
+        // into it — that doubled the time of every cut after it).
+        Bnd_Box toolBox;
+        BRepBndLib::Add(tool, toolBox);
+        bool reached = false, partial = false;
+        std::optional<Vec3> sliver;
+        for (Body& body : bodies) {
+            Bnd_Box box;
+            BRepBndLib::Add(body.shape, box);
+            if (box.IsVoid() || toolBox.IsVoid()) continue;
+            box.Enlarge(1e-4);
+            if (box.IsOut(toolBox)) continue;
+            occt::BooleanNote note;
+            Expected<TopoDS_Shape> result = occt::ApplyBoolean(body.shape, tool, op, &note);
+            if (!result) {
+                status = {FeatureState::Error, std::format("«{}»: {}", body.name, result.GetError().message)};
+                return;
+            }
+            if (!note.touched && !note.partial) continue;
+            if (!sliver) sliver = occt::FindNewSliver(body.shape, *result, tool);
+            body.shape = *result;
+            reached = true;
+            partial = partial || note.partial;
+        }
+        if (!reached) status = {FeatureState::Warning, "Вырез не задел ни одного тела — ничего не изменилось"};
+        else if (partial)
+            status = {FeatureState::Warning,
+                      "Вырез получился частичным: профиль касается поверхности тела — сдвиньте его на 0,01–0,05 мм внутрь или наружу"};
+        else if (sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        else status = {FeatureState::Ok, {}};
+        return;
+    }
     const std::vector<std::size_t> met = BodiesMet(bodies, tool, op == doc::BooleanOp::Join);
     if (met.empty()) {
-        if (op == doc::BooleanOp::Cut) {
-            status = {FeatureState::Warning, "Вырез не задел ни одного тела — ничего не изменилось"};
-            return;
-        }
         if (op == doc::BooleanOp::Intersect) {
             status = {FeatureState::Error, "Пересечение пустое: ни одно тело не перекрывается с операцией"};
             return;
@@ -198,12 +238,28 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
             status = {FeatureState::Error, result.GetError().message};
             return;
         }
+        // A join that added nothing (its material is all inside the body
+        // already) is said so, as a cut that missed is: "ok" hid a wrong
+        // direction or a wrong sketch.
+        const auto volumeOf = [](const TopoDS_Shape& shape) {
+            GProp_GProps props;
+            BRepGProp::VolumeProperties(shape, props);
+            return props.Mass();
+        };
+        double before = 0;
+        for (std::size_t k : met) before += volumeOf(bodies[k].shape);
+        const bool added = volumeOf(*result) > before + std::max(1e-6, before * 1e-9);
+        const std::optional<Vec3> sliver = occt::FindNewSliver(bodies[met.front()].shape, *result, tool);
         bodies[met.front()].shape = *result;
         for (std::size_t k = met.size(); k-- > 1;) bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(met[k]));
-        status = {FeatureState::Ok, {}};
+        if ((added || met.size() > 1) && sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        else if (added || met.size() > 1) status = {FeatureState::Ok, {}};
+        else
+            status = {FeatureState::Warning,
+                      "Добавление ничего не изменило: материал операции целиком внутри тела — проверьте направление и эскиз"};
         return;
     }
-    for (std::size_t i : met) {
+    for (std::size_t i : met) {   // an intersection
         Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies[i].shape, tool, op);
         if (!result) {
             status = {FeatureState::Error, std::format("«{}»: {}", bodies[i].name, result.GetError().message)};
@@ -1367,6 +1423,8 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
 
         const auto featureStart = std::chrono::steady_clock::now();
         const bool skip = !doc.IsActive(i) || f.suppressed;
+        // Known long work: the hang guard waits for it, the status bar names it.
+        if (!skip) mon::Work("Перестроение", f.name, impl.sliceDone, impl.sliceTotal);
         // One failing operation must not take the program down: whatever OCCT
         // or our code throws becomes that operation's error, and the bodies
         // stay as they were before it.
@@ -1562,6 +1620,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
     }
     impl.slicing = false;
     impl.sliceDone = impl.sliceTotal = 0;
+    mon::WorkDone();
     // The visible result is the state at the end-of-part marker (or, while
     // an operation is edited, right after it).
     if (end < count) {

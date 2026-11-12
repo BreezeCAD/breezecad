@@ -69,7 +69,7 @@ Json CameraJson(const render::CameraState& c) {
 /// it later): its bodies and their appearance.
 Session& SyncedView(AppContext& app) {
     Session& s = Active(app);
-    s.RebuildNow();
+    Rebuild(s);
     app.viewport.Sync(s.model);
     app.viewport.SetLook(s.doc.look, &s, s.doc.LookRevision());
     app.viewport.SetDisplayStyle(app.shell.displayStyle);
@@ -155,7 +155,7 @@ Json Appearances(AppContext& app, const Json&) {
 
 Json SetAppearance(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const AppearanceLibrary library = UserLibrary();
     std::optional<doc::Appearance> chosen;
     if (Has(args, "appearance")) {
@@ -338,7 +338,7 @@ Json LibraryMake(AppContext& app, const Json& args) {
     s.doc = std::move(made->doc);
     s.doc.units.length = static_cast<LengthUnit>(app.settings.newPartLength);
     s.history.MarkUnsaved();
-    s.RebuildNow();
+    Rebuild(s);
     Json out = {{"designation", s.untitledName},
                 {"envelope_mm", {made->envelope.x, made->envelope.y, made->envelope.z}},
                 {"open_documents", app.workspace.sessions.size()},

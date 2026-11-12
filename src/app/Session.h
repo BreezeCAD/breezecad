@@ -9,6 +9,7 @@
 #include "kernel/Model.h"
 #include "render/Viewport.h"
 
+#include <functional>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -112,6 +113,17 @@ public:
     /// The same, to the end at once (before reading the result: a commit,
     /// an export).
     bool RebuildNow();
+    /// RebuildNow for a caller that can keep the window alive meanwhile (a
+    /// command from a module): a long rebuild runs on another thread, as
+    /// one started by hand does, and `alive` is called while it runs (it
+    /// draws the window; false — the user asked to cancel). False when the
+    /// rebuild was cancelled: its result is dropped, the model is as it was
+    /// and the document is the caller's to put back. Without `alive` it is
+    /// RebuildNow.
+    bool RebuildWaiting(const std::function<bool()>& alive);
+    /// What that wait is for, shown next to the progress (the command's name).
+    const std::string& WaitingFor() const { return myWaitingFor; }
+    void SetWaitingFor(std::string what) { myWaitingFor = std::move(what); }
     /// A rebuild is under way, in slices or on another thread (the window
     /// shows its progress).
     bool Rebuilding() const { return myRebuilding; }
@@ -145,6 +157,9 @@ private:
     /// Waits for the background rebuild and takes its result. True when
     /// it was made for the document as it is now.
     bool FinishBackground();
+    /// FinishBackground and what follows it in the session's own books.
+    void AdoptBackground();
+    std::string myWaitingFor;
 
     std::optional<std::size_t> myRebuildLimit;
     bool                       myRebuilding = false;

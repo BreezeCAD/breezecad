@@ -281,6 +281,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
     myContext = std::make_unique<AppContext>(AppContext{*myUi, mySettings, myWorkspace, myActions, myNotes, *myAutosave,
                                                         myViewport, mySketch, myOps, myShell, myDeferred, 0.0, {}, {}, {}});
     myContext->recovery = &myRecovery;
+    myContext->keepAlive = [this] { return KeepAlive(); };
     myWorkspace.previewMaker = [this] { return DocumentPreview(myViewport); };
     RegisterActions(*myContext);
     LoadStandardPacks(*myContext);
@@ -690,6 +691,48 @@ void Application::LeaveSwitchedDocument(AppContext& app) {
     myActiveSession = now;
 }
 
+bool Application::KeepAlive() {
+    if (myShell.waiting.locked) return true;   // a frame of ours asked again: one at a time
+    mon::Beat();
+    platform::Window::PollEvents();   // the system sees a window that answers
+    myShell.waiting.locked = true;
+    myShell.waiting.cancelAsked = false;
+    // What was pressed meanwhile is not kept for later: a shortcut typed
+    // into a locked window must not fire when the command ends.
+    myInput.chords.clear();
+    myInput.seen = false;
+    myContext->touch.clear();
+    if (myWindow.ShouldClose()) {   // asked again once the command is over
+        myWindow.SetShouldClose(false);
+        myShell.quitRequested = true;
+    }
+    if (myWindow.CanDraw()) {
+        const Recovery::Hold hold(myRecovery);   // "before the command" stays where it is
+        Frame();
+    }
+    myInput.chords.clear();
+    myShell.waiting.locked = false;
+    myFramesToDraw = std::max(myFramesToDraw, 3);   // the unlocked window, once the command is over
+    return !myShell.waiting.cancelAsked;
+}
+
+void Application::LockInput() {
+    ImGuiIO& io = ImGui::GetIO();
+    ShellState::Waiting& w = myShell.waiting;
+    const bool onCancel = w.cancelMax.x > w.cancelMin.x && io.MousePos.x >= w.cancelMin.x && io.MousePos.x <= w.cancelMax.x &&
+                          io.MousePos.y >= w.cancelMin.y && io.MousePos.y <= w.cancelMax.y;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || (onCancel && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) w.cancelAsked = true;
+    w.cancelMin = w.cancelMax = {};
+    // Nothing else of this frame's input is seen by the interface: the
+    // document is the command's until it ends.
+    io.ClearInputKeys();
+    io.ClearInputMouse();
+    for (int b = 0; b < ImGuiMouseButton_COUNT; ++b) {
+        io.MouseClicked[b] = io.MouseReleased[b] = io.MouseDoubleClicked[b] = false;
+        io.MouseClickedCount[b] = 0;
+    }
+}
+
 void Application::Frame() {
     // The phone or the desktop layout, by the window's size (ADR-0004).
     myShell.mobile.phone = mobile::WantsPhoneLayout(mySettings, myWindow);
@@ -716,6 +759,7 @@ void Application::Frame() {
     ImGui_ImplGlfw_NewFrame();
 #endif
     ImGui::NewFrame();
+    if (myShell.waiting.locked) LockInput();
 
     AppContext& app = *myContext;
     app.now = now;

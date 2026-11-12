@@ -88,7 +88,7 @@ bool TabOpen(const Workspace& workspace, const Session* tab) {
 } // namespace
 
 void Recovery::Remember(AppContext& app) {
-    if (myRecovering) return;
+    if (myRecovering || myHeld > 0) return;
     Session* tab = app.workspace.ActiveTab();
     if (tab != myState.tab) {
         myState = {};

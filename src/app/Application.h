@@ -58,6 +58,11 @@ public:
 
 private:
     void Frame();
+    /// AppContext::keepAlive: one turn of the loop from inside a command
+    /// that waits for a rebuild on another thread.
+    bool KeepAlive();
+    /// In such a turn: takes «cancel» out of the input, then empties it.
+    void LockInput();
     /// The active document changed since the last frame: its open operation and sketch picks are dropped.
     void LeaveSwitchedDocument(AppContext& app);
     void UpdateDocument(AppContext& app);

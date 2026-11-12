@@ -19,6 +19,9 @@
 namespace bz::app {
 namespace {
 
+/// A rebuild expected to take longer than this goes to another thread.
+constexpr double kBackgroundAfterMs = 60.0;
+
 std::string NewAutosaveKey() {
     static std::atomic<int> counter{0};   // unique within this process
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -33,6 +36,7 @@ struct Session::Background {
     std::size_t                start = 0;
     std::atomic<std::size_t>   done{0}, total{0};
     std::atomic<bool>          finished{false};
+    std::atomic<bool>          cancel{false};   ///< asked to stop: after the operation under way
     std::thread                thread;
     std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
     double                     rebuildMs = 0, meshMs = 0;   ///< for the monitor
@@ -69,7 +73,9 @@ void Session::StartBackground(std::size_t limit) {
                         const kernel::Model::Progress p = b->model.RebuildProgress();
                         b->total = p.total;
                         b->done = p.done;
+                        if (b->cancel) return;   // one operation cannot be stopped; the rest is not begun
                     }
+                    if (b->cancel) return;
                     const auto rebuilt = std::chrono::steady_clock::now();
                     b->rebuildMs = std::chrono::duration<double, std::milli>(rebuilt - b->began).count();
                     render::Viewport::PrepareMeshes(b->model, quality);
@@ -82,6 +88,7 @@ void Session::StartBackground(std::size_t limit) {
             },
             &fault);
         if (!survived) log::Error("Background rebuild stopped by a crash ({}): what it built so far is shown", fault);
+        mon::WorkDone();
         b->finished = true;
     });
     myBackground = std::move(job);
@@ -212,6 +219,64 @@ bool Session::RebuildIfNeeded() { return Rebuild(40.0); }
 
 bool Session::RebuildNow() { return Rebuild(-1.0); }
 
+void Session::AdoptBackground() {
+    if (FinishBackground()) {
+        myBuiltRevision = doc.Revision();
+        myBuiltFeatureCount = doc.FeatureCount();
+    }
+    myRebuilding = false;
+}
+
+bool Session::RebuildWaiting(const std::function<bool()>& alive) {
+    using Clock = std::chrono::steady_clock;
+    if (assembly || !alive) {
+        RebuildNow();
+        return true;
+    }
+    // A rebuild started for an older state of the document (a value dragged
+    // by hand a moment ago) is waited for and taken, then the rest gets a
+    // rebuild of its own: twice is enough, the third time is RebuildNow.
+    for (int round = 0; round < 2; ++round) {
+        if (!myBackground) {
+            const std::size_t limit = myRebuildLimit ? *myRebuildLimit : static_cast<std::size_t>(-1);
+            if (!myBackgroundAllowed || model.EstimateRebuildMs(doc, limit) <= kBackgroundAfterMs) break;
+            StartBackground(limit);
+            myRebuilding = true;
+        }
+        // The window is drawn while the other thread works: not at once (a
+        // rebuild of a tenth of a second needs no frame), then as often as
+        // a frame takes. `alive` may take the result itself (the frame's own
+        // RebuildIfNeeded): then there is nothing left to wait for.
+        const Clock::time_point began = Clock::now();
+        bool cancelled = false;
+        while (myBackground && !myBackground->finished) {
+            mon::Beat();
+            if (std::chrono::duration<double>(Clock::now() - began).count() < 0.1) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                continue;
+            }
+            const Clock::time_point frame = Clock::now();
+            if (!alive() && myBackground && !cancelled) {
+                cancelled = true;
+                myBackground->cancel = true;
+                log::Info("Rebuild: cancelled by the user while a command waited for it");
+            }
+            // A frame that was not drawn (the window is hidden) must not spin.
+            if (std::chrono::duration<double>(Clock::now() - frame).count() < 0.004)
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        }
+        if (cancelled && myBackground && myBackground->cancel) {
+            std::unique_ptr<Background> job = std::move(myBackground);
+            job->thread.join();
+            myRebuilding = false;
+            return false;   // the fork is dropped: the model shown was never touched
+        }
+        if (myBackground) AdoptBackground();
+    }
+    RebuildNow();
+    return true;
+}
+
 bool Session::Rebuild(double budgetMs) {
     if (assembly) {
         // Parts are rebuilt as they load; what is left is cheap (placing).
@@ -223,11 +288,7 @@ bool Session::Rebuild(double budgetMs) {
     bool adopted = false;
     if (myBackground) {
         if (budgetMs >= 0 && !myBackground->finished) return false;   // still at it; the window goes on
-        if (FinishBackground()) {
-            myBuiltRevision = doc.Revision();
-            myBuiltFeatureCount = doc.FeatureCount();
-        }
-        myRebuilding = false;
+        AdoptBackground();
         adopted = true;
     }
     // Something left over from a partial rebuild that is no longer limited.
@@ -250,7 +311,7 @@ bool Session::Rebuild(double budgetMs) {
         return false;
     // Long work (a heavy boolean, a part just opened) goes to another
     // thread: one operation alone can take seconds and cannot be sliced.
-    if (budgetMs >= 0 && myBackgroundAllowed && model.EstimateRebuildMs(doc, limit) > 60.0) {
+    if (budgetMs >= 0 && myBackgroundAllowed && model.EstimateRebuildMs(doc, limit) > kBackgroundAfterMs) {
         StartBackground(limit);
         myRebuilding = true;
         return adopted;

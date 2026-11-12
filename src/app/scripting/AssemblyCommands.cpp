@@ -110,7 +110,7 @@ Json ComponentJson(Session& s, const kernel::ComponentRecord& r) {
 }
 
 /// The assembly brought up to date (parts loaded, constraints solved).
-void Solved(Session& s) { s.RebuildNow(); }
+void Solved(Session& s) { Rebuild(s); }
 
 Json PatternJson(const assembly::ComponentPattern& p) {
     static const char* kinds[] = {"holes", "rectangular", "circular"};

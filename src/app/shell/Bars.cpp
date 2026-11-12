@@ -9,6 +9,7 @@
 #include "app/sketch/SketchRepair.h"
 #include "app/mobile/TouchText.h"
 #include "core/I18n.h"
+#include "core/Monitor.h"
 #include "kernel/Model.h"
 #include "document/SketchFeature.h"
 #include "ui/Menus.h"
@@ -196,6 +197,23 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
         right -= ui.S(8) + lw;
         dl->AddText(font, fs, {right, ty}, ui::ToU32(c.textSecondary), label.c_str());
         right -= ui.S(18);
+        // Which operation it is at, and how many there are: a long rebuild
+        // is seen to move (and which operation is the slow one).
+        if (const mon::WorkState work = mon::CurrentWork(); work.active && !work.step.empty()) {
+            std::string at = Trf("«{}»", work.step);
+            if (p.total > 1) at += " · " + Trf("{} из {}", std::min(p.done + 1, p.total), p.total);
+            rightText(at, c.textSecondary);
+        }
+        // A module's command waits for it: the window is locked, this stops it.
+        if (app.shell.waiting.locked) {
+            const std::string cancel = Tr("Отменить (Esc)");
+            const float cw = font->CalcTextSizeA(fs, FLT_MAX, 0, cancel.c_str()).x;
+            right -= cw;
+            dl->AddText(font, fs, {right, ty}, ui::ToU32(c.accent), cancel.c_str());
+            app.shell.waiting.cancelMin = {right - ui.S(6), pos.y};
+            app.shell.waiting.cancelMax = {right + cw + ui.S(6), pos.y + h};
+            right -= ui.S(18);
+        }
     } else {
         rightText(errors ? Trf("Ошибок: {}", errors) : Tr("Готово"), errors ? c.danger : c.success);
     }

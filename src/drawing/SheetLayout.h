@@ -13,12 +13,17 @@
 #include "core/Math.h"
 #include "drawing/Drawing.h"
 #include "drawing/DrawingView.h"
+#include "drawing/Specification.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace bz::drawing {
+
+/// Title block fields by key (field::…).
+using Fields = std::map<std::string, std::string>;
 
 /// ГОСТ 2.303: the solid main line and the solid thin one.
 enum class LineWeight : unsigned char { Thick, Thin };
@@ -90,16 +95,43 @@ Box2 ViewBox(const View& view, const ViewLines& lines);
 /// The lines of a view, or nullptr while they are not known (not computed
 /// yet, the model is missing): such a view is left out.
 using ViewLinesSource = std::function<const ViewLines*(const Sheet&, const View&)>;
-/// LayoutSheet and the views of the sheet over it.
-SheetLayout LayoutSheetWithViews(const Sheet& sheet, int number, int count, const ViewLinesSource& lines);
+
+/// What a sheet shows that comes from its models: the views' lines, the
+/// title block fields of the model, the specification's rows. A part not
+/// given is left out (frames only).
+struct SheetContent {
+    ViewLinesSource                                   lines;
+    std::function<Fields(const Sheet&)>               fields;
+    std::function<std::vector<SpecRow>(const Sheet&)> spec;
+};
+
+/// A page of the drawing as printed: a drawing sheet, or one page of a
+/// specification. Drawing sheets are numbered among themselves, the pages
+/// of a specification among themselves (it is a document of its own).
+struct Page {
+    std::size_t sheet = 0;   ///< index in Drawing::sheets
+    int         page = 0;    ///< of a specification, from 0
+    int         number = 1, count = 1;
+};
+std::vector<Page> PagesOf(const Drawing& drawing, const SheetContent& content);
+/// The pages of one sheet (its specification may take several).
+std::vector<Page> PagesOf(const Drawing& drawing, std::size_t sheet, const SheetContent& content);
+/// The page laid out: frame, title block, views or the table.
+SheetLayout LayoutPage(const Drawing& drawing, const Page& page, const SheetContent& content);
 
 /// Width and height of the sheet in mm. A4 is upright always: its title
 /// block runs along the short side (ГОСТ 2.104).
 Vec2 SheetSizeMm(SheetSize size, Orientation orientation);
 
 /// The sheet `number` of `count` with its frame, title block (form 1) and
-/// additional graphs; field values from the sheet's title block, sheet
+/// additional graphs; field values from the sheet's title block, a field it
+/// does not set from `automatic` (the model's: Drawing.h, TitleBlock), sheet
 /// numbers from the arguments.
-SheetLayout LayoutSheet(const Sheet& sheet, int number, int count);
+SheetLayout LayoutSheet(const Sheet& sheet, int number, int count, const Fields* automatic = nullptr);
+
+/// Page `page` (from 0) of `pages` of a specification (ГОСТ 2.106 form 1 on
+/// A4): the table with its part of `rows`, the title block of form 2 on the
+/// first page and of form 2a on the next ones.
+SheetLayout LayoutSpecPage(const Sheet& sheet, const std::vector<SpecRow>& rows, int page, int pages, const Fields* automatic = nullptr);
 
 } // namespace bz::drawing

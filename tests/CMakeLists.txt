@@ -21,6 +21,7 @@ add_executable(bz_tests
     drawing/DrawingTests.cpp
     drawing/DrawingViewTests.cpp
     drawing/PdfTests.cpp
+    drawing/SpecificationTests.cpp
     assembly/AssemblyFileTests.cpp
     assembly/HandoffTests.cpp
     assembly/InventorConstraintsTests.cpp

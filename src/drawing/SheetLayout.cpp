@@ -26,11 +26,20 @@ constexpr double kBlockWidth    = 185;  // form 1
 constexpr double kBlockHeight   = 55;
 constexpr double kStripLeft     = 8;    // the additional graphs 19–23: a 12 mm strip left of the frame (5 + 7)
 
+/// A field as the sheet shows it: the user's value, else the model's.
+std::string FieldValue(const Sheet& s, const char* key, const Fields* automatic) {
+    if (const auto it = s.title.fields.find(key); it != s.title.fields.end()) return it->second;
+    if (automatic)
+        if (const auto it = automatic->find(key); it != automatic->end()) return it->second;
+    return {};
+}
+
 /// Builds strokes and labels in the title block's own coordinates: origin at
 /// its lower right corner, x to the left (as KiCad's sheet measures them).
 struct Block {
     SheetLayout& out;
     Vec2 corner;   ///< the lower right corner of the title block on the sheet
+    const Fields* automatic = nullptr;   ///< values of the fields the sheet does not set
 
     Vec2 P(double x, double y) const { return {corner.x - x, corner.y + y}; }
     void Line(double x0, double y0, double x1, double y1, LineWeight w) { out.strokes.push_back({P(x0, y0), P(x1, y1), w}); }
@@ -39,8 +48,10 @@ struct Block {
         out.labels.push_back({std::move(text), {}, P(x, y - 1.25), 2.5, align});
     }
     void Value(const Sheet& s, const char* key, double x, double y, double height, Align align, double maxWidth) {
-        const auto it = s.title.fields.find(key);
-        out.labels.push_back({it != s.title.fields.end() ? it->second : std::string{}, key, P(x, y - height / 2), height, align, 0, maxWidth});
+        out.labels.push_back({FieldValue(s, key, automatic), key, P(x, y - height / 2), height, align, 0, maxWidth});
+    }
+    void Text(std::string text, double x, double y, double height = 2.5, Align align = Align::Center, double maxWidth = 0) {
+        out.labels.push_back({std::move(text), {}, P(x, y - height / 2), height, align, 0, maxWidth});
     }
 };
 
@@ -52,23 +63,65 @@ Vec2 SheetSizeMm(SheetSize size, Orientation orientation) {
     return {longSide, shortSide};
 }
 
-SheetLayout LayoutSheet(const Sheet& sheet, int number, int count) {
+namespace {
+
+/// The sheet of `size`: the frame (a solid main line), the additional graphs
+/// 19–23 left of it; on a first sheet also 24–25, and graph 26 with the
+/// designation on a drawing's; under it «Копировал» and the format.
+/// `blockHeight`: of the title block.
+SheetLayout Frame(const Sheet& sheet, Vec2 size, double blockHeight, bool first, bool graph26, const Fields* automatic) {
     SheetLayout out;
-    const Vec2 size = SheetSizeMm(sheet.size, sheet.orientation);
     out.width  = size.x;
     out.height = size.y;
     const double left = kBindingMargin, right = size.x - kMargin, bottom = kMargin, top = size.y - kMargin;
     out.frame      = {{left, bottom}, {right, top}};
-    out.titleBlock = {{right - kBlockWidth, bottom}, {right, bottom + kBlockHeight}};
-
-    // The frame: a solid main line.
+    out.titleBlock = {{right - kBlockWidth, bottom}, {right, bottom + blockHeight}};
     out.strokes.push_back({{left, bottom}, {right, bottom}});
     out.strokes.push_back({{right, bottom}, {right, top}});
     out.strokes.push_back({{right, top}, {left, top}});
     out.strokes.push_back({{left, top}, {left, bottom}});
 
+    // Additional graphs 19–23 left of the frame, bottom up (Инв. № подл. … Подп. и дата).
+    const double x0 = kStripLeft, x1 = kStripLeft + 5;
+    const double rows[] = {0, 25, 60, 85, 110, 145};
+    out.strokes.push_back({{x0, bottom}, {x0, bottom + 145}});
+    out.strokes.push_back({{x1, bottom}, {x1, bottom + 145}});
+    for (double y : rows) out.strokes.push_back({{x0, bottom + y}, {left, bottom + y}});
+    const std::pair<const char*, double> strip[] = {
+        {"Инв. № подл.", 12.5}, {"Подп. и дата", 42.5}, {"Взам. инв. №", 72.5}, {"Инв. № дубл.", 97.5}, {"Подп. и дата", 127.5}};
+    for (const auto& [text, y] : strip) out.labels.push_back({text, {}, {x0 + 3.5, bottom + y}, 2.5, Align::Center, 90, 0});
+
+    if (first) {
+        // Graphs 24–25 at the top left: «Перв. примен.», «Справ. №».
+        out.strokes.push_back({{x0, top}, {x0, top - 120}});
+        out.strokes.push_back({{x1, top}, {x1, top - 120}});
+        for (double y : {0.0, 60.0, 120.0}) out.strokes.push_back({{x0, top - y}, {left, top - y}});
+        out.labels.push_back({"Перв. примен.", {}, {x0 + 3.5, top - 30}, 2.5, Align::Center, 90, 0});
+        out.labels.push_back({"Справ. №", {}, {x0 + 3.5, top - 90}, 2.5, Align::Center, 90, 0});
+    }
+    if (first && graph26) {
+        // Graph 26 at the top left inside the frame: the designation turned by 180°.
+        out.strokes.push_back({{left, top - 14}, {left + 70, top - 14}});
+        out.strokes.push_back({{left + 70, top - 14}, {left + 70, top}});
+        out.labels.push_back({FieldValue(sheet, field::kDesignation, automatic), field::kDesignation, {left + 35, top - 7 + 1.75}, 3.5,
+                              Align::Center, 180, 68});
+    }
+
+    // Under the frame: «Копировал» and the size.
+    out.labels.push_back({"Копировал", {}, {right - 110, 1.25}, 2.5, Align::Left});
+    out.labels.push_back({std::format("Формат {}", SizeId(sheet.size)), {}, {right - 40, 1.25}, 2.5, Align::Left});
+    return out;
+}
+
+} // namespace
+
+SheetLayout LayoutSheet(const Sheet& sheet, int number, int count, const Fields* automatic) {
+    const Vec2 size = SheetSizeMm(sheet.size, sheet.orientation);
+    SheetLayout out = Frame(sheet, size, kBlockHeight, true, true, automatic);
+    const double right = size.x - kMargin, bottom = kMargin;
+
     // Form 1 (185 × 55). x from the right edge of the frame, y from its bottom.
-    Block b{out, {right, bottom}};
+    Block b{out, {right, bottom}, automatic};
     constexpr auto T = LineWeight::Thick, t = LineWeight::Thin;
     b.Line(185, 0, 185, 55, T);   // left edge
     b.Line(185, 55, 0, 55, T);    // top edge
@@ -122,35 +175,6 @@ SheetLayout LayoutSheet(const Sheet& sheet, int number, int count) {
     out.labels.push_back({std::to_string(number), {}, b.P(35, 16.25), 2.5, Align::Center});
     out.labels.push_back({std::to_string(count), {}, b.P(8, 16.25), 2.5, Align::Center});
 
-    // Additional graphs 19–23 left of the frame, bottom up (Инв. № подл. … Подп. и дата).
-    const double x0 = kStripLeft, x1 = kStripLeft + 5;
-    const double rows[] = {0, 25, 60, 85, 110, 145};
-    out.strokes.push_back({{x0, bottom}, {x0, bottom + 145}});
-    out.strokes.push_back({{x1, bottom}, {x1, bottom + 145}});
-    for (double y : rows) out.strokes.push_back({{x0, bottom + y}, {left, bottom + y}});
-    const std::pair<const char*, double> strip[] = {
-        {"Инв. № подл.", 12.5}, {"Подп. и дата", 42.5}, {"Взам. инв. №", 72.5}, {"Инв. № дубл.", 97.5}, {"Подп. и дата", 127.5}};
-    for (const auto& [text, y] : strip) out.labels.push_back({text, {}, {x0 + 3.5, bottom + y}, 2.5, Align::Center, 90, 0});
-
-    // Graphs 24–25 at the top left: «Перв. примен.», «Справ. №».
-    out.strokes.push_back({{x0, top}, {x0, top - 120}});
-    out.strokes.push_back({{x1, top}, {x1, top - 120}});
-    for (double y : {0.0, 60.0, 120.0}) out.strokes.push_back({{x0, top - y}, {left, top - y}});
-    out.labels.push_back({"Перв. примен.", {}, {x0 + 3.5, top - 30}, 2.5, Align::Center, 90, 0});
-    out.labels.push_back({"Справ. №", {}, {x0 + 3.5, top - 90}, 2.5, Align::Center, 90, 0});
-
-    // Graph 26 at the top left inside the frame: the designation turned by 180°.
-    out.strokes.push_back({{left, top - 14}, {left + 70, top - 14}});
-    out.strokes.push_back({{left + 70, top - 14}, {left + 70, top}});
-    {
-        const auto it = sheet.title.fields.find(field::kDesignation);
-        out.labels.push_back({it != sheet.title.fields.end() ? it->second : std::string{}, field::kDesignation, {left + 35, top - 7 + 1.75}, 3.5,
-                              Align::Center, 180, 68});
-    }
-
-    // Under the frame: «Копировал» and the size.
-    out.labels.push_back({"Копировал", {}, {right - 110, 1.25}, 2.5, Align::Left});
-    out.labels.push_back({std::format("Формат {}", SizeId(sheet.size)), {}, {right - 40, 1.25}, 2.5, Align::Left});
     return out;
 }
 
@@ -200,11 +224,168 @@ Box2 ViewBox(const View& view, const ViewLines& lines) {
     return box;
 }
 
-SheetLayout LayoutSheetWithViews(const Sheet& sheet, int number, int count, const ViewLinesSource& lines) {
-    SheetLayout out = LayoutSheet(sheet, number, count);
-    if (!lines) return out;
-    for (const View& v : ViewsOf(sheet))
-        if (const ViewLines* l = lines(sheet, v)) AddView(out, v, *l);
+SheetLayout LayoutSpecPage(const Sheet& sheet, const std::vector<SpecRow>& rows, int page, int pages, const Fields* automatic) {
+    const Vec2 size = SheetSizeMm(SheetSize::A4, Orientation::Portrait);
+    const bool first = page == 0;
+    // The table takes the whole width under the frame's top: no graph 26 (its designation is in the title block).
+    SheetLayout out = Frame(sheet, size, first ? 40 : 15, first, false, automatic);
+    const double left = kBindingMargin, right = size.x - kMargin, bottom = kMargin, top = size.y - kMargin;
+    constexpr auto T = LineWeight::Thick, t = LineWeight::Thin;
+    Block b{out, {right, bottom}, automatic};
+
+    if (first) {
+        // Form 2 (185 × 40), ГОСТ 2.104: the changes and signatures on the left
+        // as in form 1, then the designation, the name, «Лит. | Лист | Листов»
+        // and the organization.
+        b.Line(185, 0, 185, 40, T);
+        b.Line(185, 40, 0, 40, T);
+        for (double x : {120.0, 130.0, 145.0, 168.0}) b.Line(x, 40, x, 0, T);
+        b.Line(178, 40, 178, 25, T);
+        b.Line(185, 35, 120, 35, t);
+        for (double y : {25.0, 30.0}) b.Line(185, y, 120, y, T);
+        for (double y : {5.0, 10.0, 15.0, 20.0}) b.Line(185, y, 120, y, t);
+        b.Line(120, 25, 0, 25, T);   // graph 2 above
+        b.Line(50, 25, 50, 0, T);    // graph 1 left of it, graphs 4, 7, 8 right
+        b.Line(50, 20, 0, 20, T);
+        b.Line(50, 15, 0, 15, T);
+        b.Line(35, 25, 35, 15, T);
+        b.Line(20, 25, 20, 15, T);
+        for (double x : {45.0, 40.0}) b.Line(x, 20, x, 15, t);
+        b.Caption("Изм.", 181.5, 27.5);
+        b.Caption("Лист", 173, 27.5);
+        b.Caption("№ докум.", 156.5, 27.5);
+        b.Caption("Подп.", 137, 27.5);
+        b.Caption("Дата", 125, 27.5);
+        b.Caption("Разраб.", 184.5, 22.5, Align::Left);
+        b.Caption("Пров.", 184.5, 17.5, Align::Left);
+        b.Caption("Н.контр.", 184.5, 7.5, Align::Left);
+        b.Caption("Утв.", 184.5, 2.5, Align::Left);
+        b.Caption("Лит.", 42.5, 22.5);
+        b.Caption("Лист", 27.5, 22.5);
+        b.Caption("Листов", 10, 22.5);
+        b.Value(sheet, field::kDesignation, 60, 32.5, 7, Align::Center, 118);
+        b.Value(sheet, field::kName, 85, 12.5, 5, Align::Center, 68);
+        b.Value(sheet, field::kLetter, 42.5, 17.5, 2.5, Align::Center, 14);
+        b.Value(sheet, field::kOrganization, 25, 7.5, 3.5, Align::Center, 48);
+        b.Value(sheet, field::kDeveloper, 167.5, 22.5, 2.5, Align::Left, 22);
+        b.Value(sheet, field::kChecker, 167.5, 17.5, 2.5, Align::Left, 22);
+        b.Value(sheet, field::kNormControl, 167.5, 7.5, 2.5, Align::Left, 22);
+        b.Value(sheet, field::kApprover, 167.5, 2.5, 2.5, Align::Left, 22);
+        if (pages > 1) b.Text(std::to_string(page + 1), 27.5, 17.5);   // «Лист» only when there are several
+        b.Text(std::to_string(pages), 10, 17.5);
+    } else {
+        // Form 2a (185 × 15): changes, the designation, «Лист».
+        b.Line(185, 0, 185, 15, T);
+        b.Line(185, 15, 0, 15, T);
+        for (double x : {120.0, 130.0, 145.0, 168.0, 178.0, 10.0}) b.Line(x, 15, x, 0, T);
+        b.Line(185, 10, 120, 10, t);
+        b.Line(185, 5, 120, 5, T);
+        b.Line(10, 8, 0, 8, T);
+        b.Caption("Изм.", 181.5, 2.5);
+        b.Caption("Лист", 173, 2.5);
+        b.Caption("№ докум.", 156.5, 2.5);
+        b.Caption("Подп.", 137, 2.5);
+        b.Caption("Дата", 125, 2.5);
+        b.Caption("Лист", 5, 11.5);
+        b.Value(sheet, field::kDesignation, 65, 7.5, 5, Align::Center, 108);
+        b.Text(std::to_string(page + 1), 5, 4);
+    }
+
+    // The table (ГОСТ 2.106 form 1): columns 6, 6, 8, 70, 63, 10, 22 mm;
+    // a 15 mm head, rows of 8 mm down to the title block.
+    const double tableBottom = bottom + (first ? 40 : 15);
+    const double head = top - 15;
+    const int capacity = first ? kSpecRowsFirst : kSpecRowsNext;
+    const double xs[] = {left, left + 6, left + 12, left + 20, left + 90, left + 153, left + 163, right};
+    for (std::size_t i = 1; i + 1 < std::size(xs); ++i) out.strokes.push_back({{xs[i], top}, {xs[i], tableBottom}});
+    out.strokes.push_back({{left, head}, {right, head}});
+    for (int r = 1; r <= capacity; ++r) {
+        const double y = head - 8.0 * r;
+        if (y <= tableBottom + 1e-6) break;
+        out.strokes.push_back({{left, y}, {right, y}, LineWeight::Thin});
+    }
+    // The head: the narrow columns' names turned upright.
+    const auto upright = [&](const char* text, int column) {
+        out.labels.push_back({text, {}, {(xs[column] + xs[column + 1]) / 2 + 1.25, head + 7.5}, 2.5, Align::Center, 90, 14});
+    };
+    upright("Формат", 0);
+    upright("Зона", 1);
+    upright("Поз.", 2);
+    upright("Кол.", 5);
+    const auto across = [&](const char* text, int column) {
+        out.labels.push_back({text, {}, {(xs[column] + xs[column + 1]) / 2, head + 6.25}, 3.5, Align::Center, 0, xs[column + 1] - xs[column] - 2});
+    };
+    across("Обозначение", 3);
+    across("Наименование", 4);
+    across("Примечание", 6);
+
+    // The rows of this page.
+    const std::size_t from = first ? 0 : static_cast<std::size_t>(kSpecRowsFirst + (page - 1) * kSpecRowsNext);
+    for (int r = 0; r < capacity && from + static_cast<std::size_t>(r) < rows.size(); ++r) {
+        const SpecRow& row = rows[from + static_cast<std::size_t>(r)];
+        const double base = head - 8.0 * (r + 1) + 2.25;   // the base line of 3.5 mm letters in an 8 mm row
+        const auto cell = [&](const std::string& text, int column, Align align) {
+            if (text.empty()) return;
+            const double w = xs[column + 1] - xs[column] - 2;
+            const double x = align == Align::Center ? (xs[column] + xs[column + 1]) / 2 : xs[column] + 1;
+            out.labels.push_back({text, {}, {x, base}, 3.5, align, 0, w});
+        };
+        if (row.kind == SpecRow::Kind::Section) {
+            // A section's title in «Наименование», in the middle, underlined (ГОСТ 2.106).
+            cell(row.name, 4, Align::Center);
+            const double half = std::min(30.0, 1.0 + 1.8 * static_cast<double>(row.name.size()) / 2);   // about the title's width
+            const double mid = (xs[4] + xs[5]) / 2;
+            out.strokes.push_back({{mid - half, base - 0.8}, {mid + half, base - 0.8}, LineWeight::Thin});
+            continue;
+        }
+        cell(row.format, 0, Align::Center);
+        cell(row.zone, 1, Align::Center);
+        cell(row.position, 2, Align::Center);
+        cell(row.designation, 3, Align::Left);
+        cell(row.name, 4, Align::Left);
+        cell(row.quantity, 5, Align::Center);
+        cell(row.note, 6, Align::Left);
+    }
+    return out;
+}
+
+std::vector<Page> PagesOf(const Drawing& drawing, std::size_t sheet, const SheetContent& content) {
+    std::vector<Page> out;
+    for (const Page& p : PagesOf(drawing, content))
+        if (p.sheet == sheet) out.push_back(p);
+    return out;
+}
+
+std::vector<Page> PagesOf(const Drawing& drawing, const SheetContent& content) {
+    std::vector<Page> out;
+    int drawings = 0;
+    for (const Sheet& s : drawing.sheets) drawings += s.kind == SheetKind::Drawing ? 1 : 0;
+    int number = 0;
+    for (std::size_t i = 0; i < drawing.sheets.size(); ++i) {
+        const Sheet& s = drawing.sheets[i];
+        if (s.kind == SheetKind::Specification) {
+            const std::size_t rows = content.spec ? content.spec(s).size() : 0;
+            const int pages = SpecPageCount(rows);
+            for (int p = 0; p < pages; ++p) out.push_back({i, p, p + 1, pages});
+        } else {
+            out.push_back({i, 0, ++number, drawings});
+        }
+    }
+    return out;
+}
+
+SheetLayout LayoutPage(const Drawing& drawing, const Page& page, const SheetContent& content) {
+    const Sheet& sheet = drawing.sheets.at(page.sheet);
+    Fields automatic;
+    if (content.fields) automatic = content.fields(sheet);
+    if (sheet.kind == SheetKind::Specification) {
+        const std::vector<SpecRow> rows = content.spec ? content.spec(sheet) : std::vector<SpecRow>{};
+        return LayoutSpecPage(sheet, rows, page.page, page.count, &automatic);
+    }
+    SheetLayout out = LayoutSheet(sheet, page.number, page.count, &automatic);
+    if (content.lines)
+        for (const View& v : ViewsOf(sheet))
+            if (const ViewLines* l = content.lines(sheet, v)) AddView(out, v, *l);
     return out;
 }
 

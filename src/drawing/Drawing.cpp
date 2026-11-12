@@ -112,6 +112,8 @@ std::string ToJson(const Drawing& d) {
                {"titleBlock", std::move(titleBlock)},
                {"views", ItemsTo(s.views)},
                {"annotations", ItemsTo(s.annotations)}};
+        if (s.kind == SheetKind::Specification) j["kind"] = "specification";
+        if (s.model) j["model"] = s.model.value;
         PutBack(j, s.extra);
         sheets.push_back(std::move(j));
     }
@@ -180,7 +182,11 @@ Expected<Drawing> FromJson(std::string_view text, ReadReport* report) {
             }
             sheet.views       = ItemsFrom(s, "views");
             sheet.annotations = ItemsFrom(s, "annotations");
-            sheet.extra       = Rest(s, {"id", "name", "size", "orientation", "titleBlock", "views", "annotations"});
+            if (Text(s, "kind") == "specification") sheet.kind = SheetKind::Specification;
+            if (const auto m = s.find("model"); m != s.end() && m->is_number_unsigned()) sheet.model = ObjectId{m->get<std::uint64_t>()};
+            // A kind of a newer version stays in `extra` and is written back; the sheet is shown as a drawing.
+            sheet.extra = Rest(s, {"id", "name", "size", "orientation", "titleBlock", "views", "annotations", "model"});
+            if (sheet.kind == SheetKind::Specification) sheet.extra.erase("kind");
             d.sheets.push_back(std::move(sheet));
         }
     if (d.sheets.empty()) {   // a drawing always has a sheet to show

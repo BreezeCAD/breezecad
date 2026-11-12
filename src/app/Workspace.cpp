@@ -59,8 +59,7 @@ bool ExportPdf(Workspace& ws, Session& session, const std::filesystem::path& tar
     DrawingState& d = *session.drawing;
     DrawingViews& views = DrawingViews::Of(d);
     views.Finish(ws, d);
-    const auto lines = [&](const drawing::Sheet&, const drawing::View& v) { return views.Lines(ws, d, v); };
-    const Status status = drawing::ExportDrawingPdf(d.drawing, target, *font, std::format("BreezeCAD {}", Version()), lines);
+    const Status status = drawing::ExportDrawingPdf(d.drawing, target, *font, std::format("BreezeCAD {}", Version()), views.Content(ws, d));
     if (!status) return fail(status.GetError().message);
     if (!platform::FileWritten(target)) {
         const std::string message = Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));

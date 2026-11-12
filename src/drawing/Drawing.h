@@ -74,9 +74,17 @@ inline constexpr const char* kNormControl  = "normControl";   ///< Н.контр
 inline constexpr const char* kApprover     = "approver";      ///< Утв.
 } // namespace field
 
+/// What a sheet is: a drawing (views on it) or the specification of an
+/// assembly (ГОСТ 2.106), its rows taken from the assembly and laid out on
+/// as many A4 pages as they need. In the file: "kind": "specification";
+/// no key — a drawing (as every sheet of the first files).
+enum class SheetKind : unsigned char { Drawing, Specification };
+
 struct Sheet {
     ObjectId    id;
     std::string name;   ///< «Лист 1»
+    SheetKind   kind = SheetKind::Drawing;
+    ObjectId    model;  ///< a specification: the assembly (a ModelRef) its rows come from
     SheetSize   size = SheetSize::A3;
     Orientation orientation = Orientation::Landscape;
     TitleBlock  title;

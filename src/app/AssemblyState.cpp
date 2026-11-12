@@ -395,10 +395,18 @@ bool AssemblyState::Adapt(const std::filesystem::path& file, std::string_view na
         if (r.lost > 0)
             problems.push_back(std::format("{}: {} рёбер других деталей не найдено — их проекции остались на месте",
                                            c.name, r.lost));
-        if (r.conflicting > 0)
+        if (r.conflicting > 0 && (inPlace || r.conflicts.empty()))
             problems.push_back(std::format("{}: {} проецированных кривых не могут встать по рёбрам сразу — у них общая точка, "
                                            "которую рёбра ставят в разные места. Эскиз оставлен как был, кривые отмечены красным",
                                            c.name, r.conflicting));
+        else if (r.conflicting > 0) {
+            // The author decides, in the window: let them go or edit the sketch.
+            SourceChange change{partFile, c.id, PartName(c.name), {}, {}, std::move(r.conflicts), {}, true};
+            if (const assembly::Component* from = assembly.FindComponent(change.sketches.front().sourceComponent))
+                change.source = PartName(from->name);
+            mon::Action("assembly", std::format("спорящие проекции: {} ({} кривых)", c.name, r.conflicting));
+            changes.push_back(std::move(change));
+        }
         if (r.changed() && edit) {
             RememberPartBefore(partFile, std::move(before));
             // The part changed: it is written with the assembly at the next save.

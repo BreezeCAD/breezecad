@@ -303,14 +303,29 @@ AdaptResult AdaptContextProjections(const AssemblyModel& geometry, const assembl
                     off.push_back(curve);
             if (!off.empty()) {
                 sk->sketch = before;
+                std::vector<ObjectId> clash;   // the curves that disagree
                 for (std::size_t k = 0; k < place.size(); ++k)
                     if (placed[k]) {
                         --result.moved;
                         ++result.conflicting;
                         sk->lostContextProjections.insert(place[k].first);
+                        clash.push_back(place[k].first);
                     }
                 for (ObjectId curve : off)
-                    if (sk->lostContextProjections.insert(curve).second) ++result.conflicting;
+                    if (sk->lostContextProjections.insert(curve).second) {
+                        ++result.conflicting;
+                        clash.push_back(curve);
+                    }
+                AffectedSketch hit{sk->id, sk->name, {}, {}, {}};
+                for (const doc::ContextProjection& p : sk->contextProjections) {
+                    if (!Matches(p, assembly) || std::find(clash.begin(), clash.end(), p.curve) == clash.end()) continue;
+                    if (hit.curves.empty()) {
+                        hit.sourceComponent = p.component;
+                        hit.sourceSketch = p.source.sketch;
+                    }
+                    hit.curves.push_back(p.curve);
+                }
+                result.conflicts.push_back(std::move(hit));
                 moved = false;
             }
         }

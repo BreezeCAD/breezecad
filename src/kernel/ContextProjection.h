@@ -33,6 +33,15 @@ std::vector<ObjectId> ContextSources(const doc::Document& doc, std::string_view 
 std::uint64_t ContextKey(const AssemblyModel& geometry, const assembly::Assembly& a, ObjectId target,
                          const doc::Document& doc, std::string_view assembly);
 
+/// A sketch of the part whose source changed.
+struct AffectedSketch {
+    ObjectId              sketch;           ///< the sketch feature of the part
+    std::string           name;             ///< as in the tree
+    std::vector<ObjectId> curves;           ///< its projected curves whose source changed or is gone
+    ObjectId              sourceComponent;  ///< where the (first) changed source is
+    ObjectId              sourceSketch;     ///< and its sketch, in that component's part
+};
+
 struct AdaptResult {
     int moved = 0;   ///< curves put where their source edges project now
     int lost = 0;    ///< source edges no longer found (their curves stay)
@@ -41,6 +50,9 @@ struct AdaptResult {
     /// stays as it was, these curves drawn red. Placing them would move one
     /// another back and forth for ever.
     int conflicting = 0;
+    /// Those curves, per sketch: the author decides what becomes of them
+    /// («Обнаружено изменение…»: let them go, or edit the sketch).
+    std::vector<AffectedSketch> conflicts;
     bool changed() const { return moved > 0; }
 };
 /// Puts the adaptive projections of `doc` (the part of `target`) where their
@@ -72,14 +84,6 @@ using SourcePrints = std::unordered_map<ObjectId, std::uint64_t>;
 inline constexpr std::uint64_t kSourceGone = 0;
 SourcePrints SourcePrintsOf(const AssemblyModel& geometry, const doc::Document& doc, std::string_view assembly);
 
-/// A sketch of the part whose source changed.
-struct AffectedSketch {
-    ObjectId              sketch;           ///< the sketch feature of the part
-    std::string           name;             ///< as in the tree
-    std::vector<ObjectId> curves;           ///< its projected curves whose source changed or is gone
-    ObjectId              sourceComponent;  ///< where the (first) changed source is
-    ObjectId              sourceSketch;     ///< and its sketch, in that component's part
-};
 /// The sketches of `doc` (in tree order) with a projected curve whose source
 /// print differs between `before` (at the last following) and `now`. Curves
 /// with no print in `before` (new) or in `now` (source component gone) are

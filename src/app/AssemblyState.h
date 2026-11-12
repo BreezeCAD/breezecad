@@ -216,6 +216,10 @@ public:
         std::string                         sourceSketch;   ///< its sketch that changed
         std::vector<kernel::AffectedSketch> sketches;
         kernel::SourcePrints                now;            ///< the sources as they are now
+        /// Not a changed sketch: projected curves that cannot all stand on
+        /// their edges (the edges put a shared point in two places). Only
+        /// «Игнорировать» (they stop following) or «Ручное редактирование».
+        bool                                conflict = false;
     };
     std::vector<SourceChange> changes;
     /// «Ручное редактирование»: the sketches of a part to open one by one.

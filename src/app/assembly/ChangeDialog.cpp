@@ -126,6 +126,12 @@ void SketchErrors(const doc::SketchFeature& sk, std::vector<Vec3>& out) {
         if (const auto p = middle(curve)) out.push_back(at(*p));
 }
 
+/// The variants the window offers for `change`: projections that disagree
+/// can only be let go or edited by hand (no new contour to follow).
+bool Offered(const AssemblyState::SourceChange& change, ChangeChoice c) {
+    return !change.conflict || c == ChangeChoice::Ignore || c == ChangeChoice::Manual;
+}
+
 /// Starts (or keeps) the previews of the change shown.
 void MakePreviews(ChangeDialogState& d, const AssemblyState& st, std::string_view name) {
     const AssemblyState::SourceChange& change = st.changes[d.current];
@@ -134,6 +140,7 @@ void MakePreviews(ChangeDialogState& d, const AssemblyState& st, std::string_vie
     const std::string base = std::format("{}#{}", ToUtf8(change.partFile), d.current);
     for (std::size_t i = 0; i < 4; ++i) {
         const auto choice = static_cast<ChangeChoice>(i);
+        if (!Offered(change, choice)) continue;
         const std::string key = choice == ChangeChoice::Mimic ? base + "#" + d.gap : base;
         Pending& p = d.variants[i];
         if (p.key == key) continue;
@@ -391,7 +398,9 @@ const char* ChoiceTitle(ChangeChoice c) {
     }
     return "";
 }
-const char* ChoiceNote(ChangeChoice c) {
+const char* ChoiceNote(ChangeChoice c, bool conflict) {
+    if (conflict && c == ChangeChoice::Ignore) return N_("Эти проекции перестают следовать за рёбрами. Эскиз остаётся как есть");
+    if (conflict && c == ChangeChoice::Manual) return N_("Сразу открыть эскиз и поправить проекции вручную");
     switch (c) {
         case ChangeChoice::Ignore: return N_("Деталь остаётся как есть. Изменившиеся эскизы подсвечены красным");
         case ChangeChoice::Adapt: return N_("Эскизы идут за новым контуром, зависимости сохраняются. Видно, что и где изменится");
@@ -419,6 +428,8 @@ void DrawChangeDialog(AppContext& app) {
     if (!app.shell.changeDialog) app.shell.changeDialog = std::make_shared<ChangeDialogState>();
     ChangeDialogState& d = *app.shell.changeDialog;
     d.choices.resize(st.changes.size(), ChangeChoice::Adapt);
+    for (std::size_t k = 0; k < st.changes.size(); ++k)
+        if (!Offered(st.changes[k], d.choices[k])) d.choices[k] = ChangeChoice::Ignore;
     d.current = std::min(d.current, st.changes.size() - 1);
     const std::string name = as->ContextName();
     MakePreviews(d, st, name);
@@ -453,7 +464,10 @@ void DrawChangeDialog(AppContext& app) {
     ui::FittedText(dl, ui.fonts.display, ui.S(18), {textX, o.y + ui.S(22)}, o.x + width - pad - counterW, ui::ToU32(c.text),
                    Tr("Обнаружено изменение, затрагивающее другие детали"));
     const std::string what =
-        change.sourceSketch.empty()
+        change.conflict
+            ? Trf("Проекции рёбер детали «{}» не могут встать на место все сразу: рёбра ставят их общую точку в разные места.",
+                  change.source)
+        : change.sourceSketch.empty()
             ? Trf("Деталь «{}» изменилась. От неё построены детали сборки — выберите, что с ними делать.", change.source)
             : Trf("Деталь «{}»: изменён «{}». От него построены детали сборки — выберите, что с ними делать.", change.source,
                   change.sourceSketch);
@@ -486,8 +500,9 @@ void DrawChangeDialog(AppContext& app) {
     y += ui.S(30);
     for (std::size_t i = 0; i < 4; ++i) {
         const auto ch = static_cast<ChangeChoice>(i);
+        if (!Offered(change, ch)) continue;
         const bool chosen = choice == ch;
-        const std::string note = Tr(ChoiceNote(ch));
+        const std::string note = Tr(ChoiceNote(ch, change.conflict));
         const float noteH = ui.fonts.bodySmall->CalcTextSizeA(ui.S(12), FLT_MAX, lw - ui.S(58), note.c_str()).y;
         const float h = ui.S(30) + noteH;
         ImGui::SetCursorScreenPos({lx - ui.S(4), y});
@@ -522,9 +537,11 @@ void DrawChangeDialog(AppContext& app) {
                 dl->AddText(ui.fonts.bodySmall, ui.S(12), {lx + ui.S(52), y}, ui::ToU32(c.text), row.c_str());
                 y += ui.S(18);
             }
-            ImGui::SetCursorScreenPos({lx + ui.S(48), y + ui.S(2)});
-            ImGui::Checkbox(Tr("Откатить зависимости эскиза до изменения"), &d.rollback);
-            y += ui.S(32);
+            if (!change.conflict) {
+                ImGui::SetCursorScreenPos({lx + ui.S(48), y + ui.S(2)});
+                ImGui::Checkbox(Tr("Откатить зависимости эскиза до изменения"), &d.rollback);
+                y += ui.S(32);
+            }
         }
     }
     ImGui::SetCursorScreenPos({lx, o.y + height - footH - ui.S(40)});
@@ -623,7 +640,8 @@ void DrawChangeDialog(AppContext& app) {
     const bool go = ui::PrimaryButton(ui, "##change-apply", primary.c_str(), "Enter", {bw, bh}, can);
     if (go && can) {
         if (d.sameForAll)
-            for (std::size_t k = d.current; k < d.choices.size(); ++k) d.choices[k] = choice;
+            for (std::size_t k = d.current; k < d.choices.size(); ++k)
+                if (Offered(st.changes[k], choice)) d.choices[k] = choice;
         if (!last && !d.sameForAll && choice != ChangeChoice::Manual) {
             ++d.current;   // the next part; all are applied with the last one
         } else {
@@ -638,7 +656,7 @@ void DrawChangeDialog(AppContext& app) {
             std::string failed;
             for (; left > 0 && k < st.changes.size() && k < choices.size(); --left) {
                 const ChangeChoice ch = choices[k];
-                const std::string why = ch == ChangeChoice::Manual && manual ? std::string("-") : st.ResolveChange(k, ch, gap, d.rollback, file, name);
+                const std::string why = ch == ChangeChoice::Manual && manual ? std::string("-") : st.ResolveChange(k, ch, gap, d.rollback && !st.changes[k].conflict, file, name);
                 if (!why.empty()) {
                     if (why != "-") failed = why;
                     ++k;   // stays in the list

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "core/CrashCode.h"
+#include "core/Monitor.h"
 
 #include <doctest.h>
 
@@ -50,4 +51,18 @@ TEST_CASE("report fields") {
     CHECK(ReportField(report, "Reason") == "uncaught exception: bad");
     CHECK(ReportField(report, "Hang").empty());
     CHECK(ReportField(report, "Vers").empty());
+}
+
+// The last action in a crash report is a fixed-size copy: cut short, it must
+// end on a whole letter, not «от�» (BETA-BUGS, «Кубик монолит», 12.11.2026).
+TEST_CASE("a copy of Russian text cut short ends on a whole letter") {
+    const std::string text = "отрисовка";   // two bytes a letter
+    CHECK(bz::mon::Utf8Prefix(text.data(), text.size()) == text.size());
+    CHECK(bz::mon::Utf8Prefix(text.data(), 5) == 4);   // «от» + half of «р» → «от»
+    CHECK(bz::mon::Utf8Prefix(text.data(), 4) == 4);
+    const std::string mixed = "ab€";   // € is three bytes
+    CHECK(bz::mon::Utf8Prefix(mixed.data(), 4) == 2);
+    CHECK(bz::mon::Utf8Prefix(mixed.data(), 3) == 2);
+    CHECK(bz::mon::Utf8Prefix(mixed.data(), 5) == 5);
+    CHECK(bz::mon::Utf8Prefix(mixed.data(), 0) == 0);
 }

@@ -15,7 +15,8 @@ cmake --build --preset linux-debug -- -k 0 2>&1 | grep -E "error|warning:" | hea
 ./build/linux-debug/bin/bz_tests 2>&1 | tail -1     # должно быть: Status: SUCCESS!
 ./build/linux-debug/bin/breezecad                   # запустить программу
 ```
-Пакеты (Ubuntu): `libocct-*-dev libtbb-dev libglfw3-dev libgl1-mesa-dev`.
+OCCT — тот же, что в CI: `bash scripts/dev/cloud-setup.sh deps` (или `scripts/deps/build-occt.sh linux <prefix>`);
+остальное (Ubuntu): `libglfw3-dev libgl1-mesa-dev libfreetype-dev libfontconfig1-dev`.
 
 ## Порядок работы над одним багом
 1. Взять баг из `docs/dev/BETA-BUGS.md`. Если не понятно, как воспроизвести, — спросить.

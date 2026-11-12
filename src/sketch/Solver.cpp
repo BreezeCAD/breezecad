@@ -350,13 +350,13 @@ SolveResult Solve(Sketch& sketch, const SolveOptions& options) {
     }
     if (!ok && !options.drags.empty()) {
         // The point cannot be exactly there (it is held to a line, an angle,
-        // a circle): it goes as near as the constraints let it, as in
+        // a circle): it goes as close as the constraints let it, as in
         // Inventor — the solve starts from the cursor and settles on the
         // closest place that holds. Pinned, it would not move at all.
-        Sketch near = sketch;
+        Sketch atCursor = sketch;
         for (const Drag& d : options.drags)
-            if (Point* p = near.FindPoint(d.point); p && !p->isOrigin) p->pos = d.target;
-        sys = EquationSystem(near);
+            if (Point* p = atCursor.FindPoint(d.point); p && !p->isOrigin) p->pos = d.target;
+        sys = EquationSystem(atCursor);
         ok = Iterate(sys, options.maxIterations);
     }
     if (!ok && !options.drags.empty()) {

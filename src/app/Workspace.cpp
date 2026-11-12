@@ -329,7 +329,7 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
     }
     const std::filesystem::path folder = session.path.empty() ? platform::DocumentsDir() : session.path.parent_path();
     const auto chosen = platform::ShowSaveDialog(Trf("Экспорт в {}", info.name),
-                                                 folder / (session.Title() + info.ext), {{info.name, info.pattern}}, info.ext);
+                                                 folder / PathFromUtf8(session.Title() + info.ext), {{info.name, info.pattern}}, info.ext);
     if (!chosen) return false;
     return ExportTo(session, format, *chosen, notes);
 }

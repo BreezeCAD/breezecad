@@ -98,7 +98,7 @@ esac
 
 # --- FreeType (mobile): fonts for OCCT's text (kernel/TextGeometry) ---------
 # Nothing optional (no zlib, png, HarfBuzz, Brotli): OCCT only reads outlines.
-FT_ARGS=()
+FT_ARGS=()   # may stay empty: expanded as ${FT_ARGS[@]+…} for bash 3.2 (macOS) under set -u
 if [ "$FREETYPE" = build ]; then
     log "FreeType $FREETYPE_TAG ($PLATFORM)"
     clone freetype/freetype freetype "$FREETYPE_TAG"
@@ -121,7 +121,7 @@ fi
 log "OCCT $OCCT_TAG ($PLATFORM): ${TOOLKITS[*]}"
 clone Open-Cascade-SAS/OCCT occt "$OCCT_TAG"
 start=$(date +%s)
-cmake -S "$SRC/occt" -B "$SRC/occt/build-$PLATFORM" "${ARGS[@]}" "${FT_ARGS[@]}" \
+cmake -S "$SRC/occt" -B "$SRC/occt/build-$PLATFORM" "${ARGS[@]}" ${FT_ARGS[@]+"${FT_ARGS[@]}"} \
     -DINSTALL_DIR="$(native "$PREFIX")" -DINSTALL_DIR_LAYOUT=Unix -DBUILD_LIBRARY_TYPE=$LIBTYPE \
     -DBUILD_MODULE_FoundationClasses=OFF -DBUILD_MODULE_ModelingData=OFF \
     -DBUILD_MODULE_ModelingAlgorithms=OFF -DBUILD_MODULE_Visualization=OFF \

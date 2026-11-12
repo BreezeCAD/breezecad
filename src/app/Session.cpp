@@ -8,6 +8,7 @@
 #include "core/Monitor.h"
 #include "document/BzcFile.h"
 #include "document/DocumentTypes.h"
+#include "drawing/DrawingFile.h"
 
 #include <algorithm>
 #include <atomic>
@@ -129,12 +130,14 @@ void Session::Execute(std::unique_ptr<doc::Command> command) {
 }
 void Session::Undo() {
     mon::Action("undo", UndoLabel());
-    if (assembly) assembly->Undo();
+    if (drawing) drawing->Undo();
+    else if (assembly) assembly->Undo();
     else history.Undo(doc);
 }
 void Session::Redo() {
     mon::Action("redo", "");
-    if (assembly) assembly->Redo();
+    if (drawing) drawing->Redo();
+    else if (assembly) assembly->Redo();
     else history.Redo(doc);
 }
 
@@ -144,9 +147,17 @@ AssemblyState& Session::MakeAssembly() {
     return *assembly;
 }
 
-std::string_view Session::DocumentType() const { return assembly ? doc::kAssemblyType : doc::kPartType; }
+std::string_view Session::DocumentType() const {
+    return drawing ? doc::kDrawingType : assembly ? doc::kAssemblyType : doc::kPartType;
+}
+
+DrawingState& Session::MakeDrawing() {
+    drawing = std::make_unique<DrawingState>();
+    return *drawing;
+}
 
 std::uint64_t Session::ContentRevision() const {
+    if (drawing) return drawing->Revision();
     if (!assembly) return doc.Revision();
     // Its parts edited in it count too (they are saved with it).
     std::uint64_t parts = assembly->parts.size();
@@ -157,6 +168,12 @@ std::uint64_t Session::ContentRevision() const {
 
 Status Session::WriteFile(const std::filesystem::path& target, std::string_view generator,
                           std::span<const std::uint8_t> preview) const {
+    if (drawing) {
+        // Its models are relative to it: written elsewhere, a copy points at the same files.
+        drawing::Drawing copy = drawing->drawing;
+        DrawingState::RebasePaths(copy, drawing->savedAt, target);
+        return drawing::SaveDrawing(copy, target, generator, preview);
+    }
     if (!assembly) return doc::SaveBzc(doc, target, generator, preview);
     if (path == target) return assembly::SaveAssembly(assembly->assembly, target, generator, preview);
     Expected<assembly::Assembly> copy = assembly::AssemblyFromJson(assembly::AssemblyToJson(assembly->assembly));
@@ -167,12 +184,18 @@ Status Session::WriteFile(const std::filesystem::path& target, std::string_view 
 }
 
 bool Session::IsModified() const {
+    if (drawing) return drawing->IsModified();
     if (!assembly) return history.IsModified();
     return assembly->IsModified() || assembly->PartsModified();
 }
 
 void Session::MarkSaved() {
-    if (assembly) assembly->MarkSaved();
+    if (drawing) {
+        // Saved to `path`: from now on its models are relative to it.
+        DrawingState::RebasePaths(drawing->drawing, drawing->savedAt, path);
+        drawing->savedAt = path;
+        drawing->MarkSaved();
+    } else if (assembly) assembly->MarkSaved();
     else history.MarkSaved();
 }
 

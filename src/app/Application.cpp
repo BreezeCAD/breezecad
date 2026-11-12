@@ -13,6 +13,7 @@
 #include "modules/ModuleHost.h"
 #include "modules/ModuleManager.h"
 #include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/scripting/Scripting.h"
 #include "core/Image.h"
 #include "app/viewport/ViewportPanel.h"
@@ -934,8 +935,13 @@ void Application::DrawRoot() {
         const float panel = mySettings.panelWidth > 0 ? std::clamp(static_cast<float>(mySettings.panelWidth), 220.0f, widest)
                                                        : std::min(usual, widest);
         const float leftWidth = myUi->S(m.railWidth + panel);
-        DrawLeftArea(app, *session, {0, y}, {leftWidth, bottom - y});
-        DrawViewport(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        if (session->drawing) {   // a drawing: its tree and the sheet instead of the 3D view (ADR-0012)
+            DrawDrawingTree(app, *session, {0, y}, {leftWidth, bottom - y});
+            DrawDrawingSheet(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        } else {
+            DrawLeftArea(app, *session, {0, y}, {leftWidth, bottom - y});
+            DrawViewport(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        }
         DrawPanelEdge(leftWidth, y, bottom - y, panel, widest);
     }
     DrawProjectTabs(app, {0, bottom}, width);

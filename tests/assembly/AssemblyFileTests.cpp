@@ -41,11 +41,13 @@ TEST_CASE("document types are looked up, not assumed") {
     REQUIRE(reg.Find("assembly"));
     REQUIRE(reg.Find("drawing"));
     CHECK(reg.Find("assembly")->canOpen);
-    CHECK_FALSE(reg.Find("drawing")->canOpen);   // placeholder until its module exists
+    CHECK(reg.Find("drawing")->canOpen);   // ADR-0012
+    CHECK(reg.Find("drawing")->canCreate);
     CHECK(reg.Find("nonsense") == nullptr);
     CHECK(reg.Find("part")->extension == ".bzc");
     CHECK(reg.Find("assembly")->extension == ".bza");   // assemblies stand out among part files
-    CHECK(reg.OpenPatterns() == "*.bzc *.bza");          // the drawing cannot be opened yet
+    CHECK(reg.Find("drawing")->extension == ".bzd");
+    CHECK(reg.OpenPatterns() == "*.bzc *.bza *.bzd");
 
     doc::DocumentTypeRegistry custom;   // a module may add its own kind
     custom.Register({.id = "schematic", .title = "Схема", .untitledBase = "Схема"});

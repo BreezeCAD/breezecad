@@ -51,6 +51,7 @@ void MainMenu(AppContext& app) {
     ui::MenuStyle style(ui);   // before Begin: must outlive the End call
     if (!ImGui::BeginPopup("##main-menu")) return;
     MenuAction(app, "file.new");
+    MenuAction(app, "drawing.fromModel");   // the drawing of what is open (ADR-0012)
     MenuAction(app, "file.open");
     if (ui::BeginSubmenu(ui, Tr("Последние"), "ui-file", !app.settings.recentFiles.empty())) {
         for (const auto& file : app.settings.recentFiles) {

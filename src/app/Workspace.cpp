@@ -1,5 +1,7 @@
 #include "app/Workspace.h"
 
+#include "drawing/DrawingFile.h"
+
 #include "app/Notifications.h"
 #include "app/Settings.h"
 #include "app/assembly/InPlace.h"
@@ -89,6 +91,15 @@ Session& Workspace::NewAssembly() {
     return *sessions.back();
 }
 
+Session& Workspace::NewDrawing() {
+    auto session = std::make_unique<Session>();
+    session->MakeDrawing();
+    session->untitledName = NextUntitledName("Чертёж");
+    sessions.push_back(std::move(session));
+    Activate(static_cast<int>(sessions.size()) - 1);
+    return *sessions.back();
+}
+
 Expected<std::unique_ptr<Session>> Workspace::LoadSession(const std::filesystem::path& file,
                                                           std::vector<std::string>* warnings) {
     Expected<std::string> type = doc::ReadDocumentType(file);
@@ -97,7 +108,14 @@ Expected<std::unique_ptr<Session>> Workspace::LoadSession(const std::filesystem:
     if (!info || !info->canOpen)
         return Error{std::format("документы вида «{}» эта версия не открывает", info ? info->title : *type)};
     auto session = std::make_unique<Session>();
-    if (*type == doc::kAssemblyType) {
+    if (*type == doc::kDrawingType) {
+        drawing::ReadReport report;
+        Expected<drawing::Drawing> loaded = drawing::LoadDrawing(file, &report);
+        if (!loaded) return loaded.GetError();
+        session->MakeDrawing().drawing = std::move(*loaded);
+        session->drawing->savedAt = file;
+        if (warnings) warnings->insert(warnings->end(), report.warnings.begin(), report.warnings.end());
+    } else if (*type == doc::kAssemblyType) {
         Expected<assembly::Assembly> loaded = assembly::LoadAssembly(file, warnings);
         if (!loaded) return loaded.GetError();
         session->MakeAssembly().assembly = std::move(*loaded);
@@ -274,7 +292,8 @@ bool Workspace::SaveTo(Session& session, const std::filesystem::path& requested,
     }
     // The picture for the file manager, while the document is on the screen.
     std::vector<std::uint8_t> preview;
-    if (previewMaker && ActiveTab() == &session) preview = previewMaker();
+    // The picture of the 3D view; a drawing has none yet (its sheet comes later).
+    if (previewMaker && ActiveTab() == &session && !session.drawing) preview = previewMaker();
     const Status status = session.WriteFile(target, kGenerator, preview);
     if (!status) {
         if (session.assembly) {

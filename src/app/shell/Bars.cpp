@@ -2,6 +2,7 @@
 
 #include "app/Format.h"
 #include "app/Operations.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
@@ -136,7 +137,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
 
     // Mode and what to do next.
     std::string mode = Tr(app.Doc() && app.Doc()->assembly ? "Сборка" : "Деталь"), hint;
-    if (const OperationEditor* operation = app.ops.Active()) {
+    if (s->drawing) {
+        mode = Tr("Чертёж");
+        hint = Trf("{} · колесо — масштаб, перетаскивание — сдвиг листа, двойной щелчок по основной надписи — заполнить",
+                   DrawingSheetCaption(*s->drawing));
+    } else if (const OperationEditor* operation = app.ops.Active()) {
         mode = operation->Title();
         hint = operation->Hint();
     } else if (s->mode == EditMode::Sketch) {

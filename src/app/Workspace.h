@@ -47,6 +47,8 @@ public:
     Session& NewPart();
     /// New empty assembly, made active.
     Session& NewAssembly();
+    /// A new drawing: one A3 sheet with the ESKD frame (ADR-0012).
+    Session& NewDrawing();
 
     /// A session for a .bzc file of any kind this version opens (not added).
     static Expected<std::unique_ptr<Session>> LoadSession(const std::filesystem::path& file,

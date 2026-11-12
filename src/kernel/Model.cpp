@@ -159,6 +159,28 @@ Body* LastSolid(std::vector<Body>& bodies) {
 }
 const Body* LastSolid(const std::vector<Body>& bodies) { return LastSolid(const_cast<std::vector<Body>&>(bodies)); }
 
+/// Every solid body of the part as one shape (meshes left out): what a
+/// projected edge or face is looked for on. Only the most recent body was
+/// searched — an edge of any other body of a multi-body part was «lost» on
+/// the next rebuild, or worse, swapped for a look-alike edge of the last one.
+TopoDS_Shape AllSolids(const std::vector<Body>& bodies) {
+    const Body* only = nullptr;
+    int count = 0;
+    for (const Body& b : bodies)
+        if (!b.mesh && !b.shape.IsNull()) {
+            only = &b;
+            ++count;
+        }
+    if (count == 0) return {};
+    if (count == 1) return only->shape;
+    TopoDS_Compound all;
+    BRep_Builder builder;
+    builder.MakeCompound(all);
+    for (const Body& b : bodies)
+        if (!b.mesh && !b.shape.IsNull()) builder.Add(all, b.shape);
+    return all;
+}
+
 /// The last step of every operation that makes a solid: keep it as a new
 /// body, or join, cut or intersect it with the bodies it reaches. A join
 /// merges every body it touches into the first of them; a cut and an
@@ -945,6 +967,13 @@ bool PlaceProjected(sketch::Sketch& sk, ObjectId curve, const ProjectedCurve& pc
                 return true;
             }
             return false;
+        case ProjectedCurve::Kind::Spline:
+            // Its points move (as many as when it was projected: kSplineSpans + 1).
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() == pc.points.size()) {
+                for (std::size_t i = 0; i < pc.points.size(); ++i) move(s->points[i], pc.points[i]);
+                return true;
+            }
+            return false;
     }
     return false;
 }
@@ -1017,11 +1046,11 @@ bool UpdateProjections(doc::SketchFeature& sk, const std::vector<Body>& bodies, 
             refs.push_back(sk.projections[i].edge);
             byEdge.push_back(i);
         }
+    const TopoDS_Shape body = AllSolids(bodies);
     const std::vector<std::optional<TopoDS_Edge>> found =
-        !LastSolid(bodies) || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, LastSolid(bodies)->shape);
+        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, body);
     std::vector<std::optional<TopoDS_Edge>> edges(sk.projections.size());
     for (std::size_t k = 0; k < byEdge.size(); ++k) edges[byEdge[k]] = found[k];
-    const TopoDS_Shape body = LastSolid(bodies) ? LastSolid(bodies)->shape : TopoDS_Shape();
     std::vector<std::pair<ObjectId, ProjectedCurve>> place;
     const auto lose = [&](ObjectId curve) {
         sk.lostProjections.insert(curve);
@@ -1842,8 +1871,10 @@ const std::vector<SketchRegion>* Model::Regions(ObjectId sketchFeature) const {
 
 Expected<ProjectedCurve> Model::ProjectEdge(const doc::EdgeReference& edge, const Frame& plane, std::size_t featureIndex) const {
     const auto& after = myImpl->bodiesAfter;
-    if (featureIndex == 0 || featureIndex > after.size() || after[featureIndex - 1].empty()) return Error{"Нет тела, с которого проецировать"};
-    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, after[featureIndex - 1].back().shape).front();
+    if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
+    const TopoDS_Shape bodies = AllSolids(after[featureIndex - 1]);
+    if (bodies.IsNull()) return Error{"Нет тела, с которого проецировать"};
+    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies).front();
     if (!found) return Error{"Ребро не найдено"};
     return occt::ProjectEdge(*found, plane);
 }
@@ -1861,8 +1892,16 @@ std::vector<ProjectedCurve> Model::ProjectSection(const Frame& plane, std::size_
 
 Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex) const {
     const auto& after = myImpl->bodiesAfter;
-    if (featureIndex == 0 || featureIndex > after.size() || after[featureIndex - 1].empty()) return Error{"Нет тела, с которого проецировать"};
-    const TopoDS_Shape& body = after[featureIndex - 1].back().shape;
+    if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
+    // The body that has the face: ProjectRevolved needs the face's own solid.
+    for (auto it = after[featureIndex - 1].rbegin(); it != after[featureIndex - 1].rend(); ++it) {
+        if (it->mesh) continue;
+        const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(it->shape, face);
+        if (found && DistanceTo(*found, face.point) < 1e-4) return occt::ProjectRevolved(it->shape, *found, plane);
+    }
+    const Body* last = LastSolid(after[featureIndex - 1]);
+    if (!last) return Error{"Нет тела, с которого проецировать"};
+    const TopoDS_Shape& body = last->shape;
     const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(body, face);
     if (!found) return Error{"Грань не найдена"};
     return occt::ProjectRevolved(body, *found, plane);
@@ -2073,10 +2112,17 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
     std::unordered_map<ObjectId, std::vector<Target>> wanted;   // point -> what the curves want of it
     const auto want = [&](std::size_t item, ObjectId point, Vec2 at) { wanted[point].push_back({item, at}); };
     std::vector<int> reversed(curves.size(), -1);   // lines: -1 undecided, 0 as it came, 1 the other way
+    // The two ends of a line or of an open spline (what may come reversed).
+    const auto endsOf = [&](ObjectId curve) -> std::optional<std::pair<ObjectId, ObjectId>> {
+        if (const sketch::Line* l = sk.FindLine(curve)) return std::pair{l->start, l->end};
+        if (const sketch::Spline* s = sk.FindSpline(curve); s && !s->Closed() && s->points.size() >= 2)
+            return std::pair{s->points.front(), s->points.back()};
+        return std::nullopt;
+    };
     for (std::size_t i = 0; i < curves.size(); ++i) {
         const auto& [curve, pc] = curves[i];
-        if (pc.kind == ProjectedCurve::Kind::Line) {
-            if (sk.FindLine(curve)) reversed[i] = 0;
+        if (pc.kind == ProjectedCurve::Kind::Line || pc.kind == ProjectedCurve::Kind::Spline) {
+            if (endsOf(curve)) reversed[i] = 0;
             continue;
         }
         if (pc.kind == ProjectedCurve::Kind::Circle) {
@@ -2112,16 +2158,16 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
         bool changed = false;
         for (std::size_t i = 0; i < curves.size(); ++i) {
             if (reversed[i] < 0) continue;
-            const sketch::Line* l = sk.FindLine(curves[i].first);
+            const auto [first, last] = *endsOf(curves[i].first);
             const ProjectedCurve& pc = curves[i].second;
-            const double asCame = misfit(i, l->start, pc.start) + misfit(i, l->end, pc.end);
-            const double turned = misfit(i, l->start, pc.end) + misfit(i, l->end, pc.start);
+            const double asCame = misfit(i, first, pc.start) + misfit(i, last, pc.end);
+            const double turned = misfit(i, first, pc.end) + misfit(i, last, pc.start);
             const int now = turned + 1e-9 < asCame ? 1 : 0;
             if (round > 0 && now == reversed[i]) continue;
             // Replace what this line wanted of its ends.
-            for (ObjectId point : {l->start, l->end}) std::erase_if(wanted[point], [&](const Target& t) { return t.item == i; });
-            want(i, l->start, now ? pc.end : pc.start);
-            want(i, l->end, now ? pc.start : pc.end);
+            for (ObjectId point : {first, last}) std::erase_if(wanted[point], [&](const Target& t) { return t.item == i; });
+            want(i, first, now ? pc.end : pc.start);
+            want(i, last, now ? pc.start : pc.end);
             changed = changed || now != reversed[i];
             reversed[i] = now;
         }
@@ -2130,7 +2176,10 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
     std::vector<bool> out(curves.size(), false);
     for (std::size_t i = 0; i < curves.size(); ++i) {
         ProjectedCurve pc = curves[i].second;
-        if (reversed[i] == 1) std::swap(pc.start, pc.end);
+        if (reversed[i] == 1) {
+            std::swap(pc.start, pc.end);
+            std::reverse(pc.points.begin(), pc.points.end());
+        }
         out[i] = PlaceProjected(sk, curves[i].first, pc);
     }
     return out;
@@ -2154,6 +2203,16 @@ bool CurveMatches(const sketch::Sketch& sk, ObjectId curve, const ProjectedCurve
             return false;
         case ProjectedCurve::Kind::Ellipse:
             if (const sketch::Ellipse* e = sk.FindEllipse(curve)) return at(e->center, pc.centre) && at(e->major, pc.start) && at(e->minor, pc.end);
+            return false;
+        case ProjectedCurve::Kind::Spline:
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() == pc.points.size()) {
+                bool asCame = true, turned = true;
+                for (std::size_t i = 0; i < pc.points.size(); ++i) {
+                    asCame = asCame && at(s->points[i], pc.points[i]);
+                    turned = turned && at(s->points[i], pc.points[pc.points.size() - 1 - i]);
+                }
+                return asCame || turned;
+            }
             return false;
     }
     return false;

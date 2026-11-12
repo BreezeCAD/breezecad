@@ -6,6 +6,7 @@
 
 #include <AIS_InteractiveObject.hxx>
 #include <Graphic3d_MaterialAspect.hxx>
+#include <Graphic3d_PolygonOffset.hxx>
 #include <Graphic3d_Texture2D.hxx>
 #include <TopoDS_Face.hxx>
 
@@ -21,8 +22,11 @@ Handle(Graphic3d_Texture2D) MakePictureTexture(int width, int height, std::span<
 class TexturedFaces : public AIS_InteractiveObject {
 public:
     /// `tile`: millimetres one copy of the picture covers on the part.
+    /// `depthBias`: the push back of the body the faces belong to (they
+    /// meet other bodies' faces just as the body would).
     TexturedFaces(std::vector<TopoDS_Face> faces, Handle(Graphic3d_Texture2D) texture, double tile,
-                  const Graphic3d_MaterialAspect& material, double transparency);
+                  const Graphic3d_MaterialAspect& material, double transparency,
+                  const Graphic3d_PolygonOffset& depthBias = {});
 
     bool AcceptDisplayMode(const Standard_Integer mode) const override { return mode == 0; }
 
@@ -39,6 +43,7 @@ private:
     double                      myTile;
     Graphic3d_MaterialAspect    myMaterial;
     double                      myTransparency;
+    Graphic3d_PolygonOffset     myDepthBias;
 };
 
 } // namespace bz::render

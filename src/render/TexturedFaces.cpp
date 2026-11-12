@@ -76,9 +76,10 @@ Handle(Graphic3d_Texture2D) MakePictureTexture(int width, int height, std::span<
 }
 
 TexturedFaces::TexturedFaces(std::vector<TopoDS_Face> faces, Handle(Graphic3d_Texture2D) texture, double tile,
-                             const Graphic3d_MaterialAspect& material, double transparency)
+                             const Graphic3d_MaterialAspect& material, double transparency,
+                             const Graphic3d_PolygonOffset& depthBias)
     : myFaces(std::move(faces)), myTexture(std::move(texture)), myTile(tile > 1e-6 ? tile : 1.0), myMaterial(material),
-      myTransparency(transparency) {}
+      myTransparency(transparency), myDepthBias(depthBias) {}
 
 void TexturedFaces::Compute(const Handle(PrsMgr_PresentationManager)&, const Handle(Prs3d_Presentation)& presentation,
                             const Standard_Integer) {
@@ -140,6 +141,7 @@ void TexturedFaces::Compute(const Handle(PrsMgr_PresentationManager)&, const Han
     aspect->SetTextureMap(myTexture);
     aspect->SetTextureMapOn();
     aspect->SetDistinguishOff();
+    aspect->SetPolygonOffset(myDepthBias);
     Handle(Graphic3d_Group) group = presentation->NewGroup();
     group->SetGroupPrimitivesAspect(aspect);
     group->AddPrimitiveArray(array);

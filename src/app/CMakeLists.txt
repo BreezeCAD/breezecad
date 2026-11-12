@@ -26,6 +26,7 @@ set(BZ_APP_SOURCES
     Settings.cpp
     TouchNavigation.cpp
     Workspace.cpp
+    testing/UiProbe.cpp
     scripting/Scripting.cpp
     scripting/DocumentCommands.cpp
     scripting/PartCommands.cpp

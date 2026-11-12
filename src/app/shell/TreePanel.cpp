@@ -6,6 +6,7 @@
 #include "core/PathText.h"
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
+#include "app/testing/UiProbe.h"
 #include "app/assembly/AssemblyIssues.h"
 #include "app/Format.h"
 #include "app/Operations.h"
@@ -78,6 +79,7 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     r.clicked = ImGui::InvisibleButton("##row", {width, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    probe::Name("tree", name);
     r.hovered = ImGui::IsItemHovered();
     r.doubleClicked = r.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     ImGui::PopID();
@@ -715,11 +717,17 @@ void DrawAssemblyTree(AppContext& app, Session& session, float width) {
             const ObjectId other = con->first.component == id ? con->second.component : con->first.component;
             if (const assembly::Component* o = a.FindComponent(other)) cs.meta = o->name;
             ImGui::PushID(static_cast<int>(con->id.value));
-            if (Row(app, "##in-comp", con->name, cs, rowW).clicked) {
+            const RowResult rc = Row(app, "##in-comp", con->name, cs, rowW);
+            if (rc.clicked) {
                 const ObjectId cid = con->id;
                 if (st.creating.active && assembly::IsTransmission(st.creating.constraint.type))
                     app.Later([&app, &session, cid] { TakeJointPick(app, session, cid); });
                 else st.selected = cid;
+            }
+            // As in Inventor: a double click opens the constraint to edit (its value, offset, flip).
+            if (rc.doubleClicked && !st.creating.active) {
+                st.selected = con->id;
+                app.shell.leftTab = LeftTab::Properties;
             }
             ImGui::PopID();
         }
@@ -799,6 +807,10 @@ void DrawAssemblyTree(AppContext& app, Session& session, float width) {
                 if (st.creating.active && assembly::IsTransmission(st.creating.constraint.type))
                     app.Later([&app, &session, cid] { TakeJointPick(app, session, cid); });
                 else st.selected = cid;
+            }
+            if (r.doubleClicked && !st.creating.active) {   // as in Inventor: open it to edit
+                st.selected = con.id;
+                app.shell.leftTab = LeftTab::Properties;
             }
             {
                 ui::MenuStyle menu(ui);

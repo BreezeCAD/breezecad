@@ -6,11 +6,13 @@
 #include "kernel/occt/FaceMatch.h"
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Section.h"
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
 #include <AIS_InteractiveContext.hxx>
 #include <BRepLib.hxx>
+#include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopExp_Explorer.hxx>
@@ -325,6 +327,35 @@ void SetMeshPrecision(const Handle(Prs3d_Drawer)& drawer, int quality) {
 
 } // namespace
 
+namespace {
+
+/// How wide a tile of the section hatching is on screen (it holds four
+/// lines): about the texture's own size, so a line stays a crisp line.
+constexpr double kHatchTilePixels = 48.0;
+
+/// Thin lines at 45 degrees on white: multiplied by the cut's colour, they
+/// are the usual hatching of cut material. The tile repeats without a seam.
+Handle(Graphic3d_Texture2D) MakeHatchTexture() {
+    constexpr int size = 64, period = 16;   // four lines a tile
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const int d = (x + y) % period;
+            const double off = std::min(d, period - d) / std::sqrt(2.0);   // texels from the line's middle
+            const double line = std::clamp(1.4 - off, 0.0, 1.0);           // about 2 px wide, soft edges
+            const auto v = static_cast<std::uint8_t>(std::lround(255.0 - line * 150.0));
+            std::uint8_t* p = &rgba[(static_cast<std::size_t>(y) * size + static_cast<std::size_t>(x)) * 4];
+            p[0] = p[1] = p[2] = v;
+            p[3] = 255;
+        }
+    return MakePictureTexture(size, size, rgba);
+}
+
+/// How long the cutting plane stands still before its cut is hatched.
+constexpr std::chrono::milliseconds kCapsDelay{150};
+
+} // namespace
+
 struct Viewport::Impl {
     Handle(OpenGl_GraphicDriver)     driver;
     Handle(V3d_Viewer)               viewer;
@@ -425,6 +456,19 @@ struct Viewport::Impl {
     }
 
     Handle(Graphic3d_ClipPlane) section;        ///< null: no section
+    /// The cut of "Разрез вида" in hatching, as in Inventor: the faces where the
+    /// plane cuts the material, one set a body, built once the plane has
+    /// stood still a moment (while it moves, OCCT fills the cut plainly).
+    struct SectionCaps {
+        Handle(Graphic3d_Texture2D)                 hatch;
+        double                                      tile = 0.0;   ///< mm a tile of `hatch` now
+        std::vector<TopoDS_Shape>                   of;           ///< the bodies they were made for
+        std::vector<std::vector<TopoDS_Face>>       faces;        ///< a body's cut faces
+        std::vector<Quantity_Color>                 colors;       ///< a body's colour
+        std::vector<Handle(AIS_InteractiveObject)>  shown;
+        bool                                        stale = true;
+        std::chrono::steady_clock::time_point       askedAt{};
+    } caps;
     std::optional<Frame>        sectionFrame;   ///< as last set
     Handle(Graphic3d_Texture2D) backgroundPicture;   ///< as last set (Preview takes it away for a moment)
 
@@ -679,6 +723,83 @@ struct Viewport::Impl {
             context->Display(lines, AIS_WireFrame, -1, false);
             textured[s.shape.get()].push_back(lines);
         }
+    }
+
+    void ClearCaps() {
+        for (const auto& obj : caps.shown) context->Remove(obj, false);
+        caps.shown.clear();
+        caps.of.clear();
+        caps.faces.clear();
+        caps.colors.clear();
+        caps.stale = true;
+        caps.askedAt = std::chrono::steady_clock::now();
+        if (!section.IsNull()) section->SetCapping(true);   // the plain fill until the hatching is there
+    }
+
+    /// Shows the hatched cut once the plane has stood still; keeps the hatching's
+    /// density on screen when zooming. True when what is drawn changed.
+    bool UpdateCaps() {
+        if (section.IsNull() || height <= 0) return false;
+        // The bodies changed under the plane (an edit, another document): again.
+        bool same = caps.of.size() == shown.size();
+        for (std::size_t i = 0; same && i < shown.size(); ++i) same = caps.of[i].IsEqual(shown[i].shape->Shape());
+        if (!same && !caps.stale) ClearCaps();
+        if (!same) {
+            caps.of.clear();
+            for (const auto& s : shown) caps.of.push_back(s.shape->Shape());
+        }
+        const auto now = std::chrono::steady_clock::now();
+        bool changed = false;
+        if (caps.stale) {
+            if (now - caps.askedAt < kCapsDelay) return false;   // the plane is still moving
+            caps.stale = false;
+            caps.faces.clear();
+            caps.colors.clear();
+            bool failed = false;
+            for (const auto& s : shown) {
+                Bnd_Box box;
+                BRepBndLib::Add(s.shape->Shape(), box);
+                double deflection = 0.05;
+                if (!box.IsVoid()) deflection = std::clamp(std::sqrt(box.SquareExtent()) * 0.001, 0.005, 1.0);
+                const auto cut = kernel::occt::CutFaces(s.shape->Shape(), *sectionFrame, deflection);
+                if (!cut) {
+                    log::Warn("Section: the cut of a body is not built: {}", cut.GetError().message);
+                    failed = true;
+                    break;
+                }
+                Quantity_Color color;
+                s.shape->Color(color);
+                caps.faces.push_back(*cut);
+                caps.colors.push_back(color);
+            }
+            if (failed) {
+                caps.faces.clear();   // the plain fill stays: better than a cut half hatched
+                return false;
+            }
+            caps.tile = 0.0;   // shown below
+            changed = true;
+        }
+        if (caps.faces.empty()) return changed;
+        // A tile of `kHatchTilePixels` on screen, in steps of two so it does not swim when zooming.
+        const double mmPerPixel = view->Camera()->Scale() / height;
+        const double tile = std::pow(2.0, std::round(std::log2(std::max(mmPerPixel * kHatchTilePixels, 1e-9))));
+        if (std::abs(tile - caps.tile) < 1e-12 && !changed) return false;
+        caps.tile = tile;
+        for (const auto& obj : caps.shown) context->Remove(obj, false);
+        caps.shown.clear();
+        // Drawn on the cutting plane itself: the plane must not clip them away.
+        Handle(Graphic3d_SequenceOfHClipPlane) noPlanes = new Graphic3d_SequenceOfHClipPlane();
+        noPlanes->SetOverrideGlobal(true);
+        for (std::size_t i = 0; i < caps.faces.size(); ++i) {
+            if (caps.faces[i].empty()) continue;
+            Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
+            Handle(TexturedFaces) cut = new TexturedFaces(caps.faces[i], caps.hatch, tile, material, 0.0, Graphic3d_PolygonOffset{}, caps.colors[i]);
+            cut->SetClipPlanes(noPlanes);
+            context->Display(cut, 0, -1, false);   // never picked: the body under it is
+            caps.shown.push_back(cut);
+        }
+        section->SetCapping(caps.shown.empty());   // one fill, not two fighting
+        return true;
     }
 
     void ApplyStyleAll() {
@@ -987,6 +1108,19 @@ bool Viewport::SameFace(ObjectId body, const doc::FaceReference& a, const doc::F
     return false;
 }
 
+std::optional<Frame> Viewport::PlaneOfFace(const SelectedFace& chosen) const {
+    for (const auto& s : myImpl->shown) {
+        if (s.body != chosen.body) continue;
+        const auto face = kernel::occt::ResolveAnyFace(s.shape->Shape(), chosen.face);
+        if (!face) return std::nullopt;
+        std::optional<Frame> frame = PlanarFaceFrame(*face);
+        // The side the face was chosen from (the same rule as a click in PickPlane).
+        if (frame && chosen.face.IsSet() && frame->normal.Dot(chosen.face.normal) < 0) frame->normal = -frame->normal;
+        return frame;
+    }
+    return std::nullopt;
+}
+
 void Viewport::SetBackgroundPicture(int width, int height, std::span<const std::uint8_t> rgba) {
     Impl& m = *myImpl;
     Handle(Graphic3d_Texture2D) texture;
@@ -1048,9 +1182,10 @@ void Viewport::Render() {
         m.view->View()->SetFBO(m.fbo);
         m.view->MustBeResized();
     }
+    const bool hatchChanged = m.UpdateCaps();
     m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
-    m.dirty = false;
+    m.dirty = hatchChanged;   // the cut's look changes: OCCT shows it a frame later
 }
 
 std::string Viewport::HandBackToWindow() {
@@ -1086,7 +1221,10 @@ unsigned Viewport::TextureId() const {
     return m.fbo->ColorTexture()->TextureId();
 }
 
-bool Viewport::NeedsRender() const { return myImpl->dirty || myImpl->animating; }
+bool Viewport::NeedsRender() const {
+    // A cut waiting for its hatching: frames until it is built (kCapsDelay).
+    return myImpl->dirty || myImpl->animating || (!myImpl->section.IsNull() && myImpl->caps.stale);
+}
 
 ViewProjection Viewport::Projection() const {
     const Impl& m = *myImpl;
@@ -1664,23 +1802,29 @@ void Viewport::SetSection(const std::optional<Frame>& plane) {
     if (!plane) {
         if (!m.section.IsNull()) m.view->RemoveClipPlane(m.section);
         m.section.Nullify();
+        m.ClearCaps();
         m.dirty = true;
         return;
     }
     if (m.section.IsNull()) {
         m.section = new Graphic3d_ClipPlane();
-        // Filled cut faces in the body colour, a little darker, so the cut reads as solid material.
+        // Filled cut faces, so the cut reads as solid material: each body's cut
+        // in that body's own colour (an assembly shows which part is which) under
+        // the hatching of cut material, as in Inventor's section views.
         m.section->SetCapping(true);
         Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
         const Color body = m.colors.body;
         material.SetColor(Quantity_Color(body.r * 0.82, body.g * 0.82, body.b * 0.82, Quantity_TOC_sRGB));
         m.section->SetCappingMaterial(material);
+        m.section->SetUseObjectMaterial(true);
+        if (m.caps.hatch.IsNull()) m.caps.hatch = MakeHatchTexture();
         m.view->AddClipPlane(m.section);
     }
     // OCCT keeps the side the equation is positive on: flip the normal so
     // what lies ahead of `normal` is cut away.
     const Vec3 n = -plane->normal;
     m.section->SetEquation(gp_Pln(gp_Pnt(plane->origin.x, plane->origin.y, plane->origin.z), gp_Dir(n.x, n.y, n.z)));
+    m.ClearCaps();
     m.dirty = true;
 }
 

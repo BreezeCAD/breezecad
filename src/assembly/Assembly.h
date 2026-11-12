@@ -161,6 +161,12 @@ struct Constraint {
     bool           flipped = false; ///< Mate: flush (normals the same way); Insert: aligned; Tangent: inside;
                                     ///< transmissions: turn the other way
     bool           suppressed = false;
+    /// Not saved: a face or edge it was put on is no longer in its part (the
+    /// hole was deleted). Solved as if suppressed — the rest stays where it
+    /// is — and shown as Inventor's "потеряна ссылка": to be picked again.
+    bool           lostReference = false;
+    /// Suppressed, or its geometry lost: the solver leaves it out.
+    bool Inactive() const { return suppressed || lostReference; }
     /// Joints with one coordinate: held at `position` (rad or mm, measured
     /// from where the frames' X agree / the origins' planes meet).
     bool           locked   = false;

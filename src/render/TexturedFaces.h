@@ -24,9 +24,11 @@ public:
     /// `tile`: millimetres one copy of the picture covers on the part.
     /// `depthBias`: the push back of the body the faces belong to (they
     /// meet other bodies' faces just as the body would).
+    /// `tint`: the picture's colours are multiplied by it (white: as they are).
     TexturedFaces(std::vector<TopoDS_Face> faces, Handle(Graphic3d_Texture2D) texture, double tile,
                   const Graphic3d_MaterialAspect& material, double transparency,
-                  const Graphic3d_PolygonOffset& depthBias = {});
+                  const Graphic3d_PolygonOffset& depthBias = {},
+                  const Quantity_Color& tint = Quantity_Color(Quantity_NOC_WHITE));
 
     bool AcceptDisplayMode(const Standard_Integer mode) const override { return mode == 0; }
 
@@ -44,6 +46,7 @@ private:
     Graphic3d_MaterialAspect    myMaterial;
     double                      myTransparency;
     Graphic3d_PolygonOffset     myDepthBias;
+    Quantity_Color              myTint;
 };
 
 } // namespace bz::render

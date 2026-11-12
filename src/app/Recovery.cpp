@@ -99,8 +99,14 @@ void Recovery::Remember(AppContext& app) {
     const std::vector<Session*> sessions = DocumentsOf(tab);
     // Forget the ones gone (a part let go by its assembly).
     std::erase_if(myState.docs, [&](const DocState& d) { return std::ranges::find(sessions, d.session) == sessions.end(); });
+    // An operation's panel open: its preview is in the document but is no
+    // step of the history. The copy stays the one from before the panel, so
+    // a failure puts the document back without the half-made operation
+    // (else it stayed in the tree, with no step to undo it).
+    const bool previewing = app.ops.Active() != nullptr;
     for (Session* s : sessions) {
         auto it = std::ranges::find_if(myState.docs, [&](const DocState& d) { return d.session == s; });
+        if (previewing && it != myState.docs.end() && it->history == s->history.GetMark()) continue;
         const doc::History::Mark history = s->history.GetMark();
         if (it != myState.docs.end() && it->revision == s->doc.Revision() && it->history == history) continue;   // as it was
         DocState fresh{s, s->doc.Clone(), history, s->doc.Revision()};

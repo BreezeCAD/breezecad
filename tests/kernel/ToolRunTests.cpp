@@ -174,6 +174,27 @@ TEST_CASE("a tapered extrusion is as tall as asked") {
     CHECK(model.Volume() == doctest::Approx(v).epsilon(1e-5));
 }
 
+TEST_CASE("a tapered extrusion keeps its holes, their walls drafted the same way") {
+    // Found on Windows: a plate with a hole extruded with a taper came out
+    // solid — the hole filled. As in Inventor, the material narrows: the
+    // outside leans in, the hole opens up towards the top.
+    doc::Document d;
+    auto& sk = AddSketch(d);
+    AddRect(d, sk, {-10, -10}, {10, 10});
+    AddCircle(d, sk, {0, 0}, 4);
+    auto& ex = AddExtrude(d, sk.id, "10");
+    ex.taper.expression = "5";
+    kernel::Model model;
+    model.Rebuild(d);
+    REQUIRE(ex.status.state == FeatureState::Ok);
+    const double t = std::tan(5 * kPi / 180);
+    const double top = 20 - 2 * 10 * t;
+    const double block = 10.0 / 3 * (400 + top * top + 20 * top);
+    const double r2 = 4 + 10 * t;   // the hole's radius at the top
+    const double hole = kPi * 10.0 / 3 * (16 + r2 * r2 + 4 * r2);
+    CHECK(model.Volume() == doctest::Approx(block - hole).epsilon(1e-5));
+}
+
 TEST_CASE("a shell of a square-to-circle loft says why it cannot be built") {
     // Neighbouring sides meet at 90° at the square and tangent at the circle:
     // the OCCT offset cannot shift such edges. The message must say so

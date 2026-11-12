@@ -1,6 +1,7 @@
 // Mode tabs and the ribbon. Commands that are not built yet are shown
 // greyed out with a note, so the layout matches the approved mockup.
 
+#include "app/testing/UiProbe.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/ModuleWindows.h"
 #include "app/drawing/DrawingEditor.h"
@@ -581,6 +582,7 @@ void DrawModeBar(AppContext& app, ImVec2 pos, float width) {
         ImGui::SetCursorScreenPos({x, pos.y});
         ImGui::PushID(t.label);
         if (ImGui::InvisibleButton("##tab", {w, h})) app.shell.ribbonTab = t.tab;
+        probe::Name("tab", t.label);
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         if (on || hovered)

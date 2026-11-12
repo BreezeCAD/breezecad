@@ -80,12 +80,23 @@ std::vector<Vec2> SketchOperationEditor::ProfileSamples(const Session& session, 
     std::vector<Vec2> samples;
     const auto* regions = session.model.Regions(f.sketch);
     if (!regions) return samples;
+    // A point inside each region, and a few just inside its edge: one point
+    // may stand over a hole (a counterbore circle drawn over a through hole)
+    // and see no material on either side, while the edge stands over it.
+    const auto add = [&samples](const kernel::SketchRegion& r) {
+        samples.push_back(r.sample);
+        if (r.loops.empty() || r.loops[0].empty()) return;
+        const std::vector<Vec2>& outer = r.loops[0];
+        constexpr std::size_t kEdgeSamples = 8;
+        const std::size_t step = std::max<std::size_t>(1, outer.size() / kEdgeSamples);
+        for (std::size_t i = 0; i < outer.size(); i += step) samples.push_back(outer[i] + (r.sample - outer[i]) * 0.05);
+    };
     if (f.profiles.automatic) {
         for (const auto& r : *regions)
-            if (r.automatic) samples.push_back(r.sample);
+            if (r.automatic) add(r);
     } else {
         for (const Vec2 p : f.profiles.regions)
-            if (const int r = RegionOf(*regions, p); r >= 0) samples.push_back((*regions)[static_cast<std::size_t>(r)].sample);
+            if (const int r = RegionOf(*regions, p); r >= 0) add((*regions)[static_cast<std::size_t>(r)]);
     }
     return samples;
 }

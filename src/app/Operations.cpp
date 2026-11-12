@@ -15,6 +15,7 @@
 #include "document/Commands.h"
 #include "document/Origin.h"
 #include "document/SketchFeature.h"
+#include "app/AssemblyState.h"
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/InPlace.h"
 #include "assembly/AssemblyFile.h"
@@ -288,14 +289,24 @@ void RecoverDocument(AppContext& app, const RecoverableDocument& rec) {
     app.notes.Success(Trf("Восстановлено: {}. Сохраните документ.", rec.title));
 }
 
+namespace {
+/// A constraint being made in an assembly is a command of its own, like an
+/// operation's panel: its trial is already in the assembly, so an undo under
+/// it took the trial away behind the panel's back (Применить then kept
+/// nothing, Отмена undid the step before). As in Inventor: no undo while it is open.
+bool MakingConstraint(const Session& s) {
+    return s.assembly && s.assembly->creating.active;
+}
+}   // namespace
+
 bool CanUndo(AppContext& app) {
     Session* s = app.Doc();
-    return s && !app.ops.Active() && s->CanUndo();
+    return s && !app.ops.Active() && !MakingConstraint(*s) && s->CanUndo();
 }
 
 bool CanRedo(AppContext& app) {
     Session* s = app.Doc();
-    return s && !app.ops.Active() && s->CanRedo();
+    return s && !app.ops.Active() && !MakingConstraint(*s) && s->CanRedo();
 }
 
 void Undo(AppContext& app) {
@@ -322,6 +333,16 @@ void StartSketch(AppContext& app) {
     if (frame) {
         app.sketch.CreateAndEdit(app, *s, {s->selectedFeature, *frame, false, {}});
         return;
+    }
+    // One flat face chosen in the view: the sketch goes on it, as in Inventor
+    // (the face first, then "Начать эскиз"), without asking for the plane again.
+    if (s->mode == EditMode::Model && s->selectedFaces.size() == 1) {
+        const render::SelectedFace face = s->selectedFaces.front();
+        if (const std::optional<Frame> plane = app.viewport.PlaneOfFace(face)) {
+            s->selectedFaces.clear();
+            app.sketch.CreateAndEdit(app, *s, {face.body, *plane, true, {plane->normal, face.face.point}});
+            return;
+        }
     }
     s->mode = EditMode::PickPlane;
 }
@@ -357,7 +378,7 @@ bool CreateStandardPart(AppContext& app, const doc::parts::Request& request) {
     Session& s = app.workspace.NewPart();
     s.untitledName = made->doc.info.designation;
     s.doc = std::move(made->doc);
-    s.doc.units.length = static_cast<LengthUnit>(app.settings.newPartLength);
+    doc::parts::SetLengthUnit(s.doc, static_cast<LengthUnit>(app.settings.newPartLength));
     s.history.MarkUnsaved();
     app.shell.ribbonTab = RibbonTab::Model;
     return true;

@@ -229,6 +229,10 @@ std::uint64_t ContextKey(const AssemblyModel& geometry, const assembly::Assembly
     return h;
 }
 
+/// A projected curve this far off its edge after its neighbours were placed
+/// was pushed off by them (the solver itself lands far closer).
+constexpr double kConflictTolerance = 1e-5;
+
 AdaptResult AdaptContextProjections(const AssemblyModel& geometry, const assembly::Assembly& a, ObjectId target, doc::Document& doc,
                                     std::string_view assembly) {
     AdaptResult result;
@@ -259,6 +263,7 @@ AdaptResult AdaptContextProjections(const AssemblyModel& geometry, const assembl
         sk->lostContextProjections.clear();
         bool moved = false;
         std::vector<std::pair<ObjectId, ProjectedCurve>> place;   // placed together: lines share their ends
+        std::vector<std::pair<ObjectId, ProjectedCurve>> found_now;   // every curve's projection now
         for (doc::ContextProjection& p : sk->contextProjections) {
             if (!Matches(p, assembly)) continue;
             doc::EdgeReference found = p.edge;
@@ -270,6 +275,7 @@ AdaptResult AdaptContextProjections(const AssemblyModel& geometry, const assembl
                 continue;
             }
             p.source = source;   // learnt or refreshed: not a change of the sketch by itself
+            found_now.emplace_back(p.curve, *now);
             if (CurveMatches(sk->sketch, p.curve, *now, 1e-7)) continue;
             p.edge = found;   // followed from where it is now
             place.emplace_back(p.curve, *now);
@@ -284,7 +290,45 @@ AdaptResult AdaptContextProjections(const AssemblyModel& geometry, const assembl
                 sk->lostContextProjections.insert(place[k].first);
             }
         }
-        if (moved) doc::SolveSketch(*sk);   // what is tied to the curves follows them
+        if (moved) {
+            doc::SolveSketch(*sk);   // what is tied to the curves follows them
+            // Did that put another projected curve off its edge? Then they
+            // share a point their edges put in two places (a corner trimmed
+            // differently on each): no placing satisfies both, and the next
+            // round would move the other back. The sketch stays as the user
+            // left it, the curves that disagree drawn red.
+            std::vector<ObjectId> off;
+            for (const auto& [curve, now] : found_now)
+                if (!sk->lostContextProjections.contains(curve) && !CurveMatches(sk->sketch, curve, now, kConflictTolerance))
+                    off.push_back(curve);
+            if (!off.empty()) {
+                sk->sketch = before;
+                std::vector<ObjectId> clash;   // the curves that disagree
+                for (std::size_t k = 0; k < place.size(); ++k)
+                    if (placed[k]) {
+                        --result.moved;
+                        ++result.conflicting;
+                        sk->lostContextProjections.insert(place[k].first);
+                        clash.push_back(place[k].first);
+                    }
+                for (ObjectId curve : off)
+                    if (sk->lostContextProjections.insert(curve).second) {
+                        ++result.conflicting;
+                        clash.push_back(curve);
+                    }
+                AffectedSketch hit{sk->id, sk->name, {}, {}, {}};
+                for (const doc::ContextProjection& p : sk->contextProjections) {
+                    if (!Matches(p, assembly) || std::find(clash.begin(), clash.end(), p.curve) == clash.end()) continue;
+                    if (hit.curves.empty()) {
+                        hit.sourceComponent = p.component;
+                        hit.sourceSketch = p.source.sketch;
+                    }
+                    hit.curves.push_back(p.curve);
+                }
+                result.conflicts.push_back(std::move(hit));
+                moved = false;
+            }
+        }
         sk->NoteProjectionsUpdated(before, wasBroken);
         if (moved) first = std::min(first, i);
     }

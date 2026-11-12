@@ -407,6 +407,51 @@ TEST_CASE("a lost source edge keeps its curve where it was; a deleted source com
     CHECK(kernel::AdaptContextProjections(b.m, b.a, coverId, cover.doc, "Узел").lost == 1);
 }
 
+TEST_CASE("projections of two parts sharing a corner that the parts pull apart: kept as they were, handed to the author") {
+    Bench b;
+    // A block beside the plate; the cover on both, its sketch with the
+    // plate's back edge and the block's left edge, one corner shared.
+    MemoryPart block{Plate(), {}};
+    const ObjectId blockId = b.AddMemoryPart(block, "Брус", {Rotation{}, {40, 0, 0}});
+    MemoryPart cover;
+    test::AddSketch(cover.doc);
+    const ObjectId coverId = b.AddMemoryPart(cover, "Крышка", {Rotation{}, {0, 0, 10}});
+    const ObjectId back = ProjectInto(b, cover, coverId, b.plate, {20, 40, 10});
+    const ObjectId side = ProjectInto(b, cover, coverId, blockId, {40, 20, 10});
+    auto* sk = dynamic_cast<doc::SketchFeature*>(cover.doc.Features()[0].get());
+    sketch::Line* l1 = sk->sketch.FindLine(back);
+    sketch::Line* l2 = sk->sketch.FindLine(side);
+    REQUIRE(l1);
+    REQUIRE(l2);
+    const auto nearCorner = [&](ObjectId pt) { return (sk->sketch.PositionOf(pt) - Vec2{40, 40}).Length() < 1e-6; };
+    const ObjectId corner = nearCorner(l1->start) ? l1->start : l1->end;
+    REQUIRE(nearCorner(corner));
+    (nearCorner(l2->start) ? l2->start : l2->end) = corner;
+    cover.doc.MarkChanged(0);
+    const std::string name = "Узел";
+    CHECK(kernel::AdaptContextProjections(b.m, b.a, coverId, cover.doc, name).moved == 0);
+
+    // The block moves 5 mm away: the corner cannot be on both edges.
+    const sketch::Sketch was = sk->sketch;
+    b.a.FindComponent(blockId)->placement.translation.x = 45;
+    b.a.Touch();
+    b.m.Update(b.a, b.file);
+    const kernel::AdaptResult r = kernel::AdaptContextProjections(b.m, b.a, coverId, cover.doc, name);
+    CHECK(r.moved == 0);
+    CHECK(r.conflicting > 0);
+    REQUIRE(r.conflicts.size() == 1);
+    CHECK(r.conflicts[0].sketch == sk->id);
+    CHECK(std::ranges::find(r.conflicts[0].curves, side) != r.conflicts[0].curves.end());
+    CHECK(sk->sketch.PositionOf(corner).x == Approx(40).epsilon(1e-9));   // the sketch as it was
+    CHECK(sk->sketch.points.size() == was.points.size());
+
+    // «Игнорировать»: those curves stop following, nothing disagrees any more.
+    CHECK(kernel::IgnoreSourceChange(cover.doc, name, r.conflicts) == static_cast<int>(r.conflicts[0].curves.size()));
+    const kernel::AdaptResult again = kernel::AdaptContextProjections(b.m, b.a, coverId, cover.doc, name);
+    CHECK(again.conflicting == 0);
+    CHECK(again.conflicts.empty());
+}
+
 TEST_CASE("projections that would make parts follow each other round in a circle are refused") {
     Bench b;
     MemoryPart cover, lid;

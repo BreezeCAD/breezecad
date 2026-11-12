@@ -473,3 +473,176 @@ TEST_CASE("a part others are drawn from (it leads) is not moved to a compromise 
         }
     }
 }
+// --- dead points: parallel faces under an angle, parts the wrong way round ---
+//
+// To be appended to tests/assembly/SolverTests.cpp: uses its Pair, Make,
+// Plane, Axis and Placements / FarthestMove.
+
+namespace {
+
+/// The angle between the base's top (+Z) and the part's face whose normal is `local` in the part.
+double AngleToTop(Pair& t, Vec3 local) {
+    const Vec3 n = t.P().Direction(local);
+    return std::atan2(n.Cross({0, 0, 1}).Length(), n.Dot({0, 0, 1}));
+}
+
+} // namespace
+
+TEST_CASE("angle from parallel faces: the part turns to the angle (the cosine stood still at 0 and 180°)") {
+    for (const double start : {0.0, kPi}) {   // the faces the same way, and opposed
+        CAPTURE(start);
+        Pair t;
+        t.P() = {Rotation::AxisAngle({1, 0, 0}, start), {100, 0, 0}};
+        // The base's top (z 10) and the part's top (z 6 in it): parallel now.
+        t.a.AddConstraint(Make(ConstraintType::Angle, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}), kPi / 6));
+        const SolveResult r = Solve(t.a);
+        CHECK(r.converged);
+        CHECK(r.moved);
+        CHECK(AngleToTop(t, {0, 0, 1}) == Approx(kPi / 6).epsilon(1e-7));
+        CHECK(t.a.constraints[0].state == ConstraintState::Satisfied);
+        // And stays. (From 180° a long turn: the next solve may finish the
+        // last hundred-millionth of a degree — the pull towards the start —
+        // but no more.)
+        const Vec3 n = t.P().Direction({0, 0, 1});
+        Solve(t.a);
+        CHECK((t.P().Direction({0, 0, 1}) - n).Length() < 1e-8);
+    }
+}
+
+TEST_CASE("angle from parallel faces on a hinge: the lid opens about the hinge") {
+    Pair t;
+    t.P() = {Rotation{}, {0, 0, 10}};   // a lid lying on the base, flat
+    // The hinge: the base's edge along X at the top, the lid's edge along X at its origin.
+    t.a.AddConstraint(Make(ConstraintType::AxisMate, Axis(t.base, {0, 0, 10}, {1, 0, 0}), Axis(t.part, {0, 0, 0}, {1, 0, 0})));
+    t.a.AddConstraint(Make(ConstraintType::Angle, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 0}, {0, 0, 1}), kPi / 2));
+    const SolveResult r = Solve(t.a);
+    CHECK(r.converged);
+    CHECK(AngleToTop(t, {0, 0, 1}) == Approx(kPi / 2).epsilon(1e-7));
+    // Turned about the hinge only: its axis still on the hinge.
+    CHECK(std::abs(t.P().Direction({1, 0, 0}).x) == Approx(1).epsilon(1e-7));
+    CHECK(t.P().translation.y == Approx(0).epsilon(1e-6));
+    CHECK(t.P().translation.z == Approx(10).epsilon(1e-6));
+    CHECK(t.a.constraints[0].state == ConstraintState::Satisfied);
+    CHECK(t.a.constraints[1].state == ConstraintState::Satisfied);
+}
+
+TEST_CASE("angle with a range from parallel faces: to the nearer end") {
+    Pair t;
+    t.P() = {Rotation{}, {100, 0, 0}};
+    Constraint g = Make(ConstraintType::Angle, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}));
+    g.limits = {true, 20 * kPi / 180, 40 * kPi / 180};
+    t.a.AddConstraint(g);
+    REQUIRE(Solve(t.a).converged);
+    CHECK(AngleToTop(t, {0, 0, 1}) * 180 / kPi == Approx(20).epsilon(1e-5));
+}
+
+TEST_CASE("angle of more than half a turn or below zero is the angle between the faces") {
+    // As the cosine took it: 330° and -30° are 30° between two faces.
+    for (const double value : {-kPi / 6, 11 * kPi / 6}) {
+        CAPTURE(value);
+        Pair t;
+        t.P() = {Rotation::AxisAngle({1, 0, 0}, 0.1), {100, 0, 0}};
+        t.a.AddConstraint(Make(ConstraintType::Angle, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}), value));
+        REQUIRE(Solve(t.a).converged);
+        CHECK(AngleToTop(t, {0, 0, 1}) == Approx(kPi / 6).epsilon(1e-7));
+    }
+}
+
+TEST_CASE("symmetry of a part standing the wrong way round: it is turned over and mirrored") {
+    // The base's top (z 10, +Z) mirrored in XY is a face at z -10 facing -Z;
+    // the part's top (z 6 in it, +Z) faces +Z now: it must turn over.
+    for (const double off : {0.0, 0.5 * kPi / 180, 10 * kPi / 180}) {   // exactly, and nearly the wrong way
+        CAPTURE(off);
+        Pair t;
+        t.P() = {Rotation::AxisAngle({1, 0, 0}, off), {100, 0, 0}};
+        Constraint s = Make(ConstraintType::Symmetry, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}));
+        s.third = Plane(t.base, {0, 0, 0}, {0, 0, 1});   // the base stands at the origin: its XY
+        t.a.AddConstraint(s);
+        const SolveResult r = Solve(t.a);
+        CHECK(r.converged);
+        CHECK(t.P().Direction({0, 0, 1}).z == Approx(-1).epsilon(1e-7));
+        CHECK(t.P().Point({0, 0, 6}).z == Approx(-10).epsilon(1e-6));
+        CHECK(t.P().translation.z == Approx(-4).epsilon(1e-6));
+        CHECK(t.a.constraints[0].state == ConstraintState::Satisfied);
+        CHECK_FALSE(Solve(t.a).moved);
+    }
+}
+
+TEST_CASE("symmetry the right way round is not turned over") {
+    Pair t;
+    t.P() = {Rotation::AxisAngle({1, 0, 0}, kPi + 0.2), {100, 0, 0}};   // its top faces nearly -Z already
+    Constraint s = Make(ConstraintType::Symmetry, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}));
+    s.third = Plane(t.base, {0, 0, 0}, {0, 0, 1});
+    t.a.AddConstraint(s);
+    REQUIRE(Solve(t.a).converged);
+    CHECK(t.P().Direction({0, 0, 1}).z == Approx(-1).epsilon(1e-7));
+    CHECK(t.P().Direction({0, 1, 0}).y < 0);   // turned back by 0.2 only, not over
+}
+
+TEST_CASE("mate of a part far the wrong way round: turned first, holds after one solve") {
+    // The part's bottom (-Z in it) faces up, a little off: before, only
+    // exactly opposed faces were turned over, and the long turn back from
+    // 0.1..20° off did not finish in one solve (the mate showed as failed).
+    for (const double off : {0.1, 1.0, 10.0, 25.0}) {
+        CAPTURE(off);
+        Pair t;
+        t.P() = {Rotation::AxisAngle({1, 0, 0}, kPi + off * kPi / 180), {5, 5, 30}};
+        t.a.AddConstraint(Make(ConstraintType::Mate, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 0}, {0, 0, -1})));
+        const SolveResult r = Solve(t.a);
+        CHECK(r.converged);
+        CHECK(t.P().Direction({0, 0, 1}).z == Approx(1).epsilon(1e-7));
+        CHECK(t.P().translation.z == Approx(10).epsilon(1e-6));
+        CHECK(t.a.constraints[0].state == ConstraintState::Satisfied);
+        // Turned the shortest way: about X only, its X stays.
+        CHECK(t.P().Direction({1, 0, 0}).x == Approx(1).epsilon(1e-6));
+    }
+}
+
+TEST_CASE("two mates that want a part opposite ways: it is not turned over and back on every solve") {
+    // Its bottom against the base's top, and its top against it too: one of
+    // them is always the wrong way round. Not exactly the wrong way it is turned
+    // only when that helps, so solving again moves nothing.
+    Pair t;
+    t.P() = {Rotation::AxisAngle({1, 0, 0}, kPi + 0.5 * kPi / 180), {5, 5, 30}};
+    t.a.AddConstraint(Make(ConstraintType::Mate, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 0}, {0, 0, -1})));
+    t.a.AddConstraint(Make(ConstraintType::Mate, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 8}, {0, 0, 1})));
+    Solve(t.a);
+    const std::vector<Placement> once = Placements(t.a);
+    for (int i = 0; i < 10; ++i) Solve(t.a);
+    CHECK(FarthestMove(t.a, once) < 1e-6);
+    CHECK((t.P().Direction({0, 0, 1}) - once[1].Direction({0, 0, 1})).Length() < 1e-9);
+}
+
+TEST_CASE("a part drawn from others is not turned over either") {
+    Pair t;
+    t.a.FindComponent(t.base)->grounded = false;
+    t.a.FindComponent(t.part)->follower = true;
+    t.P() = {Rotation::AxisAngle({1, 0, 0}, kPi), {5, 5, 30}};   // exactly the wrong way round
+    const Placement was = t.P();
+    // The follower first: before, the first side not grounded was turned, follower or not.
+    t.a.AddConstraint(Make(ConstraintType::Mate, Plane(t.part, {0, 0, 0}, {0, 0, -1}), Plane(t.base, {0, 0, 10}, {0, 0, 1})));
+    Solve(t.a);
+    CHECK((t.P().translation - was.translation).Length() < 1e-12);
+    CHECK((t.P().Direction({0, 0, 1}) - was.Direction({0, 0, 1})).Length() < 1e-12);
+}
+
+TEST_CASE("angle 0 and 180°: the faces parallel, from a tilt and from the other way round; two turns taken") {
+    // At 0 and 180° the angle has a corner: these are solved as a mate's
+    // directions (before, the cosine was flat there and the solve stopped short).
+    struct Case { double value, startTurn; Vec3 wanted; };
+    for (const Case k : {Case{0, 0.3, {0, 0, 1}}, Case{kPi, 0.3, {0, 0, -1}},
+                         Case{0, kPi, {0, 0, 1}}, Case{kPi, 0.0, {0, 0, -1}}}) {   // the last two: the wrong way round
+        CAPTURE(k.value);
+        CAPTURE(k.startTurn);
+        Pair t;
+        t.P() = {Rotation::AxisAngle({1, 0, 0}, k.startTurn), {100, 0, 30}};
+        t.a.AddConstraint(Make(ConstraintType::Angle, Plane(t.base, {0, 0, 10}, {0, 0, 1}), Plane(t.part, {0, 0, 6}, {0, 0, 1}), k.value));
+        const SolveResult r = Solve(t.a);
+        CHECK(r.converged);
+        CHECK((t.P().Direction({0, 0, 1}) - k.wanted).Length() < 1e-7);
+        CHECK(t.a.constraints[0].state == ConstraintState::Satisfied);
+        const Freedom f = AnalyzeFreedom(t.a).at(t.part);
+        CHECK(f.translations == 3);
+        CHECK(f.rotations == 1);   // only about the normal
+    }
+}

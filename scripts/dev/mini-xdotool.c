@@ -133,7 +133,11 @@ int main(int argc, char** argv) {
                 usleep(30000);
             }
         } else if (!strcmp(c, "type")) {
-            while (i < argc && argv[i][0] == '-') i += 2;
+            /* Options (--delay N); "--" ends them: a text may start with "-" ("-90"). */
+            while (i < argc && argv[i][0] == '-') {
+                if (!strcmp(argv[i], "--")) { ++i; break; }
+                i += 2;
+            }
             if (i >= argc) return 2;
             for (const char* p = argv[i++]; *p; ++p) {
                 char k[2] = {*p, 0};

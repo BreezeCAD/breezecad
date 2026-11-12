@@ -1,6 +1,7 @@
 // Every user command, registered once. Ribbon, menus, the command search and
 // keyboard shortcuts all run actions from here.
 
+#include "app/viewport/Section.h"
 #include "app/Application.h"
 #include "app/BetaTesting.h"
 #include "app/Operations.h"
@@ -160,7 +161,10 @@ void RegisterActions(AppContext& app) {
            [&app] { app.shell.backgroundMenu = true; }});
     a.Add({"view.section", N_("Разрез вида"), "section", 0, N_("Разрезать вид плоскостью, чтобы заглянуть внутрь детали"),
            [&app] { return app.Doc() && !app.workspace.ShowsHome() && !app.Doc()->model.Bodies().empty(); },
-           [&app] { app.shell.section.on = !app.shell.section.on; }});
+           [&app] {
+               app.shell.section.on = !app.shell.section.on;
+               if (app.shell.section.on) FaceSectionToViewer(app.shell.section, app.viewport.Projection().direction);
+           }});
     a.Add({"tools.massProperties", N_("МЦХ"), "mass-properties", 0, N_("Масса, объём, площадь, центр масс и габариты детали"),
            [&app] { return app.Doc() && !app.workspace.ShowsHome() && !app.Doc()->model.Bodies().empty(); },
            [&app] { app.shell.showMassProperties = true; }});
@@ -207,6 +211,9 @@ void RegisterActions(AppContext& app) {
     a.Add({"edit.copy", N_("Копировать"), "ui-copy", Ctrl(ImGuiKey_C), {}, [&app, inSketch] { return inSketch() && app.sketch.HasSelection(); },
            [&app] {
                if (Session* s = app.Doc()) app.sketch.StartCopy(app, *s);
+           }});
+    a.Add({"edit.selectAll", N_("Выделить всё"), "", Ctrl(ImGuiKey_A), {}, inSketch, [&app] {
+               if (Session* s = app.Doc()) app.sketch.SelectAll(app, *s);
            }});
     a.Add({"edit.paste", N_("Вставить"), "ui-copy", Ctrl(ImGuiKey_V), {}, [&app, inSketch] { return inSketch() && app.sketch.HasClipboard(); },
            [&app] { app.sketch.StartPaste(app); }});

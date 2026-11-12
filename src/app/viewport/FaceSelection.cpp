@@ -128,6 +128,12 @@ void FaceSelectionMenu(AppContext& app, Session& session) {
     const Faces faces = session.selectedFaces;
     const std::string count = Trf("Выбрано граней: {}", faces.size());
     ui::MenuItem(ui, count.c_str(), nullptr, {}, false, false);
+    // One flat face: a sketch on it, as in Inventor's menu of a face.
+    if (faces.size() == 1 && app.viewport.PlaneOfFace(faces.front()))
+        if (ui::MenuItem(ui, Tr("Начать эскиз на грани"), "S", "sketch")) {
+            mon::Action("select", "эскиз на грани");
+            app.Later([&app] { StartSketch(app); });
+        }
     if (ui::MenuItem(ui, Tr("Внешний вид или текстура…"), nullptr, "appearance")) {
         mon::Action("select", "внешний вид граней");
         app.Later([&app, &session, faces] { app.ops.appearance.StartOnFaces(app, session, faces); });

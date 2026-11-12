@@ -439,3 +439,24 @@ TEST_CASE("arc angle dimension drives the sweep, past half a turn too") {
         sk.Remove(id);
     }
 }
+
+TEST_CASE("dragging the free end of a line held at an angle slides it along the angle") {
+    // Found by the bench: two lines from the origin, the first horizontal,
+    // 30° between them; dragging the end of the slanted one did nothing.
+    Sketch sk;
+    IdGenerator ids;
+    const ObjectId o = sk.EnsureOrigin(ids);
+    const ObjectId b = sk.AddPoint(ids, {30, 0});
+    const ObjectId c = sk.AddPoint(ids, {20, 20});
+    const ObjectId base = sk.AddLine(ids, o, b);
+    const ObjectId slope = sk.AddLine(ids, o, c);
+    sk.AddConstraint(ids, Geo(ConstraintType::Horizontal, base));
+    sk.AddConstraint(ids, Dim(ConstraintType::Angle, kPi / 6, base, slope));
+    REQUIRE(Solve(sk).converged);
+    const Vec2 was = sk.PositionOf(c);
+    const SolveResult res = Solve(sk, {.drags = {Drag{c, was + Vec2{10, 2}}}});
+    REQUIRE(res.converged);
+    const Vec2 now = sk.PositionOf(c);
+    CHECK(now.Length() > was.Length() + 5);
+    CHECK(std::atan2(now.y, now.x) == doctest::Approx(kPi / 6).epsilon(1e-6));
+}

@@ -55,6 +55,21 @@ TEST_CASE("every standard part builds: smallest, middle and largest size") {
         }
 }
 
+TEST_CASE("a standard part in a part set to inches keeps its size") {
+    // Audit: new parts in inches made a M10x40 bolt 40 inches long.
+    Expected<Made> mm = MakePart({"iso4017", "M10", 40});
+    Expected<Made> inch = MakePart({"iso4017", "M10", 40});
+    REQUIRE(mm);
+    REQUIRE(inch);
+    SetLengthUnit(inch->doc, LengthUnit::Inch);
+    CHECK(inch->doc.units.length == LengthUnit::Inch);
+    kernel::Model a, b;
+    a.Rebuild(mm->doc);
+    b.Rebuild(inch->doc);
+    REQUIRE(a.Volume() > 0);
+    CHECK(b.Volume() == doctest::Approx(a.Volume()).epsilon(1e-9));
+}
+
 TEST_CASE("standard part sizes match the tables") {
     // ISO 4017 M10x40: s = 16, k = 6.4.
     Expected<Made> bolt = MakePart({"iso4017", "M10", 40});

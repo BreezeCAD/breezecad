@@ -2,6 +2,7 @@
 
 #include "core/Expression.h"
 #include "document/BzcFile.h"
+#include "document/Commands.h"
 #include "document/ExtrudeFeature.h"
 #include "document/Origin.h"
 #include "document/RevolveFeature.h"
@@ -1252,6 +1253,14 @@ std::string DesignationOf(const Request& q) {
     return {};
 }
 } // namespace
+
+void SetLengthUnit(Document& doc, LengthUnit unit) {
+    if (doc.units.length == unit) return;
+    doc.EvaluateParameters();
+    UnitSystem units = doc.units;
+    units.length = unit;
+    SetUnits(units)->Do(doc);
+}
 
 Expected<Made> MakePart(const Request& asked) {
     const StandardInfo* s = FindStandard(asked.standard);

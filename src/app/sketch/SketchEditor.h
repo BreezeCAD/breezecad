@@ -7,6 +7,7 @@
 
 #include "app/AppContext.h"
 #include "app/sketch/SketchPick.h"
+#include "document/Commands.h"
 #include "document/SketchFeature.h"
 #include "sketch/Clipboard.h"
 #include "sketch/Move.h"
@@ -138,6 +139,10 @@ public:
     /// Makes the selected lines осевые (or normal again).
     void ToggleCenterline(Session& session);
     bool HasSelection() const { return !mySelection.empty(); }
+    /// Ctrl+A (as in Inventor): every point and curve of the sketch chosen.
+    /// A drawing tool gives way to "Выбор"; the tools that act on the
+    /// selection (move, rotate, copy, scale, mirror, patterns) keep going.
+    void SelectAll(AppContext& app, Session& session);
 
     // --- The clipboard (22.10.2026, as in KOMPAS) ----------------------------
     // «Копировать» (Ctrl+C): the chosen shapes, then a click — their base
@@ -387,6 +392,11 @@ private:
     bool        myEditTyped = false;   ///< the value was changed (a clicked name is then added, not put instead)
     int         myCaretFrames = 0;     ///< frames to keep the caret at the end after inserting a name
     bool        myClickUsed = false;   ///< this frame's click went into the formula, tools must not see it
+    /// A dimension just placed (its own undo step) whose value is being
+    /// typed: the value joins that step if nothing else happened between.
+    std::unique_ptr<doc::Feature> myPlacedBefore;   ///< the sketch before it was placed
+    doc::History::Mark            myPlacedAt;       ///< the history before placing it
+    doc::History::Mark            myPlacedMark;     ///< and right after
 };
 
 } // namespace bz::app

@@ -1,6 +1,7 @@
 #include "app/Workspace.h"
 
 #include "drawing/DrawingFile.h"
+#include "drawing/DrawingPdf.h"
 
 #include "app/Notifications.h"
 #include "app/Settings.h"
@@ -31,9 +32,38 @@ namespace {
 const std::string kGenerator = std::string("BreezeCAD ") + Version();
 
 /// Why there is nothing to export; empty when there is something.
-std::string NothingToExport(const Session& session) {
+std::string NothingToExport(const Session& session, ExportFormat format) {
+    if (format == ExportFormat::Pdf) return session.drawing ? std::string{} : N_("В PDF выводится только чертёж");
+    if (session.drawing) return N_("Чертёж выводится в PDF");
     if (!session.model.Bodies().empty()) return {};
     return session.assembly ? "В сборке ещё нет компонентов для экспорта" : "В детали ещё нет тел для экспорта";
+}
+
+/// The font of the PDF's texts: the interface's, with Cyrillic; read once.
+const Expected<drawing::TrueTypeFont>& PdfFont() {
+    static const Expected<drawing::TrueTypeFont> font =
+        drawing::TrueTypeFont::FromFile(platform::AssetsDir() / "fonts" / "IBMPlexSans-Regular.ttf");
+    return font;
+}
+
+bool ExportPdf(const Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
+    const auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        notes.Error(Tr(message));
+        return false;
+    };
+    const Expected<drawing::TrueTypeFont>& font = PdfFont();
+    if (!font) return fail(font.GetError().message);
+    const Status status = drawing::ExportDrawingPdf(session.drawing->drawing, target, *font, std::format("BreezeCAD {}", Version()));
+    if (!status) return fail(status.GetError().message);
+    if (!platform::FileWritten(target)) {
+        const std::string message = Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));
+        if (error) *error = message;
+        notes.Error(message);
+        return false;
+    }
+    notes.Success(Trf("Экспортировано: {}", ToUtf8(target.filename())));
+    return true;
 }
 
 } // namespace
@@ -337,8 +367,9 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
     };
     const Info info = format == ExportFormat::Step ? Info{"STEP AP214", "*.step", ".step"}
                     : format == ExportFormat::Stl  ? Info{"STL", "*.stl", ".stl"}
+                    : format == ExportFormat::Pdf  ? Info{"PDF", "*.pdf", ".pdf"}
                                                    : Info{Tr("3MF для 3D-печати"), "*.3mf", ".3mf"};
-    if (const std::string empty = NothingToExport(session); !empty.empty()) {
+    if (const std::string empty = NothingToExport(session, format); !empty.empty()) {
         notes.Info(Tr(empty));
         return false;
     }
@@ -355,11 +386,12 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
 
 bool Workspace::ExportTo(Session& session, ExportFormat format, const std::filesystem::path& target, Notifications& notes,
                          std::string* error) {
-    if (const std::string empty = NothingToExport(session); !empty.empty()) {
+    if (const std::string empty = NothingToExport(session, format); !empty.empty()) {
         if (error) *error = empty;
         notes.Info(Tr(empty));
         return false;
     }
+    if (format == ExportFormat::Pdf) return ExportPdf(session, target, notes, error);
     // A long export (a threaded part as STEP on a phone) is work, not a hang: no hang
     // report, and on Android the watchdog does not offer to close the app meanwhile.
     const mon::Waiting waiting;

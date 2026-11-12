@@ -67,9 +67,12 @@ void MainMenu(AppContext& app) {
     MenuAction(app, "file.save");
     MenuAction(app, "file.saveAs");
     if (ui::BeginSubmenu(ui, Tr("Экспорт"), "ui-export", app.Doc() != nullptr)) {
-        MenuAction(app, "file.exportStep");
-        MenuAction(app, "file.exportStl");
-        MenuAction(app, "file.export3mf");
+        if (app.Doc()->drawing) MenuAction(app, "file.exportPdf");   // a drawing: its sheets; no bodies to export
+        else {
+            MenuAction(app, "file.exportStep");
+            MenuAction(app, "file.exportStl");
+            MenuAction(app, "file.export3mf");
+        }
         if (const Session* t = app.workspace.ActiveTab(); t && t->assembly) MenuAction(app, "file.exportProject");
         ImGui::EndMenu();
     }

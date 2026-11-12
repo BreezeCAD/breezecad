@@ -9,9 +9,17 @@
 #include "kernel/ProjectionSources.h"
 #include "kernel/occt/EdgeMatch.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Project.h"
+#include "app/sketch/ProjectInto.h"
+#include "document/EdgeFeature.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <TopExp.hxx>
+#include <TopoDS_Compound.hxx>
+#include <functional>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <doctest.h>
@@ -384,4 +392,343 @@ TEST_CASE("новые виды проекций сохраняются и чит
     doc::SketchFeature older;
     REQUIRE(older.LoadFields(old).Ok());
     CHECK(older.projections.front().of == Of::Edge);
+}
+
+// Деталь из двух тел: проекция ребра первого тела искалась только на
+// последнем теле — терялась при первом же пересчёте или молча прыгала на
+// похожее ребро второго тела (стабилизация, 13.11.2026).
+TEST_CASE("проекция ребра не последнего тела детали следует за ним") {
+    doc::Document d;
+    kernel::Model model;
+    doc::SketchFeature& first = AddSketch(d);
+    AddRect(d, first, {0, 0}, {40, 20});
+    AddExtrude(d, first.id, "10");
+    doc::SketchFeature& second = AddSketch(d);
+    AddRect(d, second, {100, 0}, {140, 20});
+    AddExtrude(d, second.id, "10", doc::BooleanOp::NewBody);
+    model.Rebuild(d);
+    REQUIRE(model.GetImpl().bodies.size() == 2);
+
+    // The top front edge of the FIRST body (middle at (20, 0, 10)).
+    doc::EdgeReference edge;
+    {
+        const TopoDS_Shape& body = model.GetImpl().bodies.front().shape;
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(body, TopAbs_EDGE, edges);
+        for (int i = 1; i <= edges.Extent(); ++i) {
+            const BRepAdaptor_Curve c(TopoDS::Edge(edges(i)));
+            const gp_Pnt m = c.Value((c.FirstParameter() + c.LastParameter()) / 2);
+            if ((Vec3{m.X(), m.Y(), m.Z()} - Vec3{20, 0, 10}).Length() < 1e-6) edge = kernel::occt::DescribeEdge(TopoDS::Edge(edges(i)), body);
+        }
+    }
+    doc::SketchFeature& sk = AddSketch(d);
+    const auto at = static_cast<std::size_t>(d.IndexOf(sk.id));
+    Rebuild(d, model);
+    const auto projected = model.ProjectEdge(edge, sk.placement.frame, at);
+    REQUIRE(projected);
+    CHECK(projected->start.y == Approx(0));
+    CHECK(std::abs(projected->end.x - projected->start.x) == Approx(40));
+    doc::Projection p;
+    p.edge = edge;
+    p.curve = ProjectedLine(d, sk, projected->start, projected->end);
+    sk.projections.push_back(p);
+    Rebuild(d, model);
+    CHECK(sk.lostProjections.empty());
+
+    // The first body made 55 wide: the projected line follows it, not the second body.
+    for (sketch::Point& pt : first.sketch.points)
+        if (std::abs(pt.pos.x - 40.0) < 1e-9) pt.pos.x = 55;
+    Rebuild(d, model);
+    CHECK(sk.lostProjections.empty());
+    const sketch::Line* l = sk.sketch.FindLine(p.curve);
+    REQUIRE(l);
+    const double x0 = sk.sketch.PositionOf(l->start).x, x1 = sk.sketch.PositionOf(l->end).x;
+    CHECK(std::min(x0, x1) == Approx(0));
+    CHECK(std::max(x0, x1) == Approx(55));
+}
+
+// Ребро-сплайн (выдавленный сплайн) и наклонная дуга проецировались с
+// ошибкой «Такое ребро пока не проецируется». Теперь — сплайном через точки,
+// который следует за моделью (как в Inventor).
+TEST_CASE("ребро-сплайн проецируется сплайном и следует за моделью") {
+    doc::Document d;
+    kernel::Model model;
+    doc::SketchFeature& base = AddSketch(d);
+    IdGenerator& ids = d.Ids();
+    sketch::Sketch& s = base.sketch;
+    const ObjectId a = s.AddPoint(ids, {0, 0}), m = s.AddPoint(ids, {20, 8}), b = s.AddPoint(ids, {40, 0});
+    const ObjectId c = s.AddPoint(ids, {40, -10}), e = s.AddPoint(ids, {0, -10});
+    s.AddSpline(ids, {a, m, b}, true);
+    s.AddLine(ids, b, c);
+    s.AddLine(ids, c, e);
+    s.AddLine(ids, e, a);
+    AddExtrude(d, base.id, "10");
+    model.Rebuild(d);
+    REQUIRE(base.status.state == FeatureState::Ok);
+
+    // The top edge along the spline: its middle near (20, 8, 10).
+    doc::EdgeReference edge;
+    double best = 1e9;
+    {
+        const TopoDS_Shape& body = model.GetImpl().bodies.back().shape;
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(body, TopAbs_EDGE, edges);
+        for (int i = 1; i <= edges.Extent(); ++i) {
+            const BRepAdaptor_Curve cv(TopoDS::Edge(edges(i)));
+            const gp_Pnt mid = cv.Value((cv.FirstParameter() + cv.LastParameter()) / 2);
+            const double miss = (Vec3{mid.X(), mid.Y(), mid.Z()} - Vec3{20, 8, 10}).Length();
+            if (miss < best) {
+                best = miss;
+                edge = kernel::occt::DescribeEdge(TopoDS::Edge(edges(i)), body);
+            }
+        }
+    }
+    REQUIRE(best < 0.5);
+    doc::SketchFeature& sk = AddSketch(d);
+    const auto at = static_cast<std::size_t>(d.IndexOf(sk.id));
+    Rebuild(d, model);
+    const auto projected = model.ProjectEdge(edge, sk.placement.frame, at);
+    REQUIRE(projected);
+    REQUIRE(projected->kind == kernel::ProjectedCurve::Kind::Spline);
+    REQUIRE(projected->points.size() == static_cast<std::size_t>(kernel::kSplineSpans + 1));
+    const double x0 = projected->points.front().x, x1 = projected->points.back().x;
+    CHECK(std::min(x0, x1) == Approx(0).epsilon(1e-6));
+    CHECK(std::max(x0, x1) == Approx(40).epsilon(1e-6));
+    double top = -1e9;
+    for (const Vec2& pt : projected->points) top = std::max(top, pt.y);
+    CHECK(top == Approx(8).epsilon(0.02));
+
+    const ObjectId curve = kernel::AddProjectedSpline(sk.sketch, ids, *projected, [&](Vec2 p) {
+        const ObjectId id = sk.sketch.AddPoint(ids, p);
+        sk.sketch.FindPoint(id)->projected = true;
+        return id;
+    });
+    REQUIRE(curve.IsValid());
+    doc::Projection p;
+    p.edge = edge;
+    p.curve = curve;
+    sk.projections.push_back(p);
+    Rebuild(d, model);
+    CHECK(sk.lostProjections.empty());
+
+    // The bump made higher: the projected spline follows.
+    s.FindPoint(m)->pos.y = 14;
+    Rebuild(d, model);
+    CHECK(sk.lostProjections.empty());
+    const sketch::Spline* sp = sk.sketch.FindSpline(curve);
+    REQUIRE(sp);
+    double high = -1e9;
+    for (ObjectId id : sp->points) high = std::max(high, sk.sketch.PositionOf(id).y);
+    CHECK(high == Approx(14).epsilon(0.02));
+}
+
+TEST_CASE("дуга под наклоном к эскизу проецируется сплайном, а не ошибкой") {
+    doc::Document d;
+    kernel::Model model;
+    doc::SketchFeature& base = AddSketch(d);
+    AddCircle(d, base, {0, 0}, 10);
+    AddExtrude(d, base.id, "20");
+    model.Rebuild(d);
+    // Half the top rim seen on a plane tilted 45° about X: a piece of an ellipse.
+    const TopoDS_Shape& body = model.GetImpl().bodies.back().shape;
+    std::optional<TopoDS_Edge> rim;
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(body, TopAbs_EDGE, edges);
+    for (int i = 1; i <= edges.Extent() && !rim; ++i) {
+        const BRepAdaptor_Curve cv(TopoDS::Edge(edges(i)));
+        if (cv.GetType() == GeomAbs_Circle && std::abs(cv.Value(cv.FirstParameter()).Z() - 20) < 1e-6) rim = TopoDS::Edge(edges(i));
+    }
+    REQUIRE(rim);
+    BRepAdaptor_Curve cv(*rim);
+    const double t0 = cv.FirstParameter();
+    const TopoDS_Edge half = BRepBuilderAPI_MakeEdge(cv.Curve().Curve(), t0, t0 + 3.14159265358979).Edge();
+    const double s = std::sqrt(0.5);
+    const Frame tilted{{0, 0, 0}, {1, 0, 0}, {0, -s, s}};
+    const auto pc = kernel::occt::ProjectEdge(half, tilted);
+    REQUIRE(pc);
+    CHECK(pc->kind == kernel::ProjectedCurve::Kind::Spline);
+    for (const Vec2& p : pc->points) {
+        // On the ellipse: x²/10² + (y/(10·s))²·… — every point within the rim's shadow.
+        CHECK(std::abs(p.x) <= 10 + 1e-9);
+    }
+}
+
+// --- Испытание: проецируем ВСЕ рёбра детали на несколько плоскостей, меняем
+// размер — каждая связанная проекция должна остаться на модели (ни одна не
+// потеряна, ни одна не прыгнула на чужое ребро), эскиз решается.
+
+namespace {
+
+std::vector<std::vector<Vec2>> ShadowOfEdges(const TopoDS_Shape& shape, const Frame& frame) {
+    std::vector<std::vector<Vec2>> out;
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    for (int i = 1; i <= edges.Extent(); ++i) {
+        const BRepAdaptor_Curve c(TopoDS::Edge(edges(i)));
+        std::vector<Vec2> poly;
+        for (int k = 0; k <= 400; ++k) {
+            const gp_Pnt p = c.Value(c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * k / 400);
+            poly.push_back(frame.ToLocal({p.X(), p.Y(), p.Z()}));
+        }
+        out.push_back(std::move(poly));
+    }
+    return out;
+}
+
+double MissFromShadow(const std::vector<std::vector<Vec2>>& shadow, Vec2 p) {
+    double best = 1e300;
+    for (const auto& poly : shadow)
+        for (std::size_t i = 0; i + 1 < poly.size(); ++i) {
+            const Vec2 a = poly[i], b = poly[i + 1], d = b - a;
+            const double len2 = d.Dot(d);
+            const double t = len2 > 0 ? std::clamp((p - a).Dot(d) / len2, 0.0, 1.0) : 0.0;
+            best = std::min(best, (a + d * t - p).Length());
+        }
+    return best;
+}
+
+TopoDS_Shape SolidsOf(const kernel::Model& model) {
+    TopoDS_Compound all;
+    BRep_Builder builder;
+    builder.MakeCompound(all);
+    for (const auto& b : model.GetImpl().bodies)
+        if (!b.mesh) builder.Add(all, b.shape);
+    return all;
+}
+
+struct TortureResult {
+    int projected = 0, refused = 0, lost = 0, off = 0, broken = 0;
+};
+
+/// Builds by `make`, projects every edge onto `frames`, applies `change`, rebuilds and checks.
+template <class Make, class Change>
+TortureResult Torture(Make make, Change change, const std::vector<Frame>& frames) {
+    TortureResult r;
+    doc::Document d;
+    kernel::Model model;
+    make(d);
+    model.Rebuild(d);
+    const TopoDS_Shape before = SolidsOf(model);
+    std::vector<doc::SketchFeature*> sketches;
+    for (const Frame& f : frames) sketches.push_back(&SketchOn(d, f));
+    Rebuild(d, model);
+    for (doc::SketchFeature* sk : sketches) {
+        const auto index = static_cast<std::size_t>(d.IndexOf(sk->id));
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(before, TopAbs_EDGE, edges);
+        app::Projector put(d, *sk, 1e-6, true, false);
+        for (int i = 1; i <= edges.Extent(); ++i) {
+            const TopoDS_Edge& e = TopoDS::Edge(edges(i));
+            if (BRep_Tool::Degenerated(e)) continue;
+            const doc::EdgeReference ref = kernel::occt::DescribeEdge(e, before);
+            const auto pc = model.ProjectEdge(ref, sk->placement.frame, index);
+            if (!pc) {
+                ++r.refused;
+                continue;
+            }
+            doc::Projection link;
+            link.edge = ref;
+            if (put.Curve(*pc, &link)) ++r.projected;
+        }
+    }
+    Rebuild(d, model);
+    for (doc::SketchFeature* sk : sketches) CHECK(sk->lostProjections.empty());
+    change(d);
+    Rebuild(d, model);
+    const TopoDS_Shape after = SolidsOf(model);
+    for (doc::SketchFeature* sk : sketches) {
+        r.lost += static_cast<int>(sk->lostProjections.size());
+        if (sk->status.state != FeatureState::Ok) ++r.broken;
+        const auto shadow = ShadowOfEdges(after, sk->placement.frame);
+        for (const doc::Projection& p : sk->projections) {
+            if (sk->lostProjections.count(p.curve)) continue;
+            std::vector<Vec2> pts;
+            if (const sketch::Line* l = sk->sketch.FindLine(p.curve)) pts = {sk->sketch.PositionOf(l->start), sk->sketch.PositionOf(l->end)};
+            else if (const sketch::Arc* a = sk->sketch.FindArc(p.curve)) pts = {sk->sketch.PositionOf(a->start), sk->sketch.PositionOf(a->end)};
+            else if (const sketch::Circle* c = sk->sketch.FindCircle(p.curve)) pts = {sk->sketch.PositionOf(c->center) + Vec2{c->radius, 0}};
+            else if (const sketch::Spline* s = sk->sketch.FindSpline(p.curve))
+                for (ObjectId id : s->points) pts.push_back(sk->sketch.PositionOf(id));
+            else if (const sketch::Ellipse* e = sk->sketch.FindEllipse(p.curve)) pts = {sk->sketch.PositionOf(e->major)};
+            for (const Vec2& q : pts)
+                if (MissFromShadow(shadow, q) > 1e-3) {
+                    ++r.off;
+                    break;
+                }
+        }
+    }
+    return r;
+}
+
+std::vector<Frame> TortureFrames() {
+    const double s = std::sqrt(0.5);
+    return {Frame{{0, 0, 30}, {1, 0, 0}, {0, 0, 1}},     // above
+            Frame{{0, -60, 0}, {1, 0, 0}, {0, -1, 0}},   // in front
+            Frame{{80, 0, 0}, {0, 1, 0}, {1, 0, 0}},     // right
+            Frame{{0, 0, 40}, {1, 0, 0}, {0, -s, s}}};   // slanted
+}
+
+void WidenBase(doc::Document& d, double from, double to) {
+    auto* base = dynamic_cast<doc::SketchFeature*>(d.Features().front().get());
+    for (sketch::Point& p : base->sketch.points)
+        if (std::abs(p.pos.x - from) < 1e-9) p.pos.x = to;
+}
+
+} // namespace
+
+TEST_CASE("испытание проекций: все рёбра детали следуют за изменением размера") {
+    struct Case {
+        const char* name;
+        std::function<void(doc::Document&)> make;
+    };
+    const std::vector<Case> cases = {
+        {"коробка", [](doc::Document& d) {
+             doc::SketchFeature& b = AddSketch(d);
+             AddRect(d, b, {0, 0}, {40, 20});
+             AddExtrude(d, b.id, "10");
+         }},
+        {"пластина с отверстием", [](doc::Document& d) {
+             doc::SketchFeature& b = AddSketch(d);
+             AddRect(d, b, {0, 0}, {40, 20});
+             AddExtrude(d, b.id, "10");
+             doc::SketchFeature& h = AddSketch(d);
+             AddCircle(d, h, {10, 10}, 4);
+             AddExtrude(d, h.id, "10", doc::BooleanOp::Cut);
+         }},
+        {"коробка со скруглением", [](doc::Document& d) {
+             doc::SketchFeature& b = AddSketch(d);
+             AddRect(d, b, {0, 0}, {40, 20});
+             AddExtrude(d, b.id, "10");
+             auto f = std::make_unique<doc::FilletFeature>();
+             f->id = d.Ids().Next();
+             f->name = "Скругление";
+             doc::EdgeReference e;
+             e.curve = doc::CurveKind::Line;
+             e.direction = {0, 0, 1};
+             e.middle = {0, 0, 5};
+             e.faces = {{{doc::SurfaceKind::Plane, {-1, 0, 0}}, {doc::SurfaceKind::Plane, {0, -1, 0}}}};
+             f->edges = {e};
+             std::vector<Parameter*> ps;
+             f->CollectParameters(ps);
+             for (Parameter* p : ps) p->expression = "3";
+             d.Insert(std::move(f), d.FeatureCount());
+         }},
+        {"два тела", [](doc::Document& d) {
+             doc::SketchFeature& b = AddSketch(d);
+             AddRect(d, b, {0, 0}, {40, 20});
+             AddExtrude(d, b.id, "10");
+             doc::SketchFeature& c = AddSketch(d);
+             AddCircle(d, c, {60, 10}, 6);
+             AddExtrude(d, c.id, "15", doc::BooleanOp::NewBody);
+         }},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.name);
+        const TortureResult r = Torture(c.make, [](doc::Document& d) { WidenBase(d, 40, 47); }, TortureFrames());
+        MESSAGE(c.name << ": спроецировано " << r.projected << ", отказано " << r.refused << ", потеряно " << r.lost << ", мимо модели "
+                       << r.off << ", эскизов с ошибкой " << r.broken);
+        CHECK(r.projected > 0);
+        CHECK(r.lost == 0);
+        CHECK(r.off == 0);
+        CHECK(r.broken == 0);
+    }
 }

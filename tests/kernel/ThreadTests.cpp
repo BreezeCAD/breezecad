@@ -3,6 +3,7 @@
 #include "document/ThreadFeature.h"
 #include "kernel/Model.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Helix.h"
 #include "kernel/occt/Ops.h"
 
 #include <BRepGProp.hxx>
@@ -193,6 +194,22 @@ TEST_CASE("an internal thread in a hole under a counterbore builds (made on an i
     CHECK(model.Volume() == doctest::Approx(14789.1).epsilon(1e-4));
 }
 
+TEST_CASE("a thread whose web is thinner than 0.05 mm warns") {
+    doc::Document d;
+    auto& sk = AddSketch(d);
+    AddCircle(d, sk, {0, 0}, 2);
+    AddExtrude(d, sk.id, "3");
+    auto& thread = AddThread(d, 2, "0.15");   // web 0.29 P = 0.044 mm
+    kernel::Model model;
+    model.Rebuild(d);
+    CHECK(thread.status.state == FeatureState::Warning);
+    CHECK(thread.status.message.find("Перемычка между витками") == 0);
+    thread.pitch.expression = "0.5";
+    d.MarkChanged(2);
+    model.Rebuild(d);
+    CHECK(thread.status.state == FeatureState::Ok);
+}
+
 TEST_SUITE_END();
 
 // The web of a thread between two turns of its groove, 0.02 mm (pitch 0.07:
@@ -234,4 +251,32 @@ TEST_CASE("measure: touching tolerance against a thread's 0.02 mm web" * doctest
         MESSAGE(std::string("thread web 0.02, fuzzy ") << fuzzy << ": code " << static_cast<int>(r.code) << ", volume left " << left
                                                        << " mm3 (exact " << exact << "), " << ms << " ms");
     }
+}
+
+// How the helix is cut into edges, against what an M8 thread 20 mm long
+// costs: the numbers behind DefaultHelixSplit. Run: bz_tests -ts=measure -tc="*thread helix*" -s
+TEST_CASE("measure: thread helix split" * doctest::test_suite("measure")) {
+    using kernel::occt::HelixSplit;
+    const HelixSplit was = kernel::occt::DefaultHelixSplit();
+    for (HelixSplit split : {HelixSplit::HalfTurns, HelixSplit::Turns, HelixSplit::Single}) {
+        kernel::occt::SetHelixSplitForMeasurement(split);
+        doc::Document d;
+        auto& sk = AddSketch(d);
+        AddCircle(d, sk, {0, 0}, 4);
+        AddExtrude(d, sk.id, "20");
+        auto& thread = AddThread(d, 4, "1.25");
+        auto& top = AddSketch(d);
+        top.placement.frame.origin = {0, 0, 20};
+        AddCircle(d, top, {3.5, 0}, 1.5);
+        auto& cut = AddExtrude(d, top.id, "6", doc::BooleanOp::Cut);
+        cut.reversed = true;
+        kernel::Model model;
+        const auto t = std::chrono::steady_clock::now();
+        model.Rebuild(d);
+        const double whole = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+        MESSAGE("thread split " << static_cast<int>(split) << ": thread " << thread.status.state << " "
+                                << model.GetImpl().costMs.at(thread.id) << " ms, cut after it " << model.GetImpl().costMs.at(cut.id)
+                                << " ms (" << cut.status.state << "), whole " << whole << " ms, volume " << model.Volume());
+    }
+    kernel::occt::SetHelixSplitForMeasurement(was);
 }

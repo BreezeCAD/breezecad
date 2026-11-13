@@ -200,7 +200,8 @@ TopoDS_Shape AllSolids(const std::vector<Body>& bodies) {
 /// goes to the most recent body as a separate piece. The solid is also kept
 /// as the operation's tool for patterns and mirrors.
 void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Model::Impl& impl, std::vector<Body>& bodies,
-                  doc::FeatureStatus& status) {
+                  doc::FeatureStatus& status, occt::BooleanNote* summary = nullptr) {
+    if (summary) *summary = {};
     // A new body copied by a pattern joins the body it started.
     if (op != doc::BooleanOp::Intersect) impl.tools[id] = {tool, op == doc::BooleanOp::Cut ? doc::BooleanOp::Cut : doc::BooleanOp::Join, {}};
 
@@ -237,6 +238,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
             }
             if (!note.touched && !note.partial) continue;
             if (!sliver) sliver = note.sliver;
+            if (summary) summary->retried = summary->retried || note.retried;
             body.shape = *result;
             reached = true;
             partial = partial || note.partial;
@@ -342,7 +344,8 @@ void ApplyLoft(doc::LoftFeature& f, Model::Impl& impl, std::vector<Body>& bodies
 /// new body or combine it with the most recent body.
 template <class MakeTool>
 void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::vector<Body>& bodies,
-                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool) {
+                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool,
+                      occt::BooleanNote* summary = nullptr) {
     const auto* sketch = doc.FindAs<doc::SketchFeature>(f.sketch);
     const auto profile = impl.sketches.find(f.sketch);
     if (!sketch || profile == impl.sketches.end()) {
@@ -369,7 +372,7 @@ void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::
         status = {FeatureState::Error, tool.GetError().message};
         return;
     }
-    CombineSolid(f.id, f.operation, *tool, impl, bodies, status);
+    CombineSolid(f.id, f.operation, *tool, impl, bodies, status, summary);
 }
 
 /// Distance from `p` to `shape`, mm (1e300 when it cannot be measured).
@@ -474,6 +477,27 @@ void ApplyToLastBody(std::vector<Body>& bodies, doc::FeatureStatus& status, cons
 }
 
 /// A thread is cut from the body that has its face (the most recent one first).
+/// The warnings of a coil or a thread that built fine (STAB-3): a web
+/// between turns thinner than anything printed or milled; a profile lying
+/// exactly on the body's wall, so the cut needed the touching tolerance.
+/// A thin web replaces a warning of a strip (it is its cause); a partial
+/// cut stays (it says more than "touching").
+void WarnHelical(doc::FeatureStatus& status, double web, bool touching, bool cut) {
+    if (status.state == FeatureState::Error) return;
+    constexpr double kThinWeb = 0.05;   // mm, as FindNewSliver
+    // A thin web is the cause of any strip near the coil: said first.
+    if (web < kThinWeb) {
+        status = {FeatureState::Warning,
+                  std::format("Перемычка между витками {:.3f} мм — тоньше 0,05 мм: напечатать или выфрезеровать её не выйдет. "
+                              "Увеличьте шаг или уменьшите профиль",
+                              web)};
+    } else if (touching && cut && status.state == FeatureState::Ok) {
+        status = {FeatureState::Warning,
+                  "Профиль касается стенки тела: вырез построен с допуском касания (0,0001–0,001 мм). Сдвиньте профиль на "
+                  "0,01–0,05 мм внутрь или наружу — вырез станет точным и быстрым"};
+    }
+}
+
 void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body>& bodies) {
     thread.site.reset();
     Body* target = LastSolid(bodies);
@@ -500,8 +524,12 @@ void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body
         thread.status = {FeatureState::Ok, {}};
         return;
     }
-    const Expected<TopoDS_Shape> tool = occt::ThreadTool(target->shape, thread);
-    Expected<TopoDS_Shape> result = tool ? occt::ApplyBoolean(target->shape, *tool, doc::BooleanOp::Cut) : tool;
+    occt::ThreadNotes notes;
+    const Expected<TopoDS_Shape> tool = occt::ThreadTool(target->shape, thread, &notes);
+    occt::BooleanNote note;
+    // No strips looked for: a groove running out of a face leaves narrow
+    // faces at its ends by nature (the mouth of a tapped hole).
+    Expected<TopoDS_Shape> result = tool ? occt::ApplyBoolean(target->shape, *tool, doc::BooleanOp::Cut, &note) : tool;
     if (!result) {
         thread.status = {FeatureState::Error, result.GetError().message};
         return;
@@ -509,6 +537,8 @@ void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body
     impl.tools[thread.id] = {*tool, doc::BooleanOp::Cut, {}};
     target->shape = *result;
     thread.status = {FeatureState::Ok, {}};
+    WarnHelical(thread.status, notes.web, note.retried, true);
+    if (note.partial) thread.status = {FeatureState::Warning, note.warning};
 }
 
 /// Patterns and mirrors: the tools of the source operations, moved by each
@@ -1661,10 +1691,15 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                          return occt::MakeSweep(faces, *path);
                                      });
             } else if (auto* coil = dynamic_cast<doc::CoilFeature*>(&f)) {
-                ApplySketchSolid(*coil, impl, bodies, coil->status, doc,
-                                 [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
-                                     return occt::MakeCoil(faces, *coil, profile.sketch, frame);
-                                 });
+                occt::CoilNotes notes;
+                occt::BooleanNote combined;
+                ApplySketchSolid(
+                    *coil, impl, bodies, coil->status, doc,
+                    [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
+                        return occt::MakeCoil(faces, *coil, profile.sketch, frame, &notes);
+                    },
+                    &combined);
+                WarnHelical(coil->status, notes.web, combined.retried, coil->operation == doc::BooleanOp::Cut);
             } else if (auto* imported = dynamic_cast<doc::ImportFeature*>(&f)) {
                 ApplyImported(*imported, impl, bodies);
             } else if (auto* loft = dynamic_cast<doc::LoftFeature*>(&f)) {
@@ -1752,6 +1787,12 @@ std::size_t Model::FirstToRebuild(const doc::Document& doc) const {
     for (std::size_t i = 0; i < start; ++i)
         if (i >= myImpl->cachedOrder.size() || myImpl->cachedOrder[i] != doc.Features()[i]->id) return i;
     return start;
+}
+
+std::optional<double> Model::CostMs(ObjectId feature) const {
+    const auto it = myImpl->costMs.find(feature);
+    if (it == myImpl->costMs.end()) return std::nullopt;
+    return it->second;
 }
 
 double Model::EstimateRebuildMs(const doc::Document& doc, std::size_t last) const {

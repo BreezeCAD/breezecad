@@ -1,5 +1,7 @@
 #include "kernel/occt/Thread.h"
+#include "kernel/occt/Helix.h"
 #include "kernel/occt/Ops.h"
+#include "kernel/occt/ToolCache.h"
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -27,6 +29,8 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <optional>
+#include <string>
 
 namespace bz::kernel::occt {
 namespace {
@@ -199,20 +203,9 @@ Expected<TopoDS_Wire> Helix(const Layout& l, double radius, bool leftHanded) {
     const double turns = length / l.pitch;
     const Vec3 origin = l.site.axisPoint + l.axis * l.begin;
     const gp_Ax3 frame(gp_Pnt(origin.x, origin.y, origin.z), gp_Dir(l.axis.x, l.axis.y, l.axis.z), gp_Dir(l.across.x, l.across.y, l.across.z));
-    Handle(Geom_CylindricalSurface) cylinder = new Geom_CylindricalSurface(frame, radius);
-    const int pieces = std::max(1, static_cast<int>(std::ceil(turns * 2 - 1e-9)));   // half turns
-    const double angle = 2 * kPi * turns * (leftHanded ? -1.0 : 1.0);
-    BRepBuilderAPI_MakeWire wire;
-    for (int i = 0; i < pieces; ++i) {
-        const double t0 = static_cast<double>(i) / pieces, t1 = static_cast<double>(i + 1) / pieces;
-        const Handle(Geom2d_TrimmedCurve) segment =
-            GCE2d_MakeSegment(gp_Pnt2d(angle * t0, length * t0), gp_Pnt2d(angle * t1, length * t1));
-        TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(segment, cylinder);
-        BRepLib::BuildCurves3d(edge);
-        wire.Add(edge);
-    }
-    if (!wire.IsDone()) return Error{"Резьба: не удалось построить винтовую линию"};
-    return wire.Wire();
+    const Expected<TopoDS_Wire> helix = MakeHelix(frame, radius, turns, length, leftHanded);
+    if (!helix) return Error{"Резьба: не удалось построить винтовую линию"};
+    return *helix;
 }
 
 /// A solid cylinder (radius `r`) along the layout's thread length.
@@ -223,11 +216,42 @@ TopoDS_Shape Rod(const Layout& l, double r) {
 
 } // namespace
 
-Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFeature& f) {
+namespace {
+
+/// The thread tools swept last (ToolCache.h).
+ToolCache& Cache() {
+    static ToolCache cache(8);
+    return cache;
+}
+
+/// Everything a thread's tool depends on: where it runs and its sizes.
+std::string KeyOf(const Layout& l, const doc::ThreadFeature& f) {
+    std::string key;
+    for (double v : {l.site.axisPoint.x, l.site.axisPoint.y, l.site.axisPoint.z, l.site.axisDir.x, l.site.axisDir.y, l.site.axisDir.z,
+                     l.site.radius, l.pitch, l.depth, l.crest, l.begin, l.end, l.axis.x, l.axis.y, l.axis.z, l.across.x, l.across.y,
+                     l.across.z, l.side})
+        AddToKey(key, v);
+    key += l.site.external ? "E" : "I";
+    key += f.leftHanded ? "L" : "R";
+    key += std::to_string(static_cast<int>(DefaultHelixSplit()));
+    return key;
+}
+
+} // namespace
+
+Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFeature& f, ThreadNotes* notes) {
+    if (notes) *notes = {};
     try {
         const Expected<Layout> planned = Plan(body, f);
         if (!planned) return planned.GetError();
         const Layout& l = *planned;
+        // The groove is 60°: at the surface it is 2·depth·tan 30° wide; the rest of a pitch is the web.
+        if (notes) notes->web = l.pitch - 2 * l.depth * std::tan(kPi / 6);
+        const std::string key = KeyOf(l, f);
+        if (std::optional<TopoDS_Shape> cached = Cache().Find(key)) {
+            if (notes) notes->cached = true;
+            return *cached;
+        }
         const Expected<TopoDS_Wire> helix = Helix(l, l.crest, f.leftHanded);
         if (!helix) return helix.GetError();
 
@@ -261,6 +285,7 @@ Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFea
         } else if (!l.site.external && r < l.crest - 1e-6) {
             tool = ops::OrThrow(ops::Fuse(tool, Rod(l, l.crest), ops::Tool()));
         }
+        Cache().Put(key, tool);
         return tool;
     } catch (const ops::Failed& failed) {
         return Error{failed.what()};

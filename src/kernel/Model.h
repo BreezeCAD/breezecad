@@ -107,6 +107,13 @@ public:
     /// never built count as slow.
     double EstimateRebuildMs(const doc::Document& doc, std::size_t last) const;
 
+    /// How long `feature` took the last time it was built, ms; none when it
+    /// was never built.
+    std::optional<double> CostMs(ObjectId feature) const;
+    /// An operation slower than this is a heavy one: the tree marks it
+    /// (BETA-BUGS №7), since everything below it waits for it on each change.
+    static constexpr double kHeavyMs = 1000.0;
+
     /// For a rebuild on another thread: a model that computes the features
     /// from `start` on by itself. It shares no OCCT shape with this one (the
     /// shapes it starts from are copied), so the two can be used at the same

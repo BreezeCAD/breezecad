@@ -102,3 +102,14 @@ TEST_CASE("Floor shadow: the sky shades around the foot, fading away") {
     CHECK(ShadowAt(withSky, spec, -13, 0) > ShadowAt(withSky, spec, -40, 0));
     CHECK(ShadowAt(withSky, spec, -13, 0) <= 0.5f);
 }
+
+TEST_CASE("Floor shadow: a see-through body casts a lighter one") {
+    FloorShadowSpec spec;
+    spec.half = 40;
+    spec.spread = 0;
+    spec.samples = 1;
+    const auto box = Box({-10, -10, 0}, {10, 10, 10});
+    const std::vector<float> clear(box.size(), 0.3f);
+    const FloorShadowMap map = ComputeFloorShadow(box, spec, clear);
+    CHECK(ShadowAt(map, spec, 0, 0) == doctest::Approx(0.3).epsilon(0.02));
+}

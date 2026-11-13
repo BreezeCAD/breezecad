@@ -14,7 +14,7 @@ int FloorShadowSamples(std::size_t triangles) {
 namespace {
 
 /// One light: the share of its directions in which each grid point is shaded.
-FloorShadowMap CastShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec) {
+FloorShadowMap CastShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec, std::span<const float> opacity) {
     FloorShadowMap out;
     const int n = std::max(2, spec.size);
     out.size = n;
@@ -32,7 +32,7 @@ FloorShadowMap CastShadow(std::span<const std::array<Vec3, 3>> triangles, const 
     const int  samples = std::max(1, spec.samples);
 
     std::vector<std::uint8_t>  mask(out.value.size());
-    std::vector<std::uint16_t> count(out.value.size(), 0);
+    std::vector<std::uint32_t> count(out.value.size(), 0);
     for (int k = 0; k < samples; ++k) {
         const double r = samples == 1 ? 0.0 : spec.spread * std::sqrt((k + 0.5) / samples);
         const double a = k * 2.399963229728653;   // the golden angle
@@ -41,7 +41,12 @@ FloorShadowMap CastShadow(std::span<const std::array<Vec3, 3>> triangles, const 
         // Along d, a point at height h above the floor lands h · shift further.
         const Vec2 shift{d.x / -d.z, d.y / -d.z};
         std::fill(mask.begin(), mask.end(), std::uint8_t{0});
-        for (const auto& t : triangles) {
+        for (std::size_t ti = 0; ti < triangles.size(); ++ti) {
+            const auto& t = triangles[ti];
+            // How much light it holds back, in 255ths; a point takes the densest over it.
+            const auto dense = static_cast<std::uint8_t>(
+                ti < opacity.size() ? std::clamp(std::lround(opacity[ti] * 255.0f), 0L, 255L) : 255L);
+            if (dense == 0) continue;
             Vec2 p[3];
             for (int c = 0; c < 3; ++c) {
                 const double h = t[c].z - spec.z;
@@ -63,26 +68,29 @@ FloorShadowMap CastShadow(std::span<const std::array<Vec3, 3>> triangles, const 
                     const double w0 = sign * (p[1] - p[0]).Cross(q - p[0]);
                     const double w1 = sign * (p[2] - p[1]).Cross(q - p[1]);
                     const double w2 = sign * (p[0] - p[2]).Cross(q - p[2]);
-                    if (w0 >= eps && w1 >= eps && w2 >= eps) mask[static_cast<std::size_t>(j) * static_cast<std::size_t>(n) + static_cast<std::size_t>(i)] = 1;
+                    if (w0 >= eps && w1 >= eps && w2 >= eps) {
+                        std::uint8_t& m = mask[static_cast<std::size_t>(j) * static_cast<std::size_t>(n) + static_cast<std::size_t>(i)];
+                        m = std::max(m, dense);
+                    }
                 }
         }
-        for (std::size_t c = 0; c < mask.size(); ++c) count[c] = static_cast<std::uint16_t>(count[c] + mask[c]);
+        for (std::size_t c = 0; c < mask.size(); ++c) count[c] += mask[c];
     }
-    for (std::size_t c = 0; c < count.size(); ++c) out.value[c] = static_cast<float>(count[c]) / static_cast<float>(samples);
+    for (std::size_t c = 0; c < count.size(); ++c) out.value[c] = static_cast<float>(count[c]) / (255.0f * static_cast<float>(samples));
     return out;
 }
 
 } // namespace
 
-FloorShadowMap ComputeFloorShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec) {
-    FloorShadowMap out = CastShadow(triangles, spec);
+FloorShadowMap ComputeFloorShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec, std::span<const float> opacity) {
+    FloorShadowMap out = CastShadow(triangles, spec, opacity);
     const int n = out.size;
     if (spec.sky > 0 && !triangles.empty()) {
         FloorShadowSpec sky = spec;
         sky.light = Vec3{0, 0, -1};
         sky.spread = spec.skySpread;
         sky.samples = std::max(4, spec.samples / 2);
-        const FloorShadowMap above = CastShadow(triangles, sky);
+        const FloorShadowMap above = CastShadow(triangles, sky, opacity);
         const auto weight = static_cast<float>(spec.sky);
         for (std::size_t c = 0; c < out.value.size(); ++c) out.value[c] = 1 - (1 - out.value[c]) * (1 - weight * above.value[c]);
     }

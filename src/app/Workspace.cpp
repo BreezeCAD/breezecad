@@ -1,6 +1,7 @@
 #include "app/Workspace.h"
 
 #include "drawing/DrawingFile.h"
+#include "drawing/DrawingDxf.h"
 #include "drawing/DrawingPdf.h"
 
 #include "app/Notifications.h"
@@ -35,7 +36,8 @@ const std::string kGenerator = std::string("BreezeCAD ") + Version();
 /// Why there is nothing to export; empty when there is something.
 std::string NothingToExport(const Session& session, ExportFormat format) {
     if (format == ExportFormat::Pdf) return session.drawing ? std::string{} : N_("В PDF выводится только чертёж");
-    if (session.drawing) return N_("Чертёж выводится в PDF");
+    if (format == ExportFormat::Dxf) return session.drawing ? std::string{} : N_("В DXF выводится только чертёж");
+    if (session.drawing) return N_("Чертёж выводится в PDF или DXF");
     if (!session.model.Bodies().empty()) return {};
     return session.assembly ? "В сборке ещё нет компонентов для экспорта" : "В детали ещё нет тел для экспорта";
 }
@@ -45,6 +47,22 @@ const Expected<drawing::TrueTypeFont>& PdfFont() {
     static const Expected<drawing::TrueTypeFont> font =
         drawing::TrueTypeFont::FromFile(platform::AssetsDir() / "fonts" / "IBMPlexSans-Regular.ttf");
     return font;
+}
+
+/// The drawing as DXF (drawing/DrawingDxf.h): every view computed first, as for PDF.
+bool ExportDxf(Workspace& ws, Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
+    DrawingState& d = *session.drawing;
+    DrawingViews& views = DrawingViews::Of(d);
+    views.Finish(ws, d);
+    const Status status = drawing::ExportDrawingDxf(d.drawing, target, views.Content(ws, d));
+    if (!status || !platform::FileWritten(target)) {
+        const std::string message = !status ? status.GetError().message : Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));
+        if (error) *error = message;
+        notes.Error(Tr(message));
+        return false;
+    }
+    notes.Success(Trf("Экспортировано: {}", ToUtf8(target.filename())));
+    return true;
 }
 
 bool ExportPdf(Workspace& ws, Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
@@ -373,6 +391,7 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
     const Info info = format == ExportFormat::Step ? Info{"STEP AP214", "*.step", ".step"}
                     : format == ExportFormat::Stl  ? Info{"STL", "*.stl", ".stl"}
                     : format == ExportFormat::Pdf  ? Info{"PDF", "*.pdf", ".pdf"}
+                    : format == ExportFormat::Dxf  ? Info{"DXF", "*.dxf", ".dxf"}
                                                    : Info{Tr("3MF для 3D-печати"), "*.3mf", ".3mf"};
     if (const std::string empty = NothingToExport(session, format); !empty.empty()) {
         notes.Info(Tr(empty));
@@ -397,6 +416,7 @@ bool Workspace::ExportTo(Session& session, ExportFormat format, const std::files
         return false;
     }
     if (format == ExportFormat::Pdf) return ExportPdf(*this, session, target, notes, error);
+    if (format == ExportFormat::Dxf) return ExportDxf(*this, session, target, notes, error);
     // A long export (a threaded part as STEP on a phone) is work, not a hang: no hang
     // report, and on Android the watchdog does not offer to close the app meanwhile.
     const mon::Waiting waiting;

@@ -2407,7 +2407,6 @@
     "Через точки": "Through points",
     "Чертежи": "Drawings",
     "Чертёж": "Drawing",
-    "Чертёж выводится в PDF": "A drawing is exported to PDF",
     "Чертёж открытой детали или сборки: основная надпись — из её свойств. Документ должен быть сохранён": "A drawing of the open part or assembly: the title block from its properties. The document must be saved",
     "Чертёж создан более новой версией BreezeCAD. Новые возможности не покажутся, но при сохранении не пропадут.": "The drawing was made by a newer BreezeCAD version. New features will not show, but saving keeps them.",
     "Число витков": "Number of turns",
@@ -2902,6 +2901,13 @@
     "Удалить позицию": "Delete position",
     "Щелчок — место полки с номером (Esc — выйти)": "Click — where the numbered shelf goes (Esc — exit)",
     "позиции выноски расставить": "positions leaders arrange",
-    "позиция выноска номер сборка": "position leader number assembly"
+    "позиция выноска номер сборка": "position leader number assembly",
+    "В DXF выводится только чертёж": "Only a drawing is exported to DXF",
+    "Все листы чертежа в один DXF, в натуральную величину: для ЧПУ, лазера и других САПР": "All sheets of the drawing in one DXF at full size: for CNC, laser and other CAD",
+    "Не удалось записать DXF в выбранную папку": "Could not write the DXF to the chosen folder",
+    "Чертёж выводится в PDF или DXF": "A drawing is exported to PDF or DXF",
+    "Экспорт\nв DXF": "Export\nto DXF",
+    "Экспорт в DXF": "Export to DXF",
+    "дхф автокад чпу вывод": "dxf autocad cnc output"
   }
 }

@@ -434,6 +434,7 @@ struct Viewport::Impl {
     /// "Живой вид" (SetLive): the key light casts shadows, bodies get a
     /// silhouette outline and stand on a floor that takes their shadow.
     bool                         live = false;
+    Graphic3d_TypeOfShadingModel plainShading = Graphic3d_TypeOfShadingModel_Phong;   ///< the view's own, back when live goes off
     Handle(V3d_DirectionalLight) keyLight;
     Handle(AIS_Shape)            floor;
     bool                         floorShown = false;
@@ -459,7 +460,7 @@ struct Viewport::Impl {
         const double z = bounds->min.z - std::max(0.01, (bounds->max - bounds->min).Length() * 1e-4);
         const TopoDS_Face face = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(c.x, c.y, z), gp::DZ()), -r, r, -r, r);
         floor = new AIS_Shape(face);
-        floor->SetInfiniteState(true);   // not in "fit all" / ModelBounds
+        // Not infinite: an infinite object is left out of the depth range and clipped.
         floor->Attributes()->SetFaceBoundaryDraw(false);
         Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
         const Quantity_Color tone = ToQuantity(colors.backgroundBottom);
@@ -468,7 +469,7 @@ struct Viewport::Impl {
         material.SetSpecularColor(Quantity_Color(0, 0, 0, Quantity_TOC_RGB));
         floor->SetMaterial(material);
         floor->SetColor(tone);
-        floor->SetTransparency(0.45);
+        floor->SetTransparency(0.55);
         floorFor = bounds;
         floorShown = false;
         ShowFloorForCamera();
@@ -820,6 +821,8 @@ bool Viewport::Init(const NativeGlSurface& surface) {
     m.view = m.viewer->CreateView();
     m.view->SetImmediateUpdate(false);
     m.view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Orthographic);
+    m.plainShading = m.view->ShadingModel();
+    if (m.plainShading == Graphic3d_TypeOfShadingModel_DEFAULT) m.plainShading = m.viewer->DefaultShadingModel();
     Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
     params.NbMsaaSamples = 4;
     // Plain blending: the tints here are light, and order-independent
@@ -999,7 +1002,7 @@ void Viewport::SetLive(bool on) {
     if (m.live == on) return;
     m.live = on;
     // Shadows need per-pixel lighting; the plain view keeps the viewer's default.
-    m.view->SetShadingModel(on ? Graphic3d_TypeOfShadingModel_Phong : Graphic3d_TypeOfShadingModel_DEFAULT);
+    m.view->SetShadingModel(on ? Graphic3d_TypeOfShadingModel_Phong : m.plainShading);   // DEFAULT throws
     Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
     params.ShadowMapResolution = 2048;
     params.ShadowMapBias = 0.004f;

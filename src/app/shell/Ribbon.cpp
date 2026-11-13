@@ -509,6 +509,10 @@ void ViewRibbonImpl(AppContext& app, RibbonSink& r) {
     r.EndColumn();
     r.EndGroup();
 
+    r.BeginGroup(N_("Кадр"));
+    r.Large("view.render", Tr("Сделать\nкадр"), app.ops.photo.IsOpen());
+    r.EndGroup();
+
     r.BeginGroup(N_("Ориентация"));
     r.Large("view.home", Tr("Домой"));
     r.Large("view.fit", Tr("Показать\nвсё"));

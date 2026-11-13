@@ -364,8 +364,16 @@ void RegisterActions(AppContext& app) {
         const render::DisplayStyle style = s.style;
         a.Add({s.id, s.label, s.icon, 0, N_("Стиль отображения"), {}, [&app, style] { app.shell.displayStyle = style; }});
     }
+    a.Add({"view.render", N_("Сделать кадр"), "view-render", 0,
+           N_("Красивая картинка детали в PNG — для постов, сайта, инструкции: фон, тень, размер"),
+           [&app] { return app.Doc() && !app.workspace.ShowsHome() && !app.Doc()->model.Bodies().empty(); },
+           [&app] {
+               if (Session* s = app.Doc()) app.ops.photo.Start(app, *s);
+           },
+           0, N_("рендер картинка фото скриншот png визуализация")});
     a.Add({"view.live", N_("Живой вид"), "view-live", 0,
-           N_("Тень на полу, мягкий свет и контур детали. На слабом компьютере выключается сам (Настройки → Графика)"), {},
+           N_("Тень на полу, мягкий свет и контур детали. На слабом компьютере выключается сам (Настройки → Графика)"),
+           [&app] { return app.settings.graphics < 2; },
            [&app] { app.settings.liveView = !app.settings.liveView; }, 0, N_("тень пол красиво реалистично освещение")});
     a.Add({"view.themeLight", N_("Светлая тема"), "ui-sun", 0, {}, {}, [&app] { SetTheme(app, ThemeChoice::Light); }});
     a.Add({"view.themeDark", N_("Тёмная тема"), "ui-moon", 0, {}, {}, [&app] { SetTheme(app, ThemeChoice::Dark); }});

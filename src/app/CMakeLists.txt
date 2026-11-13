@@ -40,6 +40,7 @@ set(BZ_APP_SOURCES
     scripting/AssemblyCommands.cpp
     scripting/ConnCommands.cpp
     features/AppearanceEditor.cpp
+    features/PhotoEditor.cpp
     features/ToolChoice.cpp
     features/CopyEditors.cpp
     features/CoilEditor.cpp

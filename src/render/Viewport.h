@@ -152,6 +152,20 @@ public:
     /// screen (the window's view is not touched). nullopt when the graphics
     /// cannot (no OpenGL context yet).
     std::optional<Image> Snapshot(const CameraState& camera, int width, int height);
+
+    /// «Кадр»: a picture of the bodies as the window shows them, for posts
+    /// and the site. The camera is the window's, scaled so the picture holds
+    /// what PhotoFrame() outlines. Everything is put back afterwards.
+    struct PhotoOptions {
+        enum class Background : unsigned char { Studio, Dark, Transparent } background = Background::Studio;
+        int  width = 1920, height = 1080;
+        bool floor = true;      ///< the floor with the bodies' shadow (not on a transparent background)
+        bool edges = true;
+    };
+    std::optional<Image> Photo(const PhotoOptions& options);
+    /// The part of the window a picture of `aspect` (width / height) holds,
+    /// in window pixels from the top-left corner: x, y, width, height.
+    std::array<double, 4> PhotoFrame(double aspect) const;
     /// The model alone looking along `direction`, fitted into a size x size
     /// square with a transparent background (no planes, sketch marks,
     /// section or background picture): the picture saved in documents for

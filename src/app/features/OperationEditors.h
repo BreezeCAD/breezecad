@@ -8,6 +8,7 @@
 #include "app/features/ExtrudeEditor.h"
 #include "app/features/HoleEditor.h"
 #include "app/features/LoftEditor.h"
+#include "app/features/PhotoEditor.h"
 #include "app/features/RevolveEditor.h"
 #include "app/features/SectionEditor.h"
 #include "app/features/SheetMetalEditors.h"
@@ -43,10 +44,12 @@ struct OperationEditors {
     FlangeEditor    flange;
     SheetCutEditor  sheetCut;
     AppearanceEditor appearance;
+    PhotoEditor      photo;
 
-    std::array<OperationEditor*, 20> All() {
+    std::array<OperationEditor*, 21> All() {
         return {&extrude, &revolve, &fillet,  &chamfer, &hole,  &workPlane, &workAxis, &workPoint, &pattern,  &mirror,
-                &loft,    &sweep,   &coil,    &section, &thread, &shell,    &sheet,    &flange,    &sheetCut, &appearance};
+                &loft,    &sweep,   &coil,    &section, &thread, &shell,    &sheet,    &flange,    &sheetCut, &appearance,
+                &photo};
     }
 
     /// The open operation, or nullptr.

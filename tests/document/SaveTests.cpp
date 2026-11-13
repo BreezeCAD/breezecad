@@ -126,7 +126,7 @@ TEST_CASE("the picture for the file manager is kept in the file and survives a s
     const auto file = dir / PathFromUtf8("Деталь с картинкой.bzc");
     const std::vector<std::uint8_t> png = {0x89, 'P', 'N', 'G', 1, 2, 3, 4};
 
-    REQUIRE(doc::SaveBzc(Part(1), file, "test", png));
+    REQUIRE(doc::SaveBzc(Part(1), file, "test", {}, png));
     auto read = doc::ReadBzcPreview(file);
     REQUIRE(read);
     CHECK(*read == png);
@@ -142,6 +142,32 @@ TEST_CASE("the picture for the file manager is kept in the file and survives a s
     REQUIRE(doc::SaveBzc(Part(1), bare, "test"));
     CHECK_FALSE(doc::ReadBzcPreview(bare));
     CHECK_FALSE(doc::ReadBzcPreview(dir / "missing.bzc"));
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("the manifest names the geometry kernel; files without it still open") {
+    const auto dir = Folder("bz-kernel-тест");
+    const auto file = dir / PathFromUtf8("Деталь.bzc");
+
+    // Saved → opened: the kernel the caller passed is in the manifest.
+    REQUIRE(doc::SaveBzc(Part(1), file, "test", "OpenCASCADE 8.0.1"));
+    auto archive = doc::ReadBzcArchive(file);
+    REQUIRE(archive);
+    CHECK(archive->kernel == "OpenCASCADE 8.0.1");
+    auto part = doc::LoadBzc(file);
+    REQUIRE(part);
+    // Saved again from what was opened: still there.
+    REQUIRE(doc::SaveBzc(*part, file, "test", "OpenCASCADE 8.0.1"));
+    archive = doc::ReadBzcArchive(file);
+    REQUIRE(archive);
+    CHECK(archive->kernel == "OpenCASCADE 8.0.1");
+
+    // A file from before the field (0.2.5 and older): no "kernel", opens as before.
+    REQUIRE(doc::SaveBzc(Part(1), file, "BreezeCAD 0.2.5-Beta"));
+    archive = doc::ReadBzcArchive(file);
+    REQUIRE(archive);
+    CHECK(archive->kernel.empty());
+    CHECK(doc::LoadBzc(file));
     std::filesystem::remove_all(dir);
 }
 

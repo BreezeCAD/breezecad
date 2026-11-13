@@ -9,6 +9,7 @@
 #include "document/BzcFile.h"
 #include "document/DocumentTypes.h"
 #include "drawing/DrawingFile.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <atomic>
@@ -179,15 +180,16 @@ Status Session::WriteFile(const std::filesystem::path& target, std::string_view 
         // Its models are relative to it: written elsewhere, a copy points at the same files.
         drawing::Drawing copy = drawing->drawing;
         DrawingState::RebasePaths(copy, drawing->savedAt, target);
-        return drawing::SaveDrawing(copy, target, generator, preview);
+        return drawing::SaveDrawing(copy, target, generator, kernel::GeometryKernelVersion(), preview);
     }
-    if (!assembly) return doc::SaveBzc(doc, target, generator, preview);
-    if (path == target) return assembly::SaveAssembly(assembly->assembly, target, generator, preview);
+    // The kernel goes into the manifest next to the generator (document/ does not know OCCT).
+    if (!assembly) return doc::SaveBzc(doc, target, generator, kernel::GeometryKernelVersion(), preview);
+    if (path == target) return assembly::SaveAssembly(assembly->assembly, target, generator, kernel::GeometryKernelVersion(), preview);
     Expected<assembly::Assembly> copy = assembly::AssemblyFromJson(assembly::AssemblyToJson(assembly->assembly));
     if (!copy) return copy.GetError();
     copy->look.pictures = assembly->assembly.look.pictures;   // not in the JSON
     assembly::RebasePaths(*copy, path, target);
-    return assembly::SaveAssembly(*copy, target, generator, preview);
+    return assembly::SaveAssembly(*copy, target, generator, kernel::GeometryKernelVersion(), preview);
 }
 
 bool Session::IsModified() const {

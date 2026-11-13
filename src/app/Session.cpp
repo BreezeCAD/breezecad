@@ -197,6 +197,7 @@ bool Session::IsModified() const {
 }
 
 void Session::MarkSaved() {
+    recoveredSinceSave = false;
     if (drawing) {
         // Saved to `path`: from now on its models are relative to it.
         DrawingState::RebasePaths(drawing->drawing, drawing->savedAt, path);

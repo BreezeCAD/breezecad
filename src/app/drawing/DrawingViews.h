@@ -46,6 +46,18 @@ public:
     /// Every view of the drawing computed, waiting for it (PDF export).
     void Finish(Workspace& ws, DrawingState& d);
 
+    /// The bodies of the model now, copied once per its state; empty and
+    /// `problem` when there are none. `key` — that state.
+    kernel::ViewShapes Shapes(Workspace& ws, DrawingState& d, ObjectId model, std::string* key = nullptr, std::string* problem = nullptr);
+    /// The model edges of a dimension of `view` now (Dimension.h); cached
+    /// while the model and the references are the same.
+    std::vector<std::optional<drawing::ModelEdge>> Edges(Workspace& ws, DrawingState& d, const drawing::View& view,
+                                                         const std::vector<drawing::Json>& refs);
+    /// The model edge under a sheet point of `view`, within `tolerance` mm of
+    /// the sheet; its reference as JSON in `ref`.
+    std::optional<drawing::ModelEdge> EdgeAt(Workspace& ws, DrawingState& d, const drawing::View& view, Vec2 sheetPoint,
+                                             double tolerance, drawing::Json& ref);
+
     /// The model's box (placing new views); loads it if it is not open.
     std::optional<kernel::Bounds> ModelBounds(Workspace& ws, DrawingState& d, ObjectId model, std::string* problem = nullptr);
 
@@ -75,11 +87,16 @@ private:
     };
     /// The model of `id` now: an open tab's or one read here; nullptr and `problem` if none.
     Session* SessionOf(Workspace& ws, DrawingState& d, ObjectId id, std::string& sourceKey, std::string& problem);
-    void Start(ObjectId view, const std::string& key, const kernel::ViewShapes& shapes, drawing::ViewDirection direction);
+    void Start(const drawing::View& view, const std::string& key, const kernel::ViewShapes& shapes);
 
     std::map<std::string, std::unique_ptr<Source>> mySources;   ///< by file
     std::map<std::string, std::pair<std::string, kernel::ViewShapes>> myShapes;   ///< by model: its state and its bodies then
     std::map<ObjectId, Entry>                      myEntries;
+    struct Found {
+        std::string                                    key;
+        std::vector<std::optional<drawing::ModelEdge>> edges;
+    };
+    std::map<std::string, Found> myFound;   ///< by the references' text
     /// Fields and rows by model, kept while the model's state (`key`) is the same.
     struct Properties {
         std::string                   key;

@@ -1,5 +1,7 @@
 #include "drawing/DrawingView.h"
 
+#include "drawing/Dimension.h"
+
 #include <array>
 #include <cmath>
 #include <format>
@@ -9,13 +11,14 @@ namespace bz::drawing {
 
 namespace {
 
-constexpr std::array<std::pair<ViewDirection, std::string_view>, 7> kDirections{{{ViewDirection::Front, "front"},
+constexpr std::array<std::pair<ViewDirection, std::string_view>, 8> kDirections{{{ViewDirection::Front, "front"},
                                                                                  {ViewDirection::Back, "back"},
                                                                                  {ViewDirection::Top, "top"},
                                                                                  {ViewDirection::Bottom, "bottom"},
                                                                                  {ViewDirection::Left, "left"},
                                                                                  {ViewDirection::Right, "right"},
-                                                                                 {ViewDirection::Iso, "iso"}}};
+                                                                                 {ViewDirection::Iso, "iso"},
+                                                                                 {ViewDirection::Section, "section"}}};
 
 /// A number of a scale without needless zeros: 2.5 → «2,5» (ГОСТ 2.302 writes a comma).
 std::string Number(double v) {
@@ -25,6 +28,22 @@ std::string Number(double v) {
     for (char& c : s)
         if (c == '.') c = ',';
     return s;
+}
+
+bool ReadVec(const Json& j, const char* key, Vec2& out) {
+    const auto it = j.find(key);
+    if (it == j.end() || !it->is_array() || it->size() != 2 || !(*it)[0].is_number() || !(*it)[1].is_number()) return false;
+    out = {(*it)[0].get<double>(), (*it)[1].get<double>()};
+    return true;
+}
+
+bool ReadVec(const Json& j, const char* key, Vec3& out) {
+    const auto it = j.find(key);
+    if (it == j.end() || !it->is_array() || it->size() != 3) return false;
+    for (const Json& v : *it)
+        if (!v.is_number()) return false;
+    out = {(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()};
+    return true;
 }
 
 bool ReadId(const Json& j, const char* key, ObjectId& out) {
@@ -57,6 +76,7 @@ ViewBasis BasisOf(ViewDirection direction) {
         case ViewDirection::Bottom: return {{0, 0, -1}, {0, -1, 0}};   // above the front view: its back side next to it
         case ViewDirection::Left:   return {{-1, 0, 0}, {0, 0, 1}};
         case ViewDirection::Right:  return {{1, 0, 0}, {0, 0, 1}};
+        case ViewDirection::Section: break;   // its basis is in its cut: BasisOf(const View&)
         case ViewDirection::Iso: {
             // ГОСТ 2.317 isometry, from the front right above — as «Домой» shows the part.
             const Vec3 eye = Vec3{1, -1, 1}.Normalized();
@@ -108,6 +128,17 @@ std::optional<View> ReadView(const Item& item) {
         if (!at->is_array() || at->size() != 2 || !(*at)[0].is_number() || !(*at)[1].is_number()) return std::nullopt;
         v.at = {(*at)[0].get<double>(), (*at)[1].get<double>()};
     }
+    if (v.direction == ViewDirection::Section) {
+        const auto sec = j.find("section");
+        if (sec == j.end() || !sec->is_object()) return std::nullopt;
+        SectionCut c;
+        if (!ReadId(*sec, "of", c.of) || !ReadVec(*sec, "a", c.a) || !ReadVec(*sec, "b", c.b) || !ReadVec(*sec, "eye", c.eye) ||
+            !ReadVec(*sec, "up", c.up) || !ReadVec(*sec, "point", c.point))
+            return std::nullopt;
+        if (c.eye.Length() < 1e-9 || c.up.Length() < 1e-9 || c.up.Cross(c.eye).Length() < 1e-6) return std::nullopt;
+        if (const auto l = sec->find("letter"); l != sec->end() && l->is_string()) c.letter = l->get<std::string>();
+        v.section = c;
+    }
     if (const auto h = j.find("hidden"); h != j.end() && h->is_boolean()) v.hidden = h->get<bool>();
     if (const auto a = j.find("axes"); a != j.end() && a->is_boolean()) v.axes = a->get<bool>();
     return v;
@@ -126,6 +157,79 @@ void WriteView(Item& item, const View& v) {
     else j.erase("parent");
     j["hidden"] = v.hidden;
     j["axes"]   = v.axes;
+    if (v.section) {
+        Json& sec = j["section"];
+        if (!sec.is_object()) sec = Json::object();   // its keys of a newer version stay
+        const SectionCut& c = *v.section;
+        sec["of"]     = c.of.value;
+        sec["a"]      = Json::array({c.a.x, c.a.y});
+        sec["b"]      = Json::array({c.b.x, c.b.y});
+        sec["letter"] = c.letter;
+        sec["eye"]    = Json::array({c.eye.x, c.eye.y, c.eye.z});
+        sec["up"]     = Json::array({c.up.x, c.up.y, c.up.z});
+        sec["point"]  = Json::array({c.point.x, c.point.y, c.point.z});
+    } else {
+        j.erase("section");
+    }
+}
+
+ViewBasis BasisOf(const View& view) {
+    if (view.direction == ViewDirection::Section && view.section) return {view.section->eye.Normalized(), view.section->up.Normalized()};
+    return BasisOf(view.direction);
+}
+
+Vec2 ProjectPoint(const View& view, Vec3 p) {
+    const ViewBasis b = BasisOf(view);
+    const Vec3 right = b.up.Cross(b.eye).Normalized();
+    return {p.Dot(right), p.Dot(b.up)};
+}
+
+Vec3 UnprojectPoint(const View& view, Vec2 p) {
+    const ViewBasis b = BasisOf(view);
+    const Vec3 right = b.up.Cross(b.eye).Normalized();
+    return right * p.x + b.up * p.y;
+}
+
+SectionCut MakeCut(const View& parent, Vec2 a, Vec2 b, Vec2 toward, std::string letter) {
+    const ViewBasis pb = BasisOf(parent);
+    const Vec3 right = pb.up.Cross(pb.eye).Normalized();
+    const Vec2 t = (b - a).Normalized();
+    Vec2 n{-t.y, t.x};
+    if ((toward - a).Dot(n) < 0) n = n * -1;
+    // The sight goes from the line toward the side the section is put on.
+    const Vec3 sight = (right * n.x + pb.up * n.y).Normalized();
+    SectionCut c;
+    c.of = parent.id;
+    c.a = a;
+    c.b = b;
+    c.letter = std::move(letter);
+    c.eye = sight * -1;
+    // Up: the parent's up when it lies in the new plane (a vertical line), else
+    // its sight turned so that the section of a horizontal line under the view
+    // looks like the view from above (ГОСТ 2.305, first angle).
+    Vec3 up = pb.up - c.eye * pb.up.Dot(c.eye);
+    if (up.Length() > 0.3) up = up.Normalized();
+    else up = pb.eye.Normalized() * (n.y >= 0 ? 1.0 : -1.0);
+    c.up = up;
+    c.point = UnprojectPoint(parent, a);
+    return c;
+}
+
+std::string NextSectionLetter(const Sheet& sheet) {
+    // Characters, not strings: letters are not text to translate.
+    static constexpr char32_t kLetters[] = {U'А', U'Б', U'В', U'Г', U'Д', U'Е', U'Ж', U'И', U'К', U'Л', U'М', U'Н', U'П',
+                                            U'Р', U'С', U'Т', U'У', U'Ф', U'Ц', U'Ч', U'Ш', U'Щ', U'Э', U'Ю', U'Я'};
+    const auto utf8 = [](char32_t c) {   // all of them take two bytes
+        return std::string{static_cast<char>(0xC0 | (c >> 6)), static_cast<char>(0x80 | (c & 0x3F))};
+    };
+    for (const char32_t c : kLetters) {
+        const std::string l = utf8(c);
+        bool used = false;
+        for (const View& v : ViewsOf(sheet))
+            if (v.section && v.section->letter == l) used = true;
+        if (!used) return l;
+    }
+    return utf8(kLetters[0]);
 }
 
 Item MakeViewItem(const View& view) {
@@ -134,7 +238,7 @@ Item MakeViewItem(const View& view) {
     return item;
 }
 
-bool IsKnownItem(const Item& item) { return ReadView(item).has_value(); }
+bool IsKnownItem(const Item& item) { return ReadView(item).has_value() || ReadDimension(item).has_value(); }
 
 std::vector<View> ViewsOf(const Sheet& sheet) {
     std::vector<View> out;

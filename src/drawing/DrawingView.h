@@ -24,7 +24,10 @@ inline constexpr const char* kViewType = "view";
 
 /// Where the view looks from (ЕСКД, ГОСТ 2.305; the first-angle method:
 /// the top view goes under the front one, the left view to its right).
-enum class ViewDirection : unsigned char { Front, Back, Top, Bottom, Left, Right, Iso };
+/// Section — a section view (ADR-0012, step 6): its own direction, kept in
+/// the view's "section" (SectionCut); an older program does not know the
+/// direction and keeps such a view as it is.
+enum class ViewDirection : unsigned char { Front, Back, Top, Bottom, Left, Right, Iso, Section };
 
 std::string_view DirectionId(ViewDirection direction);
 std::optional<ViewDirection> DirectionFromId(std::string_view id);
@@ -51,6 +54,20 @@ const std::vector<Scale>& StandardScales();
 /// The largest standard scale not above `factor`; the smallest one if none is.
 Scale FitScale(double factor);
 
+/// A section view's cut (ГОСТ 2.305): the cutting line drawn on another view
+/// and how the section looks. In the file — the view's "section":
+///   {"of": 3, "a": [-70, 15], "b": [70, 15], "letter": "А",
+///    "eye": [0, 0, 1], "up": [0, 1, 0], "point": [0, 0, 15]}
+/// "a", "b" — the line's ends in the view "of" (its plane at 1:1); "eye",
+/// "up" — of the section view; "point" — on the cutting plane, whose normal
+/// is "eye": what is between the plane and the viewer is cut away.
+struct SectionCut {
+    ObjectId    of;
+    Vec2        a, b;
+    std::string letter = "А";
+    Vec3        eye, up, point;
+};
+
 struct View {
     ObjectId      id;
     ObjectId      model;    ///< a ModelRef of the drawing
@@ -60,7 +77,22 @@ struct View {
     ObjectId      parent;   ///< in projection with it; none for a main view
     bool          hidden = true;   ///< hidden lines (ГОСТ 2.303, dashed)
     bool          axes = true;     ///< centre lines of holes and shafts
+    std::optional<SectionCut> section;   ///< a section view (direction Section)
 };
+
+/// The view's basis: of its direction, or of its cut for a section.
+ViewBasis BasisOf(const View& view);
+/// Model point → the view's plane at 1:1, model origin at (0, 0).
+Vec2 ProjectPoint(const View& view, Vec3 p);
+/// The point of the view's plane (1:1) as a model point on that plane through the origin.
+Vec3 UnprojectPoint(const View& view, Vec2 p);
+
+/// A section of `parent` by the line from `a` to `b` (its plane, 1:1), seen
+/// from the side of `toward` (the side the section view is put on, ГОСТ 2.305:
+/// the arrows point there).
+SectionCut MakeCut(const View& parent, Vec2 a, Vec2 b, Vec2 toward, std::string letter);
+/// The next letter for a section on the sheet (ГОСТ 2.316: no Й, О, Х, Ъ, Ы, Ь).
+std::string NextSectionLetter(const Sheet& sheet);
 
 /// The view an item holds, or nullopt when it is not one this version knows
 /// (another type, or a view whose keys it cannot read): such an item is kept as is.
@@ -69,7 +101,7 @@ std::optional<View> ReadView(const Item& item);
 void WriteView(Item& item, const View& view);
 Item MakeViewItem(const View& view);
 
-/// Whether this version shows the item (a view it reads); others are kept as they are.
+/// Whether this version shows the item (a view or a dimension it reads); others are kept as they are.
 bool IsKnownItem(const Item& item);
 
 /// The views of the sheet that this version reads, in drawing order.

@@ -81,6 +81,7 @@ ObjectId Place(doc::Document& d, doc::SketchFeature& sk, const kernel::RevolvedP
                 return id;
             }
             case kernel::ProjectedCurve::Kind::Ellipse: return s.AddEllipse(ids, point(c.centre), point(c.start), point(c.end));
+            case kernel::ProjectedCurve::Kind::Spline: return kernel::AddProjectedSpline(s, ids, c, point);
         }
         return {};
     };

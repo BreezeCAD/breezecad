@@ -71,6 +71,13 @@ public:
                     return close(sk.PositionOf(e.center), c.centre) && close(sk.PositionOf(e.major), c.start) &&
                            close(sk.PositionOf(e.minor), c.end);
                 });
+            case kernel::ProjectedCurve::Kind::Spline:
+                return std::ranges::any_of(sk.splines, [&](const sketch::Spline& s) {
+                    if (s.points.size() != c.points.size()) return false;
+                    for (std::size_t i = 0; i < s.points.size(); ++i)
+                        if (!close(sk.PositionOf(s.points[i]), c.points[i])) return false;
+                    return true;
+                });
         }
         return false;
     }
@@ -143,6 +150,15 @@ public:
                 // Held by its three points (projected, so fixed for the solver).
                 curve = sk.AddEllipse(ids, Point(projected.centre), Point(projected.start), Point(projected.end));
                 break;
+            case kernel::ProjectedCurve::Kind::Spline:
+                curve = kernel::AddProjectedSpline(sk, ids, projected, [&](Vec2 at) { return Point(at); }, [&](Vec2 at) {
+                    const ObjectId p = sk.AddPoint(ids, at);
+                    sk.FindPoint(p)->projected = true;
+                    placed.push_back(p);
+                    return p;
+                });
+                if (!curve.IsValid()) return false;
+                break;
         }
         last = curve;
         ++added;
@@ -153,6 +169,8 @@ public:
                 if (a.id == curve) a.construction = true;
             for (auto& e : sk.ellipses)
                 if (e.id == curve) e.construction = true;
+            for (auto& s : sk.splines)
+                if (s.id == curve) s.construction = true;
         }
         if (linked) {
             Remember(link);

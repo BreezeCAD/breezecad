@@ -719,6 +719,7 @@ void Application::Frame() {
     myStats.fps = myFps;
     if (now - myMemoryReadAt >= 1.0) {   // a system call: once a second is enough
         myStats.memoryMb = platform::ResidentMemoryMb();
+        myStats.refreshHz = myWindow.RefreshRate();
         mon::Memory(myStats.memoryMb);
         myMemoryReadAt = now;
     }

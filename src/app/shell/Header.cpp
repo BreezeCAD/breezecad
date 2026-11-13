@@ -15,6 +15,7 @@
 
 #include <imgui_stdlib.h>
 
+#include <algorithm>
 #include <format>
 
 namespace bz::app {
@@ -309,10 +310,14 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
         ui::FontScope font(ui.fonts.mono);
         Session* s = app.Doc();
         const int objects = s ? static_cast<int>(s->doc.FeatureCount()) : 0;
-        // Frames are drawn only when something changes, so frames per second
-        // would count mouse events; the work per frame is the honest figure.
+        // Frames are drawn only when something changes, so counting them would
+        // count mouse events. Shown instead: how many frames a second the work
+        // per frame allows, up to the monitor's rate ("144+": room to spare).
         const double workMs = app.stats.uiMs + app.stats.sceneMs;
-        const std::string fps = std::format("{:.1f}", workMs);
+        const int hz = std::max(app.stats.refreshHz, 1);
+        const double room = workMs > 0.01 ? 1000.0 / workMs : 1.0e6;
+        const int rate = room >= hz ? hz : static_cast<int>(room + 0.5);
+        const std::string fps = room > hz ? std::format("{}+", hz) : std::to_string(rate);
         const std::string mem = std::format("{:.0f}", app.stats.memoryMb);
         const std::string obj = std::to_string(objects);
         float sx = right - statsWidth + ui.S(12);
@@ -324,7 +329,7 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
             sx += ui.fonts.mono->CalcTextSizeA(ui.S(11), FLT_MAX, 0, unit).x + ui.S(12);
         };
         const float statsLeft = sx;
-        stat(fps, Tr("мс"), workMs < 8 ? c.success : workMs < 25 ? c.warning : c.danger);
+        stat(fps, Tr("к/с"), rate >= 60 ? c.success : rate >= 30 ? c.warning : c.danger);
         stat(mem, Tr("МБ"), c.text);
         stat(obj, "OBJ", c.text);
         // Where a frame's time goes, for performance reports.

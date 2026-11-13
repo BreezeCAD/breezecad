@@ -138,13 +138,12 @@ float Window::ContentScale() const {
     return x;
 }
 
-void Window::MonitorWorkArea(int& x, int& y, int& width, int& height) const {
-    x = y = 0;
-    glfwGetWindowSize(myWindow, &width, &height);
-    // The monitor holding the window's centre; the primary one otherwise.
+namespace {
+/// The monitor holding the window's centre; the primary one otherwise.
+GLFWmonitor* MonitorOf(GLFWwindow* window) {
     int px = 0, py = 0, pw = 0, ph = 0;
-    glfwGetWindowPos(myWindow, &px, &py);
-    glfwGetWindowSize(myWindow, &pw, &ph);
+    glfwGetWindowPos(window, &px, &py);
+    glfwGetWindowSize(window, &pw, &ph);
     int count = 0;
     GLFWmonitor** monitors = glfwGetMonitors(&count);
     GLFWmonitor* chosen = glfwGetPrimaryMonitor();
@@ -154,7 +153,21 @@ void Window::MonitorWorkArea(int& x, int& y, int& width, int& height) const {
         const int cx = px + pw / 2, cy = py + ph / 2;
         if (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh) chosen = monitors[i];
     }
-    if (chosen) glfwGetMonitorWorkarea(chosen, &x, &y, &width, &height);
+    return chosen;
+}
+} // namespace
+
+void Window::MonitorWorkArea(int& x, int& y, int& width, int& height) const {
+    x = y = 0;
+    glfwGetWindowSize(myWindow, &width, &height);
+    if (GLFWmonitor* chosen = MonitorOf(myWindow)) glfwGetMonitorWorkarea(chosen, &x, &y, &width, &height);
+}
+
+int Window::RefreshRate() const {
+    if (!myWindow) return 60;
+    GLFWmonitor* monitor = MonitorOf(myWindow);
+    const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : nullptr;
+    return mode && mode->refreshRate > 0 ? mode->refreshRate : 60;
 }
 
 void Window::Geometry(int& x, int& y, int& width, int& height, bool& maximized) const {

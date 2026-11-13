@@ -234,6 +234,7 @@ struct FrameStats {
     double sceneMs = 0.0;     ///< drawing the model
     double presentMs = 0.0;   ///< drawing the interface and showing the frame (waits for the screen)
     int    sceneFrames = 0;   ///< model redraws in the last second
+    int    refreshHz = 60;    ///< refresh rate of the window's monitor
 };
 
 struct AppContext {

@@ -50,6 +50,8 @@ public:
     float ContentScale() const;
     /// Usable area of the monitor the window is on (without the taskbar), in screen coordinates.
     void  MonitorWorkArea(int& x, int& y, int& width, int& height) const;
+    /// Refresh rate of the monitor the window is on, Hz (60 when unknown).
+    int   RefreshRate() const;
     /// The windowed place and size, and whether it is maximized now.
     void  Geometry(int& x, int& y, int& width, int& height, bool& maximized) const;
     bool  IsMinimized() const;

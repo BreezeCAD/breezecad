@@ -63,13 +63,13 @@ struct RowStyle {
 
 /// The operation's mark at the corner of a tree icon: a token-coloured dot
 /// with a white sign, ringed in the row's colour so it reads over the icon.
-void DrawBadge(ui::Ui& ui, ImDrawList* dl, ImVec2 centre, RowStyle::Badge badge, bool muted, bool selected) {
+void DrawBadge(ui::Ui& ui, ImDrawList* dl, ImVec2 centre, RowStyle::Badge badge, bool muted, const Color& ring) {
     const ui::ThemeColors& c = ui.C();
     Color fill = badge == RowStyle::Badge::Cut ? c.danger : badge == RowStyle::Badge::Intersect ? c.opIntersect : c.success;
     Color ink = c.textOnAccent;
     if (muted) fill.a = ink.a = 0.45f;
     const float r = ui.S(4.6f);
-    dl->AddCircleFilled(centre, r + ui.S(1.2f), ui::ToU32(selected ? c.selectedRow : c.panel));
+    dl->AddCircleFilled(centre, r + ui.S(1.2f), ui::ToU32(ring));
     dl->AddCircleFilled(centre, r, ui::ToU32(fill));
     const float a = r * 0.55f, t = ui.S(1.3f);
     const ImU32 ic = ui::ToU32(ink);
@@ -92,9 +92,14 @@ void DrawBadge(ui::Ui& ui, ImDrawList* dl, ImVec2 centre, RowStyle::Badge badge,
 /// The mark of an operation that turns a sketch into a solid. Joining is the
 /// usual case and gets none; the first solid is the body, so not "new".
 RowStyle::Badge OperationBadge(const doc::Feature& f, ObjectId firstSolid) {
-    const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(&f);
-    if (!op || dynamic_cast<const doc::SheetMetalFeature*>(&f)) return RowStyle::Badge::None;
-    switch (op->operation) {
+    doc::BooleanOp operation;
+    if (const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(&f); op && !dynamic_cast<const doc::SheetMetalFeature*>(&f))
+        operation = op->operation;
+    else if (const auto* loft = dynamic_cast<const doc::LoftFeature*>(&f))
+        operation = loft->operation;
+    else
+        return RowStyle::Badge::None;
+    switch (operation) {
         case doc::BooleanOp::Cut:       return RowStyle::Badge::Cut;
         case doc::BooleanOp::Intersect: return RowStyle::Badge::Intersect;
         case doc::BooleanOp::NewBody:   return f.id == firstSolid ? RowStyle::Badge::None : RowStyle::Badge::NewBody;
@@ -115,7 +120,9 @@ bool OfKind(const doc::Feature& f, ShellState::TreeKind kind) {
         case K::Sketches:     return sketch != nullptr;
         case K::WorkGeometry: return work;
         case K::Problems:
-            return f.status.state != doc::FeatureState::Ok || (sketch && sketch->HasBrokenProjections());
+            // Not "not computed" (below the end marker) nor "suppressed": those are the user's choice.
+            return f.status.state == doc::FeatureState::Error || f.status.state == doc::FeatureState::Warning ||
+                   (sketch && sketch->HasBrokenProjections());
     }
     return true;
 }
@@ -182,7 +189,8 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     if (*style.icon) {
         const float iy = p.y + (h - ui.S(16)) / 2;
         ui.icons.Draw(dl, style.icon, {x, iy}, ui.S(16), {1, 1, 1, style.muted ? 0.45f : 1.0f});
-        if (style.badge != RowStyle::Badge::None) DrawBadge(ui, dl, {x + ui.S(13), iy + ui.S(13)}, style.badge, style.muted, style.selected);
+        if (style.badge != RowStyle::Badge::None)
+            DrawBadge(ui, dl, {x + ui.S(13), iy + ui.S(13)}, style.badge, style.muted, style.selected ? c.selectedRow : r.hovered ? c.hoverRow : c.panel);
         x += ui.S(22);
     }
 
@@ -367,10 +375,8 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
             ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
             ImGui::SetCursorScreenPos({p.x + ui.S(8), ImGui::GetCursorScreenPos().y + ui.S(4)});
             static constexpr const char* kKinds[] = {N_("Всё"), N_("Операции"), N_("Эскизы"), N_("Раб. элементы")};
-            const char* labels[std::size(kKinds)];
-            for (std::size_t i = 0; i < std::size(kKinds); ++i) labels[i] = Tr(kKinds[i]);
             const int current = kind == Kind::Problems ? -1 : static_cast<int>(kind);
-            const int chosen = ui::Segmented(ui, "##tree-kind", labels, current, 4, width - ui.S(16));
+            const int chosen = ui::Segmented(ui, "##tree-kind", kKinds, current, 4, width - ui.S(16));   // Segmented translates
             if (chosen != current && chosen >= 0) kind = static_cast<Kind>(chosen);
             ImGui::Dummy({0, ui.S(4)});
         }
@@ -432,7 +438,8 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
     // The first solid makes the part's body: "new body" is marked only after it.
     ObjectId firstSolid{};
     for (const auto& f : d.Features())
-        if (dynamic_cast<const doc::SketchSolidFeature*>(f.get()) && !dynamic_cast<const doc::SheetMetalFeature*>(f.get())) {
+        if ((dynamic_cast<const doc::SketchSolidFeature*>(f.get()) && !dynamic_cast<const doc::SheetMetalFeature*>(f.get())) ||
+            dynamic_cast<const doc::LoftFeature*>(f.get())) {
             firstSolid = f->id;
             break;
         }

@@ -315,9 +315,9 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
         // per frame allows, up to the monitor's rate ("144+": room to spare).
         const double workMs = app.stats.uiMs + app.stats.sceneMs;
         const int hz = std::max(app.stats.refreshHz, 1);
-        const double room = workMs > 0.01 ? 1000.0 / workMs : 1.0e6;
-        const int rate = room >= hz ? hz : static_cast<int>(room + 0.5);
-        const std::string fps = room > hz ? std::format("{}+", hz) : std::to_string(rate);
+        const double budget = workMs > 0.01 ? 1000.0 / workMs : 1.0e6;
+        const int rate = budget >= hz ? hz : static_cast<int>(budget + 0.5);
+        const std::string fps = budget > hz ? std::format("{}+", hz) : std::to_string(rate);
         const std::string mem = std::format("{:.0f}", app.stats.memoryMb);
         const std::string obj = std::to_string(objects);
         float sx = right - statsWidth + ui.S(12);
@@ -329,7 +329,8 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
             sx += ui.fonts.mono->CalcTextSizeA(ui.S(11), FLT_MAX, 0, unit).x + ui.S(12);
         };
         const float statsLeft = sx;
-        stat(fps, Tr("к/с"), rate >= 60 ? c.success : rate >= 30 ? c.warning : c.danger);
+        // Coloured by what the work allows, not by the capped figure: a 30 Hz screen is not slow.
+        stat(fps, Tr("к/с"), budget >= 60 ? c.success : budget >= 30 ? c.warning : c.danger);
         stat(mem, Tr("МБ"), c.text);
         stat(obj, "OBJ", c.text);
         // Where a frame's time goes, for performance reports.

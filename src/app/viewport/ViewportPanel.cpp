@@ -445,6 +445,9 @@ void DrawViewport(AppContext& app, Session& session, ImVec2 pos, ImVec2 size) {
         const OperationEditor* op = app.ops.Active();
         const bool copying = op && (op == &app.ops.pattern || op == &app.ops.mirror);
         app.viewport.ShowCopyPreview(copying ? &session.model : nullptr, copying ? op->EditedFeature() : ObjectId{});
+        // Any operation that adds, cuts or intersects: its tool body as a ghost.
+        const bool ghost = modelMode && app.ops.ShowsToolGhost(op);
+        app.viewport.ShowToolPreview(ghost ? &session.model : nullptr, ghost ? op->EditedFeature() : ObjectId{});
     }
     if (sectionMode) DrawSectionBar(app, session, vf);
     if (measuring) DrawMeasure(app, session, vf);

@@ -149,6 +149,9 @@ void Window::MonitorWorkArea(int& x, int& y, int& width, int& height) const {
     WindowSize(width, height);
 }
 
+// Phones and tablets: the header's frame figure is capped here (mobile has its own counter).
+int Window::RefreshRate() const { return 60; }
+
 void Window::Geometry(int& x, int& y, int& width, int& height, bool& maximized) const {
     x = y = -1;
     width = height = 0;

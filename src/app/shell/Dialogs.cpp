@@ -760,6 +760,14 @@ void DrawOptimizationSettings(AppContext& app, float width, bool performance) {
         app.settings.graphics = n;
     caption(Tr("Сглаживание краёв и точность сетки круглых граней. Ниже качество — быстрее показ больших деталей."));
 
+    ui::FieldLabel(ui, Tr("Вид модели"));
+    static constexpr std::array<const char*, 2> look{N_("Живой"), N_("Простой")};
+    const int lv = app.settings.LiveView() ? 0 : 1;
+    if (const int n = ui::Segmented(ui, "live", look, lv, 2, width, app.settings.graphics >= 2 ? 1 : 0); n != lv) app.settings.liveView = n == 0;
+    caption(app.settings.graphics >= 2 ? Tr("На «Слабом компьютере» модель всегда в простом виде.")
+                                       : Tr("Живой: тень на полу, мягкий свет и контур детали — для видеокарты это ещё один проход. "
+                                            "Простой — как раньше, быстрее на старых ноутбуках."));
+
     ui::FieldLabel(ui, Tr("Качество текстур"));
     static constexpr std::array<const char*, 3> textures{N_("Высокое"), N_("Среднее"), N_("Низкое")};
     if (const int n = ui::Segmented(ui, "textures", textures, app.settings.textureQuality, 3, width); n != app.settings.textureQuality)

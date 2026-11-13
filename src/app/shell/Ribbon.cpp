@@ -507,7 +507,12 @@ void ViewRibbonImpl(AppContext& app, RibbonSink& r) {
     r.BeginColumn();
     r.Small("view.hidden", nullptr, style == render::DisplayStyle::HiddenLines);
     r.Small("view.transparent", nullptr, style == render::DisplayStyle::Transparent);
+    r.Small("view.live", nullptr, app.settings.LiveView());
     r.EndColumn();
+    r.EndGroup();
+
+    r.BeginGroup(N_("Кадр"));
+    r.Large("view.render", Tr("Сделать\nкадр"), app.ops.photo.IsOpen());
     r.EndGroup();
 
     r.BeginGroup(N_("Ориентация"));

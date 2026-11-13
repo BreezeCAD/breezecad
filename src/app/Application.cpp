@@ -347,7 +347,7 @@ void Application::ApplyTheme(bool force) {
     // Test hook: a flat background of a given colour (renders keyed out
     // against black and white for the splash picture, scripts/splash).
     if (const char* bg = std::getenv("BZ_VIEW_BG")) top = bottom = Color::Hex(static_cast<std::uint32_t>(std::strtoul(bg, nullptr, 16)));
-    myViewport.SetColors({top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, bg.radial});
+    myViewport.SetColors({top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, c.previewAdd, c.previewCut, bg.radial});
     if (pictureChanged) {
         if (mySettings.background == kPictureBackground && !mySettings.backgroundPicture.empty()) {
             if (const auto image = ReadImageFile(PathFromUtf8(mySettings.backgroundPicture))) {
@@ -785,6 +785,7 @@ void Application::Frame() {
     myStats.fps = myFps;
     if (now - myMemoryReadAt >= 1.0) {   // a system call: once a second is enough
         myStats.memoryMb = platform::ResidentMemoryMb();
+        myStats.refreshHz = myWindow.RefreshRate();
         mon::Memory(myStats.memoryMb);
         myMemoryReadAt = now;
     }
@@ -943,6 +944,12 @@ void Application::UpdateDocument(AppContext& app) {
         for (const auto& f : s->doc.Features())
             if (f->hidden) hidden.push_back(f->id);
         myViewport.SetHiddenBodies(std::move(hidden));
+        // An operation with a ghost and «Предпросмотр результата» off: the
+        // body as it was before it.
+        std::optional<std::size_t> before;
+        if (const OperationEditor* op = myOps.Active(); op && !mySettings.previewResult && myOps.ShowsToolGhost(op))
+            if (const int index = s->doc.IndexOf(op->EditedFeature()); index >= 0) before = static_cast<std::size_t>(index);
+        myViewport.ShowBodiesBefore(before);
         myViewport.Sync(s->model);
     }
     // A part edited in place: the assembly around it follows its changes
@@ -962,6 +969,7 @@ void Application::UpdateDocument(AppContext& app) {
     }
     myViewport.SetDisplayStyle(myShell.displayStyle);
     myViewport.SetQuality(mySettings.graphics);
+    myViewport.SetLive(mySettings.LiveView());
     myViewport.SetTextureLimit(Settings::TextureLimit(mySettings.textureQuality));
     if (myShell.keepModelInView) {   // the model was rebuilt and synced above
         myShell.keepModelInView = false;

@@ -13,6 +13,10 @@
 #include "core/Image.h"
 
 #include <AIS_InteractiveContext.hxx>
+#include <Graphic3d_ArrayOfTriangles.hxx>
+#include <Graphic3d_AspectFillArea3d.hxx>
+#include <Graphic3d_Group.hxx>
+#include <Prs3d_Presentation.hxx>
 #include <BRepLib.hxx>
 #include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <BRep_Builder.hxx>
@@ -38,6 +42,7 @@
 #include <Image_AlienPixMap.hxx>
 #include <V3d_ImageDumpOptions.hxx>
 #include <Graphic3d_ClipPlane.hxx>
+#include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <Graphic3d_Mat4d.hxx>
 #include <Graphic3d_Vec2.hxx>
 #include <OpenGl_ArbFBO.hxx>
@@ -96,7 +101,7 @@ namespace {
 /// the view would make the three faces of an isometric box look the same.
 /// Directions are in view space (x right, y up, z towards the viewer) and
 /// point the way the light travels.
-void SetUpLights(const Handle(V3d_Viewer)& viewer) {
+Handle(V3d_DirectionalLight) SetUpLights(const Handle(V3d_Viewer)& viewer) {
     // Strength is set through the light colour: with sRGB rendering off,
     // OCCT ignores SetIntensity. Levels were measured and solved so the faces
     // of an isometric box read as roughly 0.84 / 0.70 / 0.58 (top / right / front).
@@ -108,6 +113,7 @@ void SetUpLights(const Handle(V3d_Viewer)& viewer) {
     viewer->AddLight(key);
     viewer->AddLight(fill);
     viewer->SetLightOn();
+    return key;
 }
 
 // OpenGL sized formats (not declared by every platform's GL 1.1 header).
@@ -267,6 +273,63 @@ public:
         PickCurvedFacesByMesh(selection);
     }
     DEFINE_STANDARD_RTTI_INLINE(BodyShape, AIS_ColoredShape)
+};
+
+/// «Живой вид»: the floor under the bodies — a square whose see-through
+/// texture fades to nothing toward its edge, so no border shows against the
+/// background; lit (it takes the shadows), never picked.
+class FloorShape : public AIS_InteractiveObject {
+public:
+    FloorShape(const gp_Pnt& centre, double half, const Quantity_Color& colour, const Quantity_Color& ambient)
+        : myCentre(centre), myHalf(half), myColour(colour), myAmbient(ambient) {}
+
+    void Compute(const Handle(PrsMgr_PresentationManager)&, const Handle(Prs3d_Presentation)& presentation, const Standard_Integer) override {
+        // A grid of quads: each vertex carries how opaque the floor is there,
+        // full in the middle (where the shadow falls), clear at the rim.
+        constexpr int kCells = 24;
+        Handle(Graphic3d_ArrayOfTriangles) array = new Graphic3d_ArrayOfTriangles(
+            (kCells + 1) * (kCells + 1), kCells * kCells * 6, Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexColor);
+        const auto byte = [](double v) { return static_cast<std::uint8_t>(std::clamp(std::lround(v * 255), 0L, 255L)); };
+        double sr = 1, sg = 1, sb = 1;
+        myColour.Values(sr, sg, sb, Quantity_TOC_sRGB);
+        for (int j = 0; j <= kCells; ++j)
+            for (int i = 0; i <= kCells; ++i) {
+                const double u = 2.0 * i / kCells - 1, v = 2.0 * j / kCells - 1;
+                const int at = array->AddVertex(gp_Pnt(myCentre.X() + u * myHalf, myCentre.Y() + v * myHalf, myCentre.Z()), gp_Dir(0, 0, 1));
+                const double t = std::clamp((std::sqrt(u * u + v * v) - 0.35) / 0.6, 0.0, 1.0);
+                const double fade = 1 - t * t * (3 - 2 * t);
+                // The vertex colour stands for the material's, in sRGB like the background.
+                array->SetVertexColor(at, Graphic3d_Vec4ub(byte(sr), byte(sg), byte(sb), byte(fade)));
+            }
+        for (int j = 0; j < kCells; ++j)
+            for (int i = 0; i < kCells; ++i) {
+                const int a = j * (kCells + 1) + i + 1, b = a + 1, c = a + kCells + 1, d = c + 1;
+                array->AddEdges(a, b, d);
+                array->AddEdges(a, d, c);
+            }
+        Handle(Graphic3d_AspectFillArea3d) aspect = new Graphic3d_AspectFillArea3d();
+        aspect->SetInteriorStyle(Aspect_IS_SOLID);
+        Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
+        material.SetColor(myColour);
+        material.SetAmbientColor(myAmbient);
+        material.SetSpecularColor(Quantity_Color(0, 0, 0, Quantity_TOC_RGB));
+        material.SetTransparency(0.02f);   // into the see-through pass, where the vertices' alpha blends
+        aspect->SetFrontMaterial(material);
+        aspect->SetBackMaterial(material);
+        aspect->SetInteriorColor(myColour);
+        aspect->SetAlphaMode(Graphic3d_AlphaMode_Blend, 0.0f);
+        aspect->SetDistinguishOff();
+        Handle(Graphic3d_Group) group = presentation->NewGroup();
+        group->SetGroupPrimitivesAspect(aspect);
+        group->AddPrimitiveArray(array);
+    }
+    void ComputeSelection(const Handle(SelectMgr_Selection)&, const Standard_Integer) override {}
+    DEFINE_STANDARD_RTTI_INLINE(FloorShape, AIS_InteractiveObject)
+
+private:
+    gp_Pnt         myCentre;
+    double         myHalf;
+    Quantity_Color myColour, myAmbient;
 };
 
 /// The same for a plain AIS_Shape (the bodies picked "as they were").
@@ -557,10 +620,68 @@ struct Viewport::Impl {
     std::vector<Handle(AIS_Shape)> copyShapes;              ///< pattern/mirror preview shown
     std::uint64_t                  copyRevision = 0;
     ObjectId                       copyFeature;
+    /// The open operation's tool ghost (ShowToolPreview): each shape twice,
+    /// depth-tested and, fainter, over everything.
+    std::vector<Handle(AIS_Shape)> ghostShapes;
+    std::uint64_t                  ghostRevision = 0;
+    ObjectId                       ghostFeature;
+    Color                          ghostAdd, ghostCut;   ///< the colours they were drawn in
+    std::optional<std::size_t>     bodiesBefore;   ///< ShowBodiesBefore
     std::uint64_t      syncedRevision = static_cast<std::uint64_t>(-1);
     const kernel::Model* syncedModel = nullptr;
     std::optional<Vec2>  hoverPixel;
     std::optional<kernel::Bounds> bounds;
+
+    /// "Живой вид" (SetLive): the key light casts shadows, bodies get a
+    /// silhouette outline and stand on a floor that takes their shadow.
+    bool                         live = false;
+    Handle(V3d_DirectionalLight) keyLight;
+    Handle(AIS_InteractiveObject) floor;
+    bool                         floorShown = false;
+    bool                         noFloor = false;   ///< for a moment: thumbnails
+    std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
+
+    /// The floor under the bodies: a square well beyond them, a hair below
+    /// the lowest point, in the background's lower colour and mostly see-
+    /// through — what reads is the shadow on it. Left out of "fit all".
+    void UpdateFloor() {
+        // Not with a section (the floor would be cut too), nor around a part
+        // edited in its assembly (the faded parts below would sink under it),
+        // nor with every body hidden.
+        const bool want = live && bounds && !shown.empty() && style != DisplayStyle::Wireframe && style != DisplayStyle::HiddenLines &&
+                          section.IsNull() && surroundings.model == nullptr && !noFloor;
+        if (!want) {
+            if (!floor.IsNull()) context->Remove(floor, false);
+            floor.Nullify();
+            floorShown = false;
+            floorFor.reset();
+            return;
+        }
+        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max;
+        if (same && !floor.IsNull()) return;
+        if (!floor.IsNull()) context->Remove(floor, false);
+        const Vec3 c = (bounds->min + bounds->max) * 0.5;
+        // Big enough for the shadow, small enough that the shadow map stays sharp.
+        const double r = std::max(1.0, (bounds->max - bounds->min).Length()) * 1.6;
+        const double z = bounds->min.z - std::max(0.01, (bounds->max - bounds->min).Length() * 1e-4);
+        // Lit by the camera's lights, the floor comes out about the background's colour.
+        const Color b = colors.backgroundBottom;
+        floor = new FloorShape(gp_Pnt(c.x, c.y, z), r, ToQuantity(b), Quantity_Color(b.r * 0.8, b.g * 0.8, b.b * 0.8, Quantity_TOC_RGB));
+        floorFor = bounds;
+        floorShown = false;
+        ShowFloorForCamera();
+    }
+
+    /// Seen from below, the floor would hide the body: shown only from above.
+    void ShowFloorForCamera() {
+        if (floor.IsNull()) return;
+        const bool above = view->Camera()->Direction().Z() < -0.05;
+        if (above == floorShown) return;
+        if (above) context->Display(floor, 0, -1, false);
+        else context->Erase(floor, false);
+        floorShown = above;
+        dirty = true;
+    }
 
     ViewportColors colors;
     DisplayStyle   style = DisplayStyle::ShadedWithEdges;
@@ -658,6 +779,12 @@ struct Viewport::Impl {
         // round; coarser on the lower quality levels.
         SetMeshPrecision(drawer, quality);
         drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(edgeColour), Aspect_TOL_SOLID, 1.0));
+        // "Живой вид": the outline of the body, thicker than the edges inside.
+        if (!drawer->HasOwnShadingAspect()) drawer->SetupOwnShadingAspect();
+        const Handle(Graphic3d_AspectFillArea3d)& fill = drawer->ShadingAspect()->Aspect();
+        fill->SetDrawSilhouette(live && style != DisplayStyle::Transparent);
+        fill->SetEdgeColor(ToQuantity(edgeColour));
+        fill->SetEdgeWidth(2.0);
         // Wireframe and hidden-line styles draw edges in the edge colour (not
         // the body colour SetColor gave them) and no isolines.
         const Quantity_Color ink = ToQuantity(edgeColour);
@@ -942,7 +1069,7 @@ bool Viewport::Init(const NativeGlSurface& surface) {
     m.driver->ChangeOptions().sRGBDisable = true;
 
     m.viewer = new V3d_Viewer(m.driver);
-    SetUpLights(m.viewer);
+    m.keyLight = SetUpLights(m.viewer);
     m.context = new AIS_InteractiveContext(m.viewer);
     m.context->SetPixelTolerance(7);   // edges are thin: give the cursor a few pixels
 
@@ -972,6 +1099,7 @@ bool Viewport::Init(const NativeGlSurface& surface) {
     m.view = m.viewer->CreateView();
     m.view->SetImmediateUpdate(false);
     m.view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Orthographic);
+    if (m.view->ShadingModel() != Graphic3d_TypeOfShadingModel_Phong) m.view->SetShadingModel(Graphic3d_TypeOfShadingModel_Phong);
     Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
     params.NbMsaaSamples = 4;
     // Plain blending: the tints here are light, and order-independent
@@ -1025,7 +1153,15 @@ void Viewport::Sync(const kernel::Model& model) {
     // sketch, a later operation) leave most bodies as they were.
     std::vector<Impl::Shown> previous = std::move(m.shown);
     m.shown.clear();
-    for (const kernel::Body& body : model.GetImpl().bodies) {
+    // While an operation's ghost shows over the body as it was (the panel's
+    // «Предпросмотр результата» off): the bodies before it, from the cache.
+    static const std::vector<kernel::Body> none;
+    const auto& after = model.GetImpl().bodiesAfter;
+    const std::vector<kernel::Body>& source = !m.bodiesBefore                          ? model.GetImpl().bodies
+                                              : *m.bodiesBefore == 0                   ? none
+                                              : *m.bodiesBefore <= after.size()        ? after[*m.bodiesBefore - 1]
+                                                                                       : model.GetImpl().bodies;
+    for (const kernel::Body& body : source) {
         if (std::find(m.hiddenBodies.begin(), m.hiddenBodies.end(), body.id) != m.hiddenBodies.end()) continue;
         const auto same = std::find_if(previous.begin(), previous.end(), [&](const Impl::Shown& s) {
             return !s.shape.IsNull() && s.body == body.id && s.shape->Shape().IsEqual(body.shape);
@@ -1094,6 +1230,7 @@ void Viewport::Sync(const kernel::Model& model) {
     if (!m.measuring.picked[0].IsNull() || !m.measuring.picked[1].IsNull()) ClearMeasure();
     m.bounds = model.BoundingBox();
     m.view->SetComputedMode(m.style == DisplayStyle::HiddenLines);
+    m.UpdateFloor();
     m.dirty = true;
 }
 
@@ -1164,13 +1301,33 @@ void Viewport::SetColors(const ViewportColors& colors) {
     for (auto type : {Prs3d_TypeOfHighlight_LocalSelected, Prs3d_TypeOfHighlight_Selected})
         m.context->HighlightStyle(type)->SetColor(ToQuantity(colors.selection));
     m.ApplyStyleAll();
+    m.floorFor.reset();   // the floor takes the background's colour
+    m.UpdateFloor();
 }
 
 void Viewport::SetDisplayStyle(DisplayStyle style) {
     if (myImpl->style == style) return;
     myImpl->style = style;
     myImpl->ApplyStyleAll();
+    myImpl->UpdateFloor();
 }
+
+void Viewport::SetLive(bool on) {
+    Impl& m = *myImpl;
+    if (m.live == on) return;
+    m.live = on;
+    // Shadows need per-pixel lighting: Phong, the viewer's default (checked at Init).
+    Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
+    params.ShadowMapResolution = 2048;
+    params.ShadowMapBias = 0.004f;
+    if (!m.keyLight.IsNull()) m.keyLight->SetCastShadows(on);
+    m.viewer->UpdateLights();
+    m.ApplyStyleAll();
+    m.UpdateFloor();
+    m.dirty = true;
+}
+
+bool Viewport::IsLive() const { return myImpl->live; }
 
 void Viewport::SetQuality(int level) {
     Impl& m = *myImpl;
@@ -1274,6 +1431,7 @@ void Viewport::Render() {
         m.view->MustBeResized();
     }
     const bool hatchChanged = m.UpdateCaps();
+    m.ShowFloorForCamera();
     m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
     m.dirty = hatchChanged;   // the cut's look changes: OCCT shows it a frame later
@@ -1354,6 +1512,7 @@ std::optional<Image> Viewport::Snapshot(const CameraState& camera, int width, in
     if (m.GlContext().IsNull() || width < 16 || height < 16) return std::nullopt;
     const CameraState before = Camera();
     SetCamera(camera);
+    m.ShowFloorForCamera();   // from below the picture shows no floor, whatever the window does
     Image_AlienPixMap pixels;
     V3d_ImageDumpOptions options;
     options.Width      = width;
@@ -1366,6 +1525,7 @@ std::optional<Image> Viewport::Snapshot(const CameraState& camera, int width, in
         log::Error("Viewport: snapshot failed: {}", e.GetMessageString());
     }
     SetCamera(before);
+    m.ShowFloorForCamera();
     if (!done || pixels.IsEmpty()) return std::nullopt;
     Image out;
     out.width  = static_cast<int>(pixels.SizeX());
@@ -1390,6 +1550,148 @@ std::optional<Image> Viewport::Snapshot(const CameraState& camera, int width, in
     return out;
 }
 
+std::array<double, 4> Viewport::PhotoFrame(double aspect) const {
+    const Impl& m = *myImpl;
+    aspect = std::max(aspect, 0.05);
+    const double w = m.width, h = m.height;
+    // The widest box of that shape the window holds, centred.
+    const double fw = std::min(w, h * aspect), fh = fw / aspect;
+    return {(w - fw) / 2, (h - fh) / 2, fw, fh};
+}
+
+namespace {
+/// The pixels OCCT dumped, as an RGBA image (rows top to bottom).
+std::optional<Image> ToImage(const Image_AlienPixMap& pixels) {
+    const bool rgba = pixels.Format() == Image_Format_RGBA;
+    const bool bgra = pixels.Format() == Image_Format_BGRA;
+    if (pixels.IsEmpty() || (!rgba && !bgra)) return std::nullopt;
+    Image out;
+    out.width  = static_cast<int>(pixels.SizeX());
+    out.height = static_cast<int>(pixels.SizeY());
+    out.rgba.resize(static_cast<std::size_t>(out.width) * static_cast<std::size_t>(out.height) * 4);
+    for (int y = 0; y < out.height; ++y) {
+        const std::uint8_t* from = pixels.Row(static_cast<std::size_t>(y));
+        std::uint8_t* to = &out.rgba[static_cast<std::size_t>(y) * static_cast<std::size_t>(out.width) * 4];
+        for (int x = 0; x < out.width; ++x, from += 4, to += 4) {
+            to[0] = bgra ? from[2] : from[0];
+            to[1] = from[1];
+            to[2] = bgra ? from[0] : from[2];
+            to[3] = 255;
+        }
+    }
+    return out;
+}
+} // namespace
+
+std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
+    Impl& m = *myImpl;
+    if (m.GlContext().IsNull()) m.view->Redraw();
+    if (m.GlContext().IsNull() || o.width < 16 || o.height < 16) return std::nullopt;
+    using Bg = PhotoOptions::Background;
+    const bool transparent = o.background == Bg::Transparent;
+
+    // What is changed for the picture, to put back.
+    const CameraState camera = Camera();
+    const ViewportColors colors = m.colors;
+    const DisplayStyle style = m.style;
+    const bool live = m.live;
+    const Graphic3d_RenderingParams params = m.view->RenderingParams();
+
+    // The camera: what the frame outlines fills the picture (OCCT keeps the
+    // shorter side's extent: the scale is that side in millimetres).
+    {
+        const double aspect = static_cast<double>(o.width) / o.height;
+        const auto frame = PhotoFrame(aspect);
+        const double mmPerPixel = camera.scale / (m.width >= m.height ? m.height : m.width);
+        CameraState shot = camera;
+        shot.scale = (aspect >= 1.0 ? frame[3] : frame[2]) * mmPerPixel;
+        SetCamera(shot);
+    }
+    m.noFloor = false;
+    // Shaded, with or without the edges (a see-through style stays so).
+    const DisplayStyle shotStyle = style == DisplayStyle::Transparent ? style
+                                   : o.edges                          ? DisplayStyle::ShadedWithEdges
+                                                                      : DisplayStyle::Shaded;
+    if (shotStyle != style) {
+        m.style = shotStyle;
+        m.ApplyStyleAll();
+    }
+    // The light and the floor of «Живой вид», whatever the window's setting.
+    const auto background = [&](Color top, Color bottom) {
+        m.colors.backgroundTop = top;
+        m.colors.backgroundBottom = bottom;
+        m.view->SetBgGradientColors(ToQuantity(top), ToQuantity(bottom), Aspect_GradientFillMethod_Vertical, false);
+    };
+    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(Handle(Graphic3d_Texture2D)(), Aspect_FM_STRETCH, false);
+    if (o.background == Bg::Dark) background(Color::Hex(0x3A3F47), Color::Hex(0x15171B));
+    else background(Color::Hex(0xF8F9FB), Color::Hex(0xD3DBE5));
+    SetLive(true);
+    m.floorFor.reset();
+    m.UpdateFloor();
+    if (!o.floor || transparent) {
+        if (!m.floor.IsNull()) m.context->Remove(m.floor, false);
+        m.floor.Nullify();
+        m.floorShown = false;
+    }
+    m.ShowFloorForCamera();
+    // Smoother edges than the window's: a picture is looked at closely.
+    m.view->ChangeRenderingParams().NbMsaaSamples = 8;
+
+    const auto dump = [&]() -> std::optional<Image> {
+        Image_AlienPixMap pixels;
+        V3d_ImageDumpOptions options;
+        options.Width = o.width;
+        options.Height = o.height;
+        options.BufferType = Graphic3d_BT_RGBA;
+        bool done = false;
+        try {
+            done = m.view->ToPixMap(pixels, options);
+        } catch (const Standard_Failure& e) {
+            log::Error("Viewport: photo failed: {}", e.GetMessageString());
+        }
+        return done ? ToImage(pixels) : std::nullopt;
+    };
+    std::optional<Image> out;
+    if (!transparent) {
+        out = dump();
+    } else {
+        // Over black and over white: what changes is the background, by how
+        // much tells how see-through a pixel is (exact at smoothed edges too).
+        background(Color::Hex(0x000000), Color::Hex(0x000000));
+        std::optional<Image> black = dump();
+        background(Color::Hex(0xFFFFFF), Color::Hex(0xFFFFFF));
+        std::optional<Image> white = black ? dump() : std::nullopt;
+        if (black && white && black->rgba.size() == white->rgba.size()) {
+            out = std::move(*black);
+            for (std::size_t i = 0; i < out->rgba.size(); i += 4) {
+                const int diff = (white->rgba[i] - out->rgba[i] + white->rgba[i + 1] - out->rgba[i + 1] + white->rgba[i + 2] - out->rgba[i + 2]) / 3;
+                const int alpha = std::clamp(255 - diff, 0, 255);
+                for (int k = 0; k < 3; ++k)
+                    out->rgba[i + k] = alpha > 0 ? static_cast<std::uint8_t>(std::min(255, out->rgba[i + k] * 255 / alpha)) : 0;
+                out->rgba[i + 3] = static_cast<std::uint8_t>(alpha);
+            }
+        }
+    }
+
+    // Back as it was.
+    m.view->ChangeRenderingParams() = params;
+    m.colors = colors;
+    m.view->SetBgGradientColors(ToQuantity(colors.backgroundTop), ToQuantity(colors.backgroundBottom),
+                                colors.radialBackground ? Aspect_GradientFillMethod_Elliptical : Aspect_GradientFillMethod_Vertical, false);
+    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(m.backgroundPicture, Aspect_FM_STRETCH, false);
+    if (shotStyle != style) {
+        m.style = style;
+        m.ApplyStyleAll();
+    }
+    m.live = !live;   // SetLive acts on a change only
+    SetLive(live);
+    m.floorFor.reset();
+    m.UpdateFloor();
+    SetCamera(camera);
+    m.dirty = true;
+    return out;
+}
+
 std::optional<Image> Viewport::Preview(Vec3 direction, Vec3 up, int size) {
     Impl& m = *myImpl;
     if (m.shown.empty() || size < 16) return std::nullopt;
@@ -1403,6 +1705,8 @@ std::optional<Image> Viewport::Preview(Vec3 direction, Vec3 up, int size) {
             }
     if (!m.section.IsNull()) m.view->RemoveClipPlane(m.section);
     if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(Handle(Graphic3d_Texture2D)(), Aspect_FM_STRETCH, false);
+    m.noFloor = true;   // a file's thumbnail: the part alone, on transparency
+    m.UpdateFloor();
 
     // The same picture on black and on white: where they differ is how much
     // of the background shows through, so the preview has real transparency
@@ -1420,6 +1724,8 @@ std::optional<Image> Viewport::Preview(Vec3 direction, Vec3 up, int size) {
     if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(m.backgroundPicture, Aspect_FM_STRETCH, false);
     if (!m.section.IsNull()) m.view->AddClipPlane(m.section);
     for (const Handle(AIS_InteractiveObject)& s : hidden) m.context->Display(s, false);
+    m.noFloor = false;
+    m.UpdateFloor();
     m.dirty = true;
 
     if (!dark || !light || dark->width != light->width || dark->height != light->height) return std::nullopt;
@@ -1737,6 +2043,7 @@ void Viewport::SetContext(const kernel::Model* model) {
     c.shapes.clear();
     c.ids.clear();
     c.bodies.clear();
+    m.UpdateFloor();
     m.dirty = true;
     if (!model) return;
     // Faded and a little lighter than the part itself, outlined: enough to
@@ -1881,8 +2188,76 @@ void Viewport::ShowCopyPreview(const kernel::Model* model, ObjectId feature) {
         m.context->Display(ais, AIS_WireFrame, -1, false);
         m.copyShapes.push_back(ais);
     };
+    // The copies themselves show as the operation's ghost (ShowToolPreview).
     for (const TopoDS_Shape& s : it->second.sources) show(s, m.colors.selection, 2.5);
-    for (const TopoDS_Shape& s : it->second.copies) show(s, m.colors.hover, 1.6);
+}
+
+void Viewport::ShowBodiesBefore(std::optional<std::size_t> featureIndex) {
+    Impl& m = *myImpl;
+    if (featureIndex == m.bodiesBefore) return;
+    m.bodiesBefore = featureIndex;
+    m.syncedRevision = static_cast<std::uint64_t>(-1);   // the next Sync shows the other bodies
+}
+
+void Viewport::ShowToolPreview(const kernel::Model* model, ObjectId feature) {
+    Impl& m = *myImpl;
+    const std::uint64_t revision = model ? model->Revision() + 1 : 0;
+    if (revision == m.ghostRevision && feature == m.ghostFeature && m.ghostAdd == m.colors.previewAdd && m.ghostCut == m.colors.previewCut)
+        return;
+    m.ghostRevision = revision;
+    m.ghostFeature = feature;
+    m.ghostAdd = m.colors.previewAdd;
+    m.ghostCut = m.colors.previewCut;
+    for (const auto& s : m.ghostShapes) m.context->Remove(s, false);
+    m.ghostShapes.clear();
+    m.dirty = true;
+    if (!model) return;
+
+    // A cut ghost is cut short a little beyond the bodies (clip planes, not a
+    // boolean): «Насквозь» makes tools far longer than the part.
+    Handle(Graphic3d_SequenceOfHClipPlane) cutClip;
+    if (const std::optional<kernel::Bounds> box = model->BoundingBox()) {
+        const Vec3 lo = box->min, hi = box->max;
+        const double pad = (hi - lo).Length() * 0.08 + 1.0;
+        cutClip = new Graphic3d_SequenceOfHClipPlane();
+        // OCCT keeps the side each plane's equation is positive on.
+        const auto keep = [&](double a, double b, double c, double d) { cutClip->Append(new Graphic3d_ClipPlane(gp_Pln(a, b, c, d))); };
+        keep(1, 0, 0, -(lo.x - pad));
+        keep(-1, 0, 0, hi.x + pad);
+        keep(0, 1, 0, -(lo.y - pad));
+        keep(0, -1, 0, hi.y + pad);
+        keep(0, 0, 1, -(lo.z - pad));
+        keep(0, 0, -1, hi.z + pad);
+    }
+    const auto show = [&](const TopoDS_Shape& shape, bool cut) {
+        if (shape.IsNull()) return;
+        const Color& color = cut ? m.colors.previewCut : m.colors.previewAdd;
+        // Seen: in front of the bodies, a little ahead of faces it shares
+        // with them (a join's ghost lies on the new material). Hidden:
+        // the same shape over everything, fainter. Never picked.
+        for (const bool hidden : {false, true}) {
+            Handle(AIS_Shape) ais = new AIS_Shape(shape);
+            Handle(Prs3d_Drawer) drawer = ais->Attributes();
+            SetMeshPrecision(drawer, m.quality);
+            ais->SetColor(ToQuantity(color));
+            ais->SetMaterial(Impl::MaterialOf(color, doc::Finish::Matte));
+            ais->SetTransparency(hidden ? 0.85 : 0.55);
+            drawer->SetFaceBoundaryDraw(!hidden);
+            drawer->SetFaceBoundaryUpperContinuity(GeomAbs_C1);
+            drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(color), Aspect_TOL_SOLID, 1.2));
+            if (cut && !cutClip.IsNull()) ais->SetClipPlanes(cutClip);
+            if (hidden) ais->SetZLayer(Graphic3d_ZLayerId_Topmost);
+            else ais->SetPolygonOffsets(Aspect_POM_Fill, -1.0f, -2.0f);
+            m.context->Display(ais, AIS_Shaded, -1, false);
+            m.ghostShapes.push_back(ais);
+        }
+    };
+    const auto& impl = model->GetImpl();
+    if (const auto it = impl.tools.find(feature); it != impl.tools.end()) {
+        show(it->second.shape, it->second.op == doc::BooleanOp::Cut);
+        show(it->second.cuts, true);
+    }
+    if (const auto it = impl.intersections.find(feature); it != impl.intersections.end()) show(it->second, false);
 }
 
 void Viewport::SetSection(const std::optional<Frame>& plane) {
@@ -1896,6 +2271,7 @@ void Viewport::SetSection(const std::optional<Frame>& plane) {
         if (!m.section.IsNull()) m.view->RemoveClipPlane(m.section);
         m.section.Nullify();
         m.ClearCaps();
+        m.UpdateFloor();
         m.dirty = true;
         return;
     }
@@ -1912,6 +2288,7 @@ void Viewport::SetSection(const std::optional<Frame>& plane) {
         m.section->SetUseObjectMaterial(true);
         if (m.caps.hatch.IsNull()) m.caps.hatch = MakeHatchTexture();
         m.view->AddClipPlane(m.section);
+        m.UpdateFloor();
     }
     // OCCT keeps the side the equation is positive on: flip the normal so
     // what lies ahead of `normal` is cut away.

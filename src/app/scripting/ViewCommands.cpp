@@ -97,6 +97,27 @@ Json Snapshot(AppContext& app, const Json& args) {
     return out;
 }
 
+/// «Кадр» (view.render): the picture the "Сделать кадр" panel saves, with the
+/// window's camera; for modules and assistants.
+Json RenderPhoto(AppContext& app, const Json& args) {
+    SyncedView(app);
+    render::Viewport::PhotoOptions o;
+    static const std::vector<std::string> kBackgrounds = {"studio", "dark", "transparent"};
+    o.background = static_cast<render::Viewport::PhotoOptions::Background>(Choice(args, "background", kBackgrounds, 0));
+    o.width  = std::clamp(Integer(args, "width", 1920), 64, 4096);
+    o.height = std::clamp(Integer(args, "height", 1080), 64, 4096);
+    o.floor = Flag(args, "floor", true);
+    o.edges = Flag(args, "edges", true);
+    const auto image = app.viewport.Photo(o);
+    if (!image) Fail("Не удалось получить изображение: графика ещё не готова (окно программы свёрнуто?)");
+    std::size_t size = 0;
+    void* png = tdefl_write_image_to_png_file_in_memory(image->rgba.data(), image->width, image->height, 4, &size);
+    if (!png) Fail("Не удалось сжать изображение в PNG");
+    Json out = {{"image_png_base64", Base64(png, size)}, {"width", image->width}, {"height", image->height}};
+    mz_free(png);
+    return out;
+}
+
 Json SetView(AppContext& app, const Json& args) {
     SyncedView(app);
     if (Has(args, "style")) {
@@ -375,6 +396,15 @@ void AddViewCommands(Commands& out) {
                                     {"height", IntegerArg("Высота, пикселей (по умолчанию 768).")},
                                     {"current_camera", BoolArg("Снять как сейчас на экране (без view/direction).")}})),
                    false, &Snapshot});
+    out.push_back({"view.render",
+                   "«Кадр»: красивая картинка модели (PNG) с камерой окна — фон студии, тень на полу, рёбра; как кнопка "
+                   "«Сделать кадр» на вкладке «Вид». transparent — PNG с прозрачным фоном (без пола).",
+                   Schema({{"width", IntegerArg("Ширина, пикселей (64–4096, по умолчанию 1920).")},
+                           {"height", IntegerArg("Высота, пикселей (по умолчанию 1080).")},
+                           {"background", EnumArg("Фон: studio (по умолчанию), dark, transparent.", {"studio", "dark", "transparent"})},
+                           {"floor", BoolArg("Пол с тенью (по умолчанию да).")},
+                           {"edges", BoolArg("Рёбра (по умолчанию да).")}}),
+                   false, &RenderPhoto});
     out.push_back({"view.set",
                    "Камера и отображение в окне программы: view/direction — повернуть и вписать модель; fit — вписать, не "
                    "поворачивая; style — shaded, shaded_with_edges, wireframe, hidden_lines, transparent.",

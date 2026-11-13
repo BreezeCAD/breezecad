@@ -1,4 +1,5 @@
 #include "app/features/FeatureOperationEditor.h"
+#include "app/features/OperationEditors.h"
 #include "app/features/ToolChoice.h"
 
 #include "app/Format.h"
@@ -362,6 +363,13 @@ void FeatureOperationEditor::DrawPanel(AppContext& app, Session& session) {
     ImGui::PushItemWidth(inner);
     DrawBody(app, session, *f, inner);
     myFocusFirstField = false;
+    // The tool's ghost shows over the result, or (off) over the body as it was.
+    if (app.ops.ShowsToolGhost(this)) {
+        Gap(app);
+        ImGui::Checkbox(std::format("{}##preview-result", Tr("Предпросмотр результата")).c_str(), &app.settings.previewResult);
+        ui::ItemTooltip(ui, Tr("Синий призрак — что добавится, красный — что уйдёт. "
+                               "Снимите флажок, чтобы видеть тело до операции"));
+    }
 
     if ((f->status.state == doc::FeatureState::Error || f->status.state == doc::FeatureState::Warning) && ShowStatus(*f)) {
         if (!f->status.message.empty()) {

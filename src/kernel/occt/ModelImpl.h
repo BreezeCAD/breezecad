@@ -40,6 +40,9 @@ struct Model::Impl {
     std::unordered_map<ObjectId, occt::SketchProfile> sketches;
     /// Tools of the operations that can be copied, by feature id.
     std::unordered_map<ObjectId, Tool> tools;
+    /// Tools of «Пересечь» operations (not copyable, so not in `tools`):
+    /// only for the panel's preview ghost, by feature id.
+    std::unordered_map<ObjectId, TopoDS_Shape> intersections;
 
     /// What is drawn but not part of a body (cosmetic threads), by feature id.
     std::unordered_map<ObjectId, TopoDS_Shape> decorations;

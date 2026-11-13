@@ -2,6 +2,12 @@
 #include "document/BzcFile.h"
 #include "document/ThreadFeature.h"
 #include "kernel/Model.h"
+#include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
+
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <chrono>
 
 #include <doctest.h>
 
@@ -188,3 +194,44 @@ TEST_CASE("an internal thread in a hole under a counterbore builds (made on an i
 }
 
 TEST_SUITE_END();
+
+// The web of a thread between two turns of its groove, 0.02 mm (pitch 0.07:
+// the groove is 0.708 P wide at the surface): what each touching tolerance
+// leaves of it — the numbers behind the largest of kFuzzySteps.
+// Run: bz_tests -ts=measure -s
+TEST_CASE("measure: touching tolerance against a thread's 0.02 mm web" * doctest::test_suite("measure")) {
+    doc::Document d;
+    auto& sk = AddSketch(d);
+    AddCircle(d, sk, {0, 0}, 2);
+    AddExtrude(d, sk.id, "2");
+    auto& thread = AddThread(d, 2, "0.07");
+    kernel::Model model;
+    thread.suppressed = true;
+    model.Rebuild(d);
+    const TopoDS_Shape body = model.GetImpl().bodies.front().shape;
+    thread.suppressed = false;
+    d.MarkChanged(2);
+    model.Rebuild(d);
+    REQUIRE(thread.status.state != FeatureState::Error);
+    const TopoDS_Shape tool = model.GetImpl().tools.at(thread.id).shape;
+    const auto volume = [](const TopoDS_Shape& s) {
+        GProp_GProps p;
+        BRepGProp::VolumeProperties(s, p);
+        return p.Mass();
+    };
+    double exact = 0;
+    for (double fuzzy : {0.0, 1e-5, 1e-4, 1e-3, 5e-3, 1e-2}) {
+        kernel::occt::ops::Options o;
+        o.exactFirst = fuzzy == 0.0;
+        o.retry = fuzzy > 0.0;
+        o.fuzzySteps = {fuzzy};
+        o.glue = false;
+        const auto t = std::chrono::steady_clock::now();
+        const auto r = kernel::occt::ops::Boolean(kernel::occt::ops::Kind::Cut, body, tool, o);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+        const double left = r.Usable() ? volume(r.shape) : 0.0;
+        if (fuzzy == 0.0) exact = left;
+        MESSAGE(std::string("thread web 0.02, fuzzy ") << fuzzy << ": code " << static_cast<int>(r.code) << ", volume left " << left
+                                                       << " mm3 (exact " << exact << "), " << ms << " ms");
+    }
+}

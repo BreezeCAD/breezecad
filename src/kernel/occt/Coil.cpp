@@ -1,8 +1,7 @@
 #include "kernel/occt/Coil.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -30,7 +29,9 @@ Expected<TopoDS_Shape> SweepWire(const TopoDS_Wire& profile, const TopoDS_Wire& 
     BRepOffsetAPI_MakePipeShell sweep(helix);
     sweep.SetMode(axis);   // the section keeps its tilt to the axis, as a coil does
     sweep.Add(profile, false, false);
-    sweep.Build();
+    Handle(Deadline) deadline = new Deadline(ops::kSweepSeconds);
+    sweep.Build(Message_ProgressRange(deadline->Start()));
+    if (deadline->Passed()) return Error{"Пружина не уложилась в отведённое время — уменьшите число витков или упростите профиль"};
     if (!sweep.IsDone() || !sweep.MakeSolid()) return Error{"Пружина не строится с такими размерами"};
     return sweep.Shape();
 }
@@ -112,14 +113,16 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
                 if (wire.IsSame(outer)) continue;
                 Expected<TopoDS_Shape> hole = SweepWire(wire, helix, axis);
                 if (!hole) return hole;
-                piece = BRepAlgoAPI_Cut(piece, *hole).Shape();
+                piece = ops::OrThrow(ops::Cut(piece, *hole, ops::Tool()));
             }
-            result = result.IsNull() ? piece : BRepAlgoAPI_Fuse(result, piece).Shape();
+            result = result.IsNull() ? piece : ops::OrThrow(ops::Fuse(result, piece, ops::Tool()));
         }
         if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Пружина получилась некорректной"};
         return result;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка пружины: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка пружины");
     }
 }
 

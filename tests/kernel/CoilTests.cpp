@@ -1,6 +1,11 @@
 #include "../Fixtures.h"
 #include "document/CoilFeature.h"
 #include "kernel/Model.h"
+#include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
+
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 
 #include <doctest.h>
 
@@ -179,3 +184,45 @@ TEST_CASE("a coil cut whose profile has corners exactly on the hole's wall cuts 
 }
 
 TEST_SUITE_END();
+
+// What each touching tolerance does to the coil whose profile has corners
+// exactly on the hole's wall (BETA-BUGS №4): the numbers behind kFuzzySteps.
+// Run: bz_tests -ts=measure -s
+TEST_CASE("measure: touching tolerance on a coil cut with corners on the wall" * doctest::test_suite("measure")) {
+    GroovedBlock part(4, true);
+    kernel::Model model;
+    part.coil->suppressed = true;
+    model.Rebuild(part.d);
+    const TopoDS_Shape body = model.GetImpl().bodies.front().shape;
+    part.coil->suppressed = false;
+    part.d.MarkChanged(0);
+    model.Rebuild(part.d);
+    const TopoDS_Shape tool = model.GetImpl().tools.at(part.coil->id).shape;
+    const auto volume = [](const TopoDS_Shape& s) {
+        GProp_GProps p;
+        BRepGProp::VolumeProperties(s, p);
+        return p.Mass();
+    };
+    for (double fuzzy : {0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2}) {
+        kernel::occt::ops::Options o;
+        o.exactFirst = fuzzy == 0.0;
+        o.retry = fuzzy > 0.0;
+        o.fuzzySteps = {fuzzy};
+        o.glue = false;
+        o.slivers = true;
+        const auto t = std::chrono::steady_clock::now();
+        const auto r = kernel::occt::ops::Boolean(kernel::occt::ops::Kind::Cut, body, tool, o);
+        MESSAGE("coil on the wall, fuzzy " << fuzzy << ": code " << static_cast<int>(r.code) << ", removed "
+                                          << (r.Usable() ? volume(body) - volume(r.shape) : 0.0) << " mm3, sliver "
+                                          << std::string(r.sliver ? "yes" : "no") << ", " << MsSince(t) << " ms");
+    }
+    for (bool glue : {true}) {
+        kernel::occt::ops::Options o;
+        o.exactFirst = false;
+        o.fuzzySteps = {};
+        o.glue = glue;
+        o.slivers = true;
+        const auto r = kernel::occt::ops::Boolean(kernel::occt::ops::Kind::Cut, body, tool, o);
+        MESSAGE("coil on the wall, glued: code " << static_cast<int>(r.code) << ", sliver " << std::string(r.sliver ? "yes" : "no"));
+    }
+}

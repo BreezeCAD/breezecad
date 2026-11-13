@@ -1,8 +1,7 @@
 #include "kernel/occt/Thread.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepAdaptor_Surface.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax2.hxx>
@@ -103,8 +102,10 @@ Expected<ThreadSite> FindThreadSite(const TopoDS_Shape& body, const doc::Cylinde
         if (!s->external)
             for (int i = 0; i < 3; ++i) nominal = d + 2 * kInternalDepth * doc::CoarsePitch(nominal);
         return ThreadSite{s->external, doc::StandardSize(nominal), s->hi - s->lo};
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка резьбы: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка резьбы");
     }
 }
 
@@ -245,7 +246,9 @@ Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFea
         BRepOffsetAPI_MakePipeShell sweep(*helix);
         sweep.SetMode(gp_Dir(l.axis.x, l.axis.y, l.axis.z));
         sweep.Add(triangle.Wire(), false, false);
-        sweep.Build();
+        Handle(Deadline) deadline = new Deadline(ops::kSweepSeconds);
+        sweep.Build(Message_ProgressRange(deadline->Start()));
+        if (deadline->Passed()) return Error{"Резьба не уложилась в отведённое время — уменьшите длину или увеличьте шаг"};
         if (!sweep.IsDone() || !sweep.MakeSolid()) return Error{"Резьба не строится с такими размерами"};
         TopoDS_Shape tool = sweep.Shape();
 
@@ -253,13 +256,16 @@ Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFea
         // the shaft's major diameter, or inside the hole's minor one, goes too.
         const double r = l.site.radius;
         if (l.site.external && r > l.crest + 1e-6) {
-            tool = BRepAlgoAPI_Fuse(tool, BRepAlgoAPI_Cut(Rod(l, r + over), Rod(l, l.crest)).Shape()).Shape();
+            const TopoDS_Shape shell = ops::OrThrow(ops::Cut(Rod(l, r + over), Rod(l, l.crest), ops::Tool()));
+            tool = ops::OrThrow(ops::Fuse(tool, shell, ops::Tool()));
         } else if (!l.site.external && r < l.crest - 1e-6) {
-            tool = BRepAlgoAPI_Fuse(tool, Rod(l, l.crest)).Shape();
+            tool = ops::OrThrow(ops::Fuse(tool, Rod(l, l.crest), ops::Tool()));
         }
         return tool;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка резьбы: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка резьбы");
     }
 }
 
@@ -278,8 +284,10 @@ Expected<TopoDS_Shape> CosmeticThread(const TopoDS_Shape& body, const doc::Threa
         Expected<TopoDS_Wire> helix = Helix(l, r, f.leftHanded);
         if (!helix) return helix.GetError();
         return TopoDS_Shape(*helix);
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка резьбы: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка резьбы");
     }
 }
 

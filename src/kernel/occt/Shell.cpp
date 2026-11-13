@@ -1,6 +1,6 @@
 #include "kernel/occt/Shell.h"
 
-#include "kernel/occt/Extrude.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffset_Analyse.hxx>

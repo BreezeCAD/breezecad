@@ -1,11 +1,9 @@
 #include "kernel/occt/Section.h"
+#include "kernel/occt/Ops.h"
 
 #include "core/FaultGuard.h"
 
-#include <BRepAlgoAPI_Common.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
-#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom_Plane.hxx>
 #include <TopoDS.hxx>
@@ -42,13 +40,17 @@ Expected<std::optional<TopoDS_Shape>> CutByPlane(const TopoDS_Shape& body, const
         const double side = keepFront ? -1.0 : 1.0;
         const Vec3 base = plane.origin - plane.xDir * (size / 2) - plane.YDir() * (size / 2) + plane.normal * (side < 0 ? -size : 0.0);
         const TopoDS_Shape cutter = BRepPrimAPI_MakeBox(gp_Ax2(gp_Pnt(base.x, base.y, base.z), n, x), size, size, size).Shape();
-        BRepAlgoAPI_Cut cut(body, cutter);
-        if (!cut.IsDone()) return Error{"Сечение: не удалось рассечь тело"};
-        const TopoDS_Shape result = cut.Shape();
-        if (!TopExp_Explorer(result, TopAbs_SOLID).More()) return std::optional<TopoDS_Shape>{};
-        return std::optional<TopoDS_Shape>{result};
+        // A section is drawn, not built on: no volume checks, no cleaning.
+        ops::Options o;
+        o.verify = false;
+        o.clean = false;
+        const ops::Result cut = ops::Boolean(ops::Kind::Cut, body, cutter, o);
+        if (cut.code == ops::Code::Empty) return std::optional<TopoDS_Shape>{};
+        if (!cut.Usable()) return Error{"Сечение: не удалось рассечь тело"};
+        if (!TopExp_Explorer(cut.shape, TopAbs_SOLID).More()) return std::optional<TopoDS_Shape>{};
+        return std::optional<TopoDS_Shape>{cut.shape};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка сечения: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка сечения");
     }
 }
 
@@ -86,10 +88,10 @@ Expected<std::vector<TopoDS_Face>> CutFaces(const TopoDS_Shape& body, const Fram
                 const Vec3 x = plane.xDir - plane.normal * plane.xDir.Dot(plane.normal);
                 const gp_Pln pln = x.Length() > 1e-6 ? gp_Pln(gp_Ax3(at, n, gp_Dir(x.x, x.y, x.z))) : gp_Pln(at, n);
                 const TopoDS_Face sheet = BRepBuilderAPI_MakeFace(pln, -reach, reach, -reach, reach).Face();
-                BRepAlgoAPI_Common common(body, sheet);
-                if (!common.IsDone()) return;
-                const TopoDS_Shape cut = common.Shape();
-                BRepMesh_IncrementalMesh mesh(cut, deflection, false, 0.5, false);
+                const ops::Result common = ops::Boolean(ops::Kind::Common, body, sheet, ops::Quick());
+                if (!common.Usable() || common.shape.IsNull()) return;
+                const TopoDS_Shape cut = common.shape;
+                if (!ops::Triangulate(cut, deflection, 0.5, false, 4.0)) return;
                 for (TopExp_Explorer f(cut, TopAbs_FACE); f.More(); f.Next()) {
                     TopoDS_Face face = TopoDS::Face(f.Current());
                     TopLoc_Location loc;
@@ -107,7 +109,7 @@ Expected<std::vector<TopoDS_Face>> CutFaces(const TopoDS_Shape& body, const Fram
             &fault);
         if (!ok) return Error{std::format("Сечение: сбой ядра ({})", fault)};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка сечения: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка сечения");
     }
     return faces;
 }

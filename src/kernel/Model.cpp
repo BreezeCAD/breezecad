@@ -49,8 +49,6 @@
 #include <BOPAlgo_Options.hxx>
 #include <TopoDS.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
-#include <BRepAlgoAPI_Common.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <IntCurvesFace_ShapeIntersector.hxx>
@@ -120,27 +118,20 @@ bool Meets(const TopoDS_Shape& body, const TopoDS_Shape& tool, bool touching) {
     if (a.IsVoid() || b.IsVoid()) return false;
     a.Enlarge(1e-4);
     if (a.IsOut(b)) return false;
-    try {
-        BRepAlgoAPI_Common common(body, tool);
-        if (common.IsDone()) {
-            GProp_GProps props;
-            BRepGProp::VolumeProperties(common.Shape(), props);
-            if (props.Mass() > 1e-6) return true;
-        }
-        if (!touching) return false;
-        // Touching: fused, they make fewer pieces than apart. (Not by the
-        // distance between them: BRepExtrema_DistShapeShape between solids
-        // crashes in OCCT 8, see FaceMatch.cpp.)
-        const auto pieces = [](const TopoDS_Shape& s) {
-            int n = 0;
-            for (TopExp_Explorer e(s, TopAbs_SOLID); e.More(); e.Next()) ++n;
-            return n;
-        };
-        BRepAlgoAPI_Fuse fuse(body, tool);
-        return fuse.IsDone() && !fuse.Shape().IsNull() && pieces(fuse.Shape()) < pieces(body) + pieces(tool);
-    } catch (const Standard_Failure&) {
-        return false;
-    }
+    // Through the one pipeline (ops), as quick queries: no checks, a short
+    // deadline — a body OCCT cannot intersect in time counts as not met.
+    if (occt::ops::SharedVolume(body, tool) > 1e-6) return true;
+    if (!touching) return false;
+    // Touching: fused, they make fewer pieces than apart. (Not by the
+    // distance between them: BRepExtrema_DistShapeShape between solids
+    // crashes in OCCT 8, see FaceMatch.cpp.)
+    const auto pieces = [](const TopoDS_Shape& s) {
+        int n = 0;
+        for (TopExp_Explorer e(s, TopAbs_SOLID); e.More(); e.Next()) ++n;
+        return n;
+    };
+    const occt::ops::Result fused = occt::ops::Boolean(occt::ops::Kind::Fuse, body, tool, occt::ops::Quick());
+    return fused.Usable() && !fused.shape.IsNull() && pieces(fused.shape) < pieces(body) + pieces(tool);
 }
 
 /// Indices of the bodies `tool` acts on (see Meets), in body order.
@@ -208,14 +199,6 @@ TopoDS_Shape AllSolids(const std::vector<Body>& bodies) {
 /// is reported: a cut that misses is a warning (nothing changed), a join
 /// goes to the most recent body as a separate piece. The solid is also kept
 /// as the operation's tool for patterns and mirrors.
-/// The warning for a strip a hair wide left by an operation (FindNewSliver).
-std::string SliverMessage(const Vec3& at) {
-    return std::format("Операция оставила полоску тоньше 0,05 мм у точки ({:.2f}; {:.2f}; {:.2f}): две поверхности почти совпадают, "
-                       "но не точно. Такая полоска видна линией и не даёт скруглить рёбра рядом — задайте эти размеры одним выражением "
-                       "(совпадут точно) или разнесите их хотя бы на 0,05 мм",
-                       at.x, at.y, at.z);
-}
-
 void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Model::Impl& impl, std::vector<Body>& bodies,
                   doc::FeatureStatus& status) {
     // A new body copied by a pattern joins the body it started.
@@ -247,13 +230,13 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
             box.Enlarge(1e-4);
             if (box.IsOut(toolBox)) continue;
             occt::BooleanNote note;
-            Expected<TopoDS_Shape> result = occt::ApplyBoolean(body.shape, tool, op, &note);
+            Expected<TopoDS_Shape> result = occt::ApplyBoolean(body.shape, tool, op, &note, !sliver);
             if (!result) {
                 status = {FeatureState::Error, std::format("«{}»: {}", body.name, result.GetError().message)};
                 return;
             }
             if (!note.touched && !note.partial) continue;
-            if (!sliver) sliver = occt::FindNewSliver(body.shape, *result, tool);
+            if (!sliver) sliver = note.sliver;
             body.shape = *result;
             reached = true;
             partial = partial || note.partial;
@@ -262,7 +245,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         else if (partial)
             status = {FeatureState::Warning,
                       "Вырез получился частичным: профиль касается поверхности тела — сдвиньте его на 0,01–0,05 мм внутрь или наружу"};
-        else if (sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        else if (sliver) status = {FeatureState::Warning, occt::ops::SliverMessage(*sliver)};
         else status = {FeatureState::Ok, {}};
         return;
     }
@@ -287,7 +270,8 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         // Every touched body and the tool become the first touched body.
         std::vector<TopoDS_Shape> tools{tool};
         for (std::size_t k = 1; k < met.size(); ++k) tools.push_back(bodies[met[k]].shape);
-        Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies[met.front()].shape, tools, op);
+        occt::BooleanNote note;
+        Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies[met.front()].shape, tools, op, &note);
         if (!result) {
             status = {FeatureState::Error, result.GetError().message};
             return;
@@ -306,7 +290,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         const std::optional<Vec3> sliver = occt::FindNewSliver(bodies[met.front()].shape, *result, tool);
         bodies[met.front()].shape = *result;
         for (std::size_t k = met.size(); k-- > 1;) bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(met[k]));
-        if ((added || met.size() > 1) && sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        if ((added || met.size() > 1) && sliver) status = {FeatureState::Warning, occt::ops::SliverMessage(*sliver)};
         else if (added || met.size() > 1) status = {FeatureState::Ok, {}};
         else
             status = {FeatureState::Warning,
@@ -1704,7 +1688,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
             }
         } catch (const Standard_Failure& failure) {
             bodies = before;
-            f.status = {FeatureState::Error, std::format("Ошибка геометрического ядра: {}", failure.GetMessageString())};
+            f.status = {FeatureState::Error, occt::ops::FromFailure(failure, "Ошибка геометрического ядра").message};
         } catch (const std::exception& e) {
             bodies = before;
             f.status = {FeatureState::Error, std::format("Внутренняя ошибка: {}", e.what())};
@@ -2067,14 +2051,15 @@ const std::vector<Interference>& Model::Interferences() const {
             if (m.bodies[i].mesh || m.bodies[j].mesh) continue;   // a mesh has no inside to share
             if (boxes[i].IsOut(boxes[j])) continue;
             try {
-                BRepAlgoAPI_Common common(m.bodies[i].shape, m.bodies[j].shape);
-                if (!common.IsDone()) continue;
+                const occt::ops::Result common =
+                    occt::ops::Boolean(occt::ops::Kind::Common, m.bodies[i].shape, m.bodies[j].shape, occt::ops::Quick());
+                if (!common.Usable() || common.shape.IsNull()) continue;   // a pair OCCT cannot intersect in time is left out
                 GProp_GProps props;
-                BRepGProp::VolumeProperties(common.Shape(), props);
+                BRepGProp::VolumeProperties(common.shape, props);
                 if (props.Mass() < 1e-6) continue;   // only touching
                 const gp_Pnt c = props.CentreOfMass();
                 m.interferences.push_back({i, j, props.Mass(), {c.X(), c.Y(), c.Z()}});
-                m.overlaps.push_back(common.Shape());
+                m.overlaps.push_back(common.shape);
             } catch (const Standard_Failure&) {
                 // a pair OCCT cannot intersect is left out rather than failing the check
             }

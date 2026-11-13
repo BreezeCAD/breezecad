@@ -40,6 +40,8 @@ struct SpecRow {
 /// the folder «Стандартные изделия», as the library puts them), or a part.
 SpecSection SectionOf(const SpecComponent& c);
 std::vector<SpecRow> SpecRows(const SpecInput& input);
+/// The position of each component of `input` (in its order), as the rows number it.
+std::vector<std::string> SpecPositions(const SpecInput& input);
 
 /// Rows of the table on the first page (title block form 2) and on the next (form 2a).
 inline constexpr int kSpecRowsFirst = 29;

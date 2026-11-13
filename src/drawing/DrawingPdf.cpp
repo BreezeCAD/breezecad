@@ -14,10 +14,11 @@ namespace {
 // ГОСТ 2.303: the main line and a thin one; as on the screen.
 constexpr double kThick = 0.5, kThin = 0.18;
 
-/// The em of a label's font. As on the screen (DrawingEditor.cpp, DrawLabel):
-/// the font's line (ascent + descent) is the label's height / 0.72.
+/// The em of a label's font: ГОСТ 2.304 gives the height of capitals, so the
+/// font's cap height (OS/2) is made the label's height. The screen does the
+/// same from the font's «Н» (DrawingEditor.cpp, DrawLabel).
 double EmOf(const Label& label, const TrueTypeFont& font) {
-    return label.height / 0.72 * font.unitsPerEm / std::max(1, font.ascent - font.descent);
+    return label.height * font.unitsPerEm / std::max(1, font.capHeight);
 }
 
 std::string TitleOf(const Drawing& drawing, const SheetContent& content) {
@@ -48,6 +49,7 @@ std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont&
         pdf.BeginPage(l.width, l.height);
         for (const Stroke& s : l.strokes) pdf.Line(s.a, s.b, s.weight == LineWeight::Thick ? kThick : kThin);
         for (const Polyline& p : l.polylines) pdf.Polyline(p.points, p.weight == LineWeight::Thick ? kThick : kThin, DashOf(p.style));
+        for (const Fill& f : l.fills) pdf.Fill(f.points);
         for (const Label& label : l.labels) {
             if (label.text.empty()) continue;
             const double em = EmOf(label, font), width = pdf.TextWidth(label.text, em);

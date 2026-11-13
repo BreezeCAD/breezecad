@@ -49,6 +49,9 @@ struct FloorShadowMap {
 /// model, so a change stays quick (the shadow only gets coarser).
 int FloorShadowSamples(std::size_t triangles);
 
-FloorShadowMap ComputeFloorShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec);
+/// `opacity` (empty: all opaque) — one per triangle, 0..1: a see-through
+/// body (clear polycarbonate) casts a lighter shadow.
+FloorShadowMap ComputeFloorShadow(std::span<const std::array<Vec3, 3>> triangles, const FloorShadowSpec& spec,
+                                  std::span<const float> opacity = {});
 
 } // namespace bz::render

@@ -17,6 +17,8 @@
 #include <Graphic3d_ArrayOfTriangles.hxx>
 #include <Graphic3d_AspectFillArea3d.hxx>
 #include <Graphic3d_Group.hxx>
+#include <Graphic3d_ShaderObject.hxx>
+#include <Graphic3d_ShaderProgram.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <BRepLib.hxx>
 #include <Graphic3d_SequenceOfHClipPlane.hxx>
@@ -276,6 +278,73 @@ public:
     }
     DEFINE_STANDARD_RTTI_INLINE(BodyShape, AIS_ColoredShape)
 };
+
+/// «Живой вид»: see-through plastic (the Glass finish, clear and smoked
+/// polycarbonate) as plastic, not a tinted film. OCCT's Phong has no Fresnel
+/// (only its PBR mode, which is for the whole view and needs every material
+/// and light retuned), so the plastic gets a small program of its own:
+/// - Fresnel: toward the outline the surface reflects more and lets less
+///   through — the rims read as the walls' thickness;
+/// - a reflected sky (a light gradient) instead of nothing at grazing angles;
+/// - highlights stay bright through the transparency;
+/// - inner walls (back faces) fainter than the front.
+/// Written for the blended order-independent transparency of the live view.
+const char* const kGlassVertex = R"glsl(
+THE_SHADER_OUT vec3 Normal;
+THE_SHADER_OUT vec4 Position;
+THE_SHADER_OUT vec4 PositionWorld;
+void main() {
+  PositionWorld = occModelWorldMatrix * occVertex;
+  Position      = occWorldViewMatrix * PositionWorld;
+  Normal        = normalize((occWorldViewMatrixInverseTranspose * occModelWorldMatrixInverseTranspose * vec4(occNormal, 0.0)).xyz);
+  gl_Position   = occProjectionMatrix * Position;
+}
+)glsl";
+
+const char* const kGlassFragment = R"glsl(
+THE_SHADER_IN vec3 Normal;
+THE_SHADER_IN vec4 Position;
+THE_SHADER_IN vec4 PositionWorld;
+void main() {
+#if defined(THE_MAX_CLIP_PLANES) && (THE_MAX_CLIP_PLANES > 0)
+  for (int i = 0; i < occClipPlaneCount; ++i) {
+    vec4 eq = occClipPlaneEquations[i];
+    if (dot(eq.xyz, PositionWorld.xyz / PositionWorld.w) + eq.w < 0.0) discard;
+  }
+#endif
+  bool front = gl_FrontFacing;
+  vec3 n = normalize(Normal);
+  if (!front) n = -n;
+  // To the eye: along the axis for the parallel projection, else to the point.
+  vec3 v = occProjectionMatrix[3][3] > 0.5 ? vec3(0.0, 0.0, 1.0) : normalize(-Position.xyz / Position.w);
+  vec3 diffuse = vec3(0.0), specular = vec3(0.0);
+  float shine = max(occMaterial_Shininess(front), 64.0);
+  for (int i = 0; i < occLightSourcesCount; ++i) {
+    if (occLight_Type(i) != OccLightType_Direct) continue;
+    vec3 l = normalize(occLight_Position(i).xyz);
+    if (!occLight_IsHeadlight(i)) l = (occWorldViewMatrix * vec4(l, 0.0)).xyz;
+    float nl = max(dot(n, l), 0.0);
+    diffuse += occLight_Diffuse(i).rgb * nl;
+    if (nl > 0.0) specular += occLight_Specular(i).rgb * pow(max(dot(n, normalize(l + v)), 0.0), shine);
+  }
+  vec4  base = occMaterial_Diffuse(front);   // a: how opaque the plastic is head-on
+  vec3  colour = occLightAmbient.rgb * occMaterial_Ambient(front) * 0.6 + diffuse * base.rgb;
+  float facing = clamp(abs(dot(n, v)), 0.0, 1.0);
+  float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+  // The reflected surroundings: a bright sky above, a greyer ground below
+  // (by the reflected ray, in the world: Z up) — the top reads lighter than
+  // the walls, as plastic under a studio light.
+  vec3  r = (occWorldViewMatrixInverse * vec4(reflect(-v, n), 0.0)).xyz;
+  vec3  sky = mix(vec3(0.62, 0.66, 0.72), vec3(1.0), smoothstep(-0.35, 0.65, normalize(r).z));
+  colour = mix(colour, sky, 0.3 + 0.6 * fresnel);
+  float alpha = mix(base.a, 1.0, fresnel * 0.7);
+  if (!front) alpha *= 0.6;
+  vec3 glint = specular * 1.6;
+  colour += glint;
+  alpha = max(alpha, clamp(max(glint.r, max(glint.g, glint.b)), 0.0, 0.9));
+  occSetFragColor(vec4(colour, alpha));
+}
+)glsl";
 
 /// «Живой вид»: the floor under the bodies. Only the shadow on it shows: a
 /// grid whose points carry the shadow's colour, as opaque as the shadow is
@@ -658,13 +727,39 @@ struct Viewport::Impl {
     bool                         noFloor = false;   ///< for a moment: thumbnails
     std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
 
-    std::vector<const void*>      floorShapes;   ///< the bodies it was made for (their TShapes)
+    /// See-through bodies in the live view are sorted (blended OIT): the
+    /// inner walls of plastic read in the right order. It costs float
+    /// buffers and a pass over the see-through things, so only while one is
+    /// shown; otherwise (and in the plain view) the cheap unordered blending.
+    /// The «Прозрачный» style stays unordered too: there everything is
+    /// see-through and speed matters more.
+    void UpdateTransparency() {
+        bool seeThrough = false;
+        if (live && style != DisplayStyle::Transparent && style != DisplayStyle::Wireframe && style != DisplayStyle::HiddenLines)
+            for (const auto& s : shown) {
+                if (const doc::Appearance* a = look.OfBody(s.body); a && a->face.a < 0.999f) seeThrough = true;
+                for (const doc::Look::FaceLook& f : look.faces)
+                    if (f.body == s.body)
+                        if (const doc::Appearance* a = look.Find(f.appearance); a && a->face.a < 0.999f) seeThrough = true;
+                if (seeThrough) break;
+            }
+        Graphic3d_RenderingParams& params = view->ChangeRenderingParams();
+        const auto method = seeThrough ? Graphic3d_RTM_BLEND_OIT : Graphic3d_RTM_BLEND_UNORDERED;
+        if (params.TransparencyMethod != method) {
+            params.TransparencyMethod = method;
+            dirty = true;
+        }
+    }
+
+    std::vector<const void*>      floorShapes;    ///< the bodies it was made for (their TShapes)
+    std::vector<float>            floorOpacity;   ///< and how opaque their faces were
 
     /// The floor under the bodies: a square around them, a hair below the
     /// lowest point, carrying their soft shadow (FloorShadow). Counted again
     /// when the bodies or their place change, not when the view turns.
     /// Left out of "fit all".
     void UpdateFloor() {
+        UpdateTransparency();
         // Not with a section (the floor would be cut too), nor around a part
         // edited in its assembly (the faded parts below would sink under it),
         // nor with every body hidden.
@@ -680,7 +775,18 @@ struct Viewport::Impl {
         }
         std::vector<const void*> shapes;
         for (const auto& s : shown) shapes.push_back(s.shape->Shape().TShape().get());
-        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max && shapes == floorShapes;
+        // A see-through face casts a lighter shadow: as opaque as it is drawn.
+        const auto opacityOf = [](const Handle(Prs3d_Drawer)& d) {
+            return d.IsNull() || d->ShadingAspect().IsNull() ? 1.0f : static_cast<float>(1.0 - d->ShadingAspect()->Transparency());
+        };
+        std::vector<float> faceOpacity;
+        for (const auto& s : shown)
+            for (TopExp_Explorer e(s.shape->Shape(), TopAbs_FACE); e.More(); e.Next()) {
+                const Handle(AIS_ColoredDrawer)* own = s.shape->CustomAspectsMap().Seek(e.Current());
+                faceOpacity.push_back(own ? opacityOf(*own) : opacityOf(s.shape->Attributes()));
+            }
+        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max && shapes == floorShapes &&
+                          faceOpacity == floorOpacity;
         if (same && !floor.IsNull()) return;
         if (!floor.IsNull()) context->Remove(floor, false);
         floor.Nullify();
@@ -688,9 +794,12 @@ struct Viewport::Impl {
 
         const auto started = std::chrono::steady_clock::now();
         std::vector<std::array<Vec3, 3>> triangles;
+        std::vector<float>               opacity;
+        std::size_t                      faceIndex = 0;
         for (const auto& s : shown) {
             const gp_Trsf place = s.shape->LocalTransformation();
             for (TopExp_Explorer e(s.shape->Shape(), TopAbs_FACE); e.More(); e.Next()) {
+                const float faceOpaque = faceOpacity[faceIndex++];
                 TopLoc_Location loc;
                 const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(TopoDS::Face(e.Current()), loc);
                 if (mesh.IsNull()) continue;
@@ -704,6 +813,7 @@ struct Viewport::Impl {
                         tri[static_cast<std::size_t>(c)] = {p.X(), p.Y(), p.Z()};
                     }
                     triangles.push_back(tri);
+                    opacity.push_back(faceOpaque);
                 }
             }
         }
@@ -722,12 +832,13 @@ struct Viewport::Impl {
         spec.sky = 0.55;
         spec.skySpread = 1.0;
         spec.samples = render::FloorShadowSamples(triangles.size());
-        render::FloorShadowMap map = render::ComputeFloorShadow(triangles, spec);
+        render::FloorShadowMap map = render::ComputeFloorShadow(triangles, spec, opacity);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         log::Debug("Viewport: floor shadow {} triangles × {} directions, {:.1f} ms", triangles.size(), spec.samples, ms);
         floor = new FloorShape(spec, std::move(map), colors.floorShadow);
         floorFor = bounds;
         floorShapes = std::move(shapes);
+        floorOpacity = std::move(faceOpacity);
         ShowFloorForCamera();
     }
 
@@ -807,6 +918,33 @@ struct Viewport::Impl {
 
     Handle(OpenGl_Context) GlContext() const { return driver->GetSharedContext(); }
 
+    mutable Handle(Graphic3d_ShaderProgram) glass;   ///< see kGlassFragment; made once
+    mutable bool                    glassFailed = false;
+
+    /// The plastic's program for a look, in the live view (else none: OCCT's own).
+    Handle(Graphic3d_ShaderProgram) GlassFor(const doc::Appearance* a) const {
+        if (!live || style == DisplayStyle::Transparent || a == nullptr || a->finish != doc::Finish::Glass || a->face.a >= 0.999f)
+            return {};
+        if (glass.IsNull() && !glassFailed) {
+            const Handle(OpenGl_Context) gl = GlContext();
+            // Desktop OpenGL 3.2+ (GLSL 1.50); the live view is off on phones (OpenGL ES).
+            if (gl.IsNull() || gl->GraphicsLibrary() != Aspect_GraphicsLibrary_OpenGL || !gl->IsGlGreaterEqual(3, 2)) {
+                glassFailed = true;
+                return {};
+            }
+            glass = new Graphic3d_ShaderProgram();
+            glass->SetId("bz_glass_oit");
+            glass->SetHeader("#version 150");
+            glass->SetNbLightsMax(Graphic3d_ShaderProgram::THE_MAX_LIGHTS_DEFAULT);
+            glass->SetNbClipPlanesMax(Graphic3d_ShaderProgram::THE_MAX_CLIP_PLANES_DEFAULT);
+            glass->SetNbFragmentOutputs(2);
+            glass->SetOitOutput(Graphic3d_RTM_BLEND_OIT);
+            glass->AttachShader(Graphic3d_ShaderObject::CreateFromSource(Graphic3d_TOS_VERTEX, kGlassVertex));
+            glass->AttachShader(Graphic3d_ShaderObject::CreateFromSource(Graphic3d_TOS_FRAGMENT, kGlassFragment));
+        }
+        return glass;
+    }
+
     /// Material for a colour and a finish: matte with a faint highlight,
     /// metal with a bright one, glass glossy. The ambient part is the colour
     /// itself, so faces turned away from the lights stay readable.
@@ -846,6 +984,7 @@ struct Viewport::Impl {
         if (!drawer->HasOwnShadingAspect()) drawer->SetupOwnShadingAspect();
         const Handle(Graphic3d_AspectFillArea3d)& fill = drawer->ShadingAspect()->Aspect();
         fill->SetDrawSilhouette(live && style != DisplayStyle::Transparent);
+        fill->SetShaderProgram(GlassFor(appearance));
         fill->SetEdgeColor(ToQuantity(edgeColour));
         fill->SetEdgeWidth(2.0);
         // Wireframe and hidden-line styles draw edges in the edge colour (not
@@ -938,6 +1077,7 @@ struct Viewport::Impl {
             aspects->ShadingAspect()->SetMaterial(MaterialOf(colour, a->finish));
             aspects->ShadingAspect()->SetColor(ToQuantity(colour));
             aspects->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
+            aspects->ShadingAspect()->Aspect()->SetShaderProgram(GlassFor(a));   // not the body's, copied
             if (style != DisplayStyle::Transparent) aspects->ShadingAspect()->SetTransparency(1.0 - a->face.a);
         }
         if (bodyLook && bodyLook->HasPicture())
@@ -1462,6 +1602,7 @@ void Viewport::SetLook(const doc::Look& look, const void* owner, std::uint64_t r
     m.look = look;
     m.textures.clear();   // made again from this look's pictures
     m.ApplyStyleAll();
+    m.UpdateFloor();   // a see-through body casts a lighter shadow
 }
 
 void Viewport::SetHiddenBodies(std::vector<ObjectId> bodies) {

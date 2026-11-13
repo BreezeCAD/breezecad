@@ -15,6 +15,10 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepLib.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom2d_Line.hxx>
+#include <cmath>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <TopExp.hxx>
@@ -735,4 +739,26 @@ TEST_CASE("испытание проекций: все рёбра детали �
         CHECK(r.broken == 0);
     }
 }
+
+// Винтовая линия резьбы (27 витков) в проекции — каша из витков друг на
+// друге; эскиз из таких кривых искал контуры минутами. Честный отказ.
+TEST_CASE("винтовое ребро больше двух оборотов не проецируется, а объясняет почему") {
+    Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(gp_Ax3(gp::XOY()), 5.0);
+    Handle(Geom2d_Line) helix = new Geom2d_Line(gp_Pnt2d(0, 0), gp_Dir2d(2 * M_PI, 0.5));   // one turn per 0.5 mm
+    const double turns = 27;
+    const TopoDS_Edge e = BRepBuilderAPI_MakeEdge(helix, cyl, 0, turns * std::hypot(2 * M_PI, 0.5)).Edge();
+    BRepLib::BuildCurves3d(e);
+    const Frame top{{0, 0, 30}, {1, 0, 0}, {0, 0, 1}};
+    const auto pc = kernel::occt::ProjectEdge(e, top);
+    REQUIRE_FALSE(pc);
+    CHECK(pc.GetError().message.find("винтовая") != std::string::npos);
+
+    // Half a turn is just a winding curve: it projects (an arc of the circle as a spline).
+    const TopoDS_Edge half = BRepBuilderAPI_MakeEdge(helix, cyl, 0, 0.5 * std::hypot(2 * M_PI, 0.5)).Edge();
+    BRepLib::BuildCurves3d(half);
+    const auto ok = kernel::occt::ProjectEdge(half, top);
+    REQUIRE(ok);
+    for (const Vec2& p : ok->points) CHECK(p.Length() == Approx(5).epsilon(1e-4));   // the 3D curve is an approximation
+}
+
 TEST_SUITE_END();

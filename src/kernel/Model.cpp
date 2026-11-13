@@ -159,6 +159,26 @@ Body* LastSolid(std::vector<Body>& bodies) {
 }
 const Body* LastSolid(const std::vector<Body>& bodies) { return LastSolid(const_cast<std::vector<Body>&>(bodies)); }
 
+/// `n` points spread evenly (by length) along the polyline `points`; the
+/// same points when there are `n` of them already.
+std::vector<Vec2> ResampleAlong(const std::vector<Vec2>& points, std::size_t n) {
+    if (points.size() == n || n < 2) return points;
+    std::vector<double> run{0.0};
+    for (std::size_t i = 1; i < points.size(); ++i) run.push_back(run.back() + (points[i] - points[i - 1]).Length());
+    std::vector<Vec2> out;
+    std::size_t k = 1;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double s = run.back() * static_cast<double>(i) / static_cast<double>(n - 1);
+        while (k + 1 < run.size() && run[k] < s) ++k;
+        const double span = run[k] - run[k - 1];
+        const double t = span > 0 ? std::clamp((s - run[k - 1]) / span, 0.0, 1.0) : 0.0;
+        out.push_back(points[k - 1] + (points[k] - points[k - 1]) * t);
+    }
+    out.front() = points.front();
+    out.back() = points.back();
+    return out;
+}
+
 /// Every solid body of the part as one shape (meshes left out): what a
 /// projected edge or face is looked for on. Only the most recent body was
 /// searched — an edge of any other body of a multi-body part was «lost» on
@@ -968,9 +988,11 @@ bool PlaceProjected(sketch::Sketch& sk, ObjectId curve, const ProjectedCurve& pc
             }
             return false;
         case ProjectedCurve::Kind::Spline:
-            // Its points move (as many as when it was projected: kSplineSpans + 1).
-            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() == pc.points.size()) {
-                for (std::size_t i = 0; i < pc.points.size(); ++i) move(s->points[i], pc.points[i]);
+            // Its points move; as many as it has (the edge, changed, may ask
+            // for another count: then the new points are spread evenly along it).
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() >= 2 && pc.points.size() >= 2) {
+                const std::vector<Vec2> at = ResampleAlong(pc.points, s->points.size());
+                for (std::size_t i = 0; i < at.size(); ++i) move(s->points[i], at[i]);
                 return true;
             }
             return false;
@@ -2215,11 +2237,12 @@ bool CurveMatches(const sketch::Sketch& sk, ObjectId curve, const ProjectedCurve
             if (const sketch::Ellipse* e = sk.FindEllipse(curve)) return at(e->center, pc.centre) && at(e->major, pc.start) && at(e->minor, pc.end);
             return false;
         case ProjectedCurve::Kind::Spline:
-            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() == pc.points.size()) {
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() >= 2 && pc.points.size() >= 2) {
+                const std::vector<Vec2> want = ResampleAlong(pc.points, s->points.size());
                 bool asCame = true, turned = true;
-                for (std::size_t i = 0; i < pc.points.size(); ++i) {
-                    asCame = asCame && at(s->points[i], pc.points[i]);
-                    turned = turned && at(s->points[i], pc.points[pc.points.size() - 1 - i]);
+                for (std::size_t i = 0; i < want.size(); ++i) {
+                    asCame = asCame && at(s->points[i], want[i]);
+                    turned = turned && at(s->points[i], want[want.size() - 1 - i]);
                 }
                 return asCame || turned;
             }

@@ -18,14 +18,16 @@ struct ProjectedCurve {
     Vec2   centre;          ///< circles, arcs and ellipses
     double radius = 0.0;
     /// Spline: the curve through these points, in the edge's direction
-    /// (kSplineSpans + 1 of them; closed: the last is the first). Any edge
+    /// (kSplineSpans + 1 of them, more for a winding curve, up to 4 times as
+    /// many; closed: the last is the first). Any edge
     /// that is not a line, circle or arc on the plane projects so — an
     /// ellipse, a slanted arc, a spline of a loft or sweep — as in Inventor.
     std::vector<Vec2> points;
 };
 
-/// Spans of a projected spline: fixed, so it keeps its points when the
-/// model changes and only moves them (what is tied to its ends follows).
+/// Spans of a projected spline (gentle curve). When the model changes the
+/// spline keeps its points and only moves them — resampled to its own count
+/// if the edge now asks for another — so what is tied to its ends follows.
 inline constexpr int kSplineSpans = 16;
 
 /// A body of revolution as it appears on a sketch plane: its axis, its

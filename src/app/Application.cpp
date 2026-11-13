@@ -347,7 +347,9 @@ void Application::ApplyTheme(bool force) {
     // Test hook: a flat background of a given colour (renders keyed out
     // against black and white for the splash picture, scripts/splash).
     if (const char* bg = std::getenv("BZ_VIEW_BG")) top = bottom = Color::Hex(static_cast<std::uint32_t>(std::strtoul(bg, nullptr, 16)));
-    myViewport.SetColors({top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, c.previewAdd, c.previewCut, bg.radial});
+    render::ViewportColors viewColors{top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, c.previewAdd, c.previewCut, bg.radial};
+    viewColors.floorShadow = c.floorShadow;
+    myViewport.SetColors(viewColors);
     if (pictureChanged) {
         if (mySettings.background == kPictureBackground && !mySettings.backgroundPicture.empty()) {
             if (const auto image = ReadImageFile(PathFromUtf8(mySettings.backgroundPicture))) {

@@ -49,6 +49,7 @@ struct ViewportColors {
     Color previewAdd       = Color::Hex(0x3B82F6);   ///< operation ghost: added or kept material
     Color previewCut       = Color::Hex(0xE5484D);   ///< operation ghost: removed material
     bool  radialBackground = false;   ///< backgroundTop in the middle, backgroundBottom at the edges
+    Color floorShadow      = Color::Hex(0x1F2937).WithAlpha(0.4f);   ///< «Живой вид»: the shadow under the bodies, at its darkest
 };
 
 /// A translucent square drawn in the scene, hidden where the body is in

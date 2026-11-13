@@ -50,6 +50,7 @@ Theme Theme::Light() {
     c.selection       = Color::Hex(0x1D4ED8);
     c.previewAdd      = Color::Hex(0x3B82F6);
     c.previewCut      = Color::Hex(0xE5484D);
+    c.floorShadow     = Color::Hex(0x1F2937).WithAlpha(0.40f);
 
     c.sketchFree      = Color::Hex(0x1D4ED8);
     c.sketchDefined   = Color::Hex(0x1B1F24);
@@ -135,6 +136,7 @@ Theme Theme::Dark() {
     c.selection       = Color::Hex(0x6E9BFF);
     c.previewAdd      = Color::Hex(0x5B9BFF);
     c.previewCut      = Color::Hex(0xFF6B6F);
+    c.floorShadow     = Color::Hex(0x000000).WithAlpha(0.45f);
 
     // Bright, saturated ink with a dark rim: the sketch must read both over
     // the dark background and over the light-grey body behind it.

@@ -91,7 +91,7 @@ namespace {
 /// the view would make the three faces of an isometric box look the same.
 /// Directions are in view space (x right, y up, z towards the viewer) and
 /// point the way the light travels.
-void SetUpLights(const Handle(V3d_Viewer)& viewer) {
+Handle(V3d_DirectionalLight) SetUpLights(const Handle(V3d_Viewer)& viewer) {
     // Strength is set through the light colour: with sRGB rendering off,
     // OCCT ignores SetIntensity. Levels were measured and solved so the faces
     // of an isometric box read as roughly 0.84 / 0.70 / 0.58 (top / right / front).
@@ -103,6 +103,7 @@ void SetUpLights(const Handle(V3d_Viewer)& viewer) {
     viewer->AddLight(key);
     viewer->AddLight(fill);
     viewer->SetLightOn();
+    return key;
 }
 
 // OpenGL sized formats (not declared by every platform's GL 1.1 header).
@@ -430,6 +431,60 @@ struct Viewport::Impl {
     std::optional<Vec2>  hoverPixel;
     std::optional<kernel::Bounds> bounds;
 
+    /// "Живой вид" (SetLive): the key light casts shadows, bodies get a
+    /// silhouette outline and stand on a floor that takes their shadow.
+    bool                         live = false;
+    Handle(V3d_DirectionalLight) keyLight;
+    Handle(AIS_Shape)            floor;
+    bool                         floorShown = false;
+    std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
+
+    /// The floor under the bodies: a square well beyond them, a hair below
+    /// the lowest point, in the background's lower colour and mostly see-
+    /// through — what reads is the shadow on it. Left out of "fit all".
+    void UpdateFloor() {
+        const bool want = live && bounds && style != DisplayStyle::Wireframe && style != DisplayStyle::HiddenLines;
+        if (!want) {
+            if (!floor.IsNull()) context->Remove(floor, false);
+            floor.Nullify();
+            floorShown = false;
+            floorFor.reset();
+            return;
+        }
+        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max;
+        if (same && !floor.IsNull()) return;
+        if (!floor.IsNull()) context->Remove(floor, false);
+        const Vec3 c = (bounds->min + bounds->max) * 0.5;
+        const double r = std::max(1.0, (bounds->max - bounds->min).Length()) * 3.0;
+        const double z = bounds->min.z - std::max(0.01, (bounds->max - bounds->min).Length() * 1e-4);
+        const TopoDS_Face face = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(c.x, c.y, z), gp::DZ()), -r, r, -r, r);
+        floor = new AIS_Shape(face);
+        floor->SetInfiniteState(true);   // not in "fit all" / ModelBounds
+        floor->Attributes()->SetFaceBoundaryDraw(false);
+        Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
+        const Quantity_Color tone = ToQuantity(colors.backgroundBottom);
+        material.SetColor(tone);
+        material.SetAmbientColor(tone);
+        material.SetSpecularColor(Quantity_Color(0, 0, 0, Quantity_TOC_RGB));
+        floor->SetMaterial(material);
+        floor->SetColor(tone);
+        floor->SetTransparency(0.45);
+        floorFor = bounds;
+        floorShown = false;
+        ShowFloorForCamera();
+    }
+
+    /// Seen from below, the floor would hide the body: shown only from above.
+    void ShowFloorForCamera() {
+        if (floor.IsNull()) return;
+        const bool above = view->Camera()->Direction().Z() < -0.05;
+        if (above == floorShown) return;
+        if (above) context->Display(floor, AIS_Shaded, -1, false);
+        else context->Erase(floor, false);
+        floorShown = above;
+        dirty = true;
+    }
+
     ViewportColors colors;
     DisplayStyle   style = DisplayStyle::ShadedWithEdges;
     ObjectId       hovered;
@@ -526,6 +581,12 @@ struct Viewport::Impl {
         // round; coarser on the lower quality levels.
         SetMeshPrecision(drawer, quality);
         drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(edgeColour), Aspect_TOL_SOLID, 1.0));
+        // "Живой вид": the outline of the body, thicker than the edges inside.
+        if (!drawer->HasOwnShadingAspect()) drawer->SetupOwnShadingAspect();
+        const Handle(Graphic3d_AspectFillArea3d)& fill = drawer->ShadingAspect()->Aspect();
+        fill->SetDrawSilhouette(live && style != DisplayStyle::Transparent);
+        fill->SetEdgeColor(ToQuantity(edgeColour));
+        fill->SetEdgeWidth(2.0);
         // Wireframe and hidden-line styles draw edges in the edge colour (not
         // the body colour SetColor gave them) and no isolines.
         const Quantity_Color ink = ToQuantity(edgeColour);
@@ -729,7 +790,7 @@ bool Viewport::Init(const NativeGlSurface& surface) {
     m.driver->ChangeOptions().sRGBDisable = true;
 
     m.viewer = new V3d_Viewer(m.driver);
-    SetUpLights(m.viewer);
+    m.keyLight = SetUpLights(m.viewer);
     m.context = new AIS_InteractiveContext(m.viewer);
     m.context->SetPixelTolerance(7);   // edges are thin: give the cursor a few pixels
 
@@ -877,6 +938,7 @@ void Viewport::Sync(const kernel::Model& model) {
     if (!m.measuring.picked[0].IsNull() || !m.measuring.picked[1].IsNull()) ClearMeasure();
     m.bounds = model.BoundingBox();
     m.view->SetComputedMode(m.style == DisplayStyle::HiddenLines);
+    m.UpdateFloor();
     m.dirty = true;
 }
 
@@ -921,13 +983,34 @@ void Viewport::SetColors(const ViewportColors& colors) {
     for (auto type : {Prs3d_TypeOfHighlight_LocalSelected, Prs3d_TypeOfHighlight_Selected})
         m.context->HighlightStyle(type)->SetColor(ToQuantity(colors.selection));
     m.ApplyStyleAll();
+    m.floorFor.reset();   // the floor takes the background's colour
+    m.UpdateFloor();
 }
 
 void Viewport::SetDisplayStyle(DisplayStyle style) {
     if (myImpl->style == style) return;
     myImpl->style = style;
     myImpl->ApplyStyleAll();
+    myImpl->UpdateFloor();
 }
+
+void Viewport::SetLive(bool on) {
+    Impl& m = *myImpl;
+    if (m.live == on) return;
+    m.live = on;
+    // Shadows need per-pixel lighting; the plain view keeps the viewer's default.
+    m.view->SetShadingModel(on ? Graphic3d_TypeOfShadingModel_Phong : Graphic3d_TypeOfShadingModel_DEFAULT);
+    Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
+    params.ShadowMapResolution = 2048;
+    params.ShadowMapBias = 0.004f;
+    if (!m.keyLight.IsNull()) m.keyLight->SetCastShadows(on);
+    m.viewer->UpdateLights();
+    m.ApplyStyleAll();
+    m.UpdateFloor();
+    m.dirty = true;
+}
+
+bool Viewport::IsLive() const { return myImpl->live; }
 
 void Viewport::SetQuality(int level) {
     Impl& m = *myImpl;
@@ -1017,6 +1100,7 @@ void Viewport::Render() {
         m.view->View()->SetFBO(m.fbo);
         m.view->MustBeResized();
     }
+    m.ShowFloorForCamera();
     m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
     m.dirty = false;

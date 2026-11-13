@@ -364,6 +364,9 @@ void RegisterActions(AppContext& app) {
         const render::DisplayStyle style = s.style;
         a.Add({s.id, s.label, s.icon, 0, N_("Стиль отображения"), {}, [&app, style] { app.shell.displayStyle = style; }});
     }
+    a.Add({"view.live", N_("Живой вид"), "view-live", 0,
+           N_("Тень на полу, мягкий свет и контур детали. На слабом компьютере выключается сам (Настройки → Графика)"), {},
+           [&app] { app.settings.liveView = !app.settings.liveView; }, 0, N_("тень пол красиво реалистично освещение")});
     a.Add({"view.themeLight", N_("Светлая тема"), "ui-sun", 0, {}, {}, [&app] { SetTheme(app, ThemeChoice::Light); }});
     a.Add({"view.themeDark", N_("Тёмная тема"), "ui-moon", 0, {}, {}, [&app] { SetTheme(app, ThemeChoice::Dark); }});
     a.Add({"view.themeSystem", N_("Тема как в системе"), "theme", 0, {}, {}, [&app] { SetTheme(app, ThemeChoice::System); }});

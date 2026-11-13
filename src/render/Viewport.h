@@ -113,6 +113,11 @@ public:
     /// Graphics quality: 0 high (smooth edges, fine round faces), 1
     /// balanced, 2 for weak computers (no smoothing, coarse round faces).
     void SetQuality(int level);
+    /// "Живой вид": shadows from the key light on a floor under the bodies,
+    /// per-pixel lighting and a silhouette outline. Costs a shadow pass: off
+    /// on weak computers and phones by default (Settings::liveView).
+    void SetLive(bool on);
+    bool IsLive() const;
     void SetHoveredBody(ObjectId body);
     /// Bodies not drawn (and not picked): those of operations the user hid.
     /// The model keeps them; only the view leaves them out.

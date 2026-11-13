@@ -113,6 +113,14 @@ struct Settings {
     /// dragged at its edge; 0 — the theme's (ThemeMetrics::panelWidth).
     double      panelWidth     = 0.0;
     int         graphics       = 0;       ///< 0 high, 1 balanced, 2 for weak computers (smoothing, round faces)
+    /// "Живой вид": shadow on a floor, per-pixel light, outline. Off by default
+    /// on phones; on any device it gives way when graphics is 2 (LiveView()).
+#if defined(BZ_MOBILE)
+    bool        liveView       = false;
+#else
+    bool        liveView       = true;
+#endif
+    bool        LiveView() const { return liveView && graphics < 2; }
     int         textureQuality = 0;   ///< pictures on faces: 0 high, 1 medium, 2 low (TextureLimit)
     bool        backgroundRebuild = true;   ///< long rebuilds on another thread (the window stays responsive)
     bool        showAllConstraints = false;   ///< sketch: every constraint glyph, or only those of the selection (F8 / F9)

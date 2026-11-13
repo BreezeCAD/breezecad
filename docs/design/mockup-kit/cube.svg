@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 110" font-family="IBM Plex Sans,Arial" font-size="7.2" font-weight="600" fill="#4A525E">
+<path d="M50 8 88 28 50 48 12 28Z" fill="#fff" stroke="#9AA3AF"/><path d="M12 28 50 48 50 98 12 78Z" fill="#E9ECF0" stroke="#9AA3AF"/><path d="M50 48 88 28 88 78 50 98Z" fill="#DCE1E8" stroke="#9AA3AF"/>
+<text x="50" y="31" text-anchor="middle" transform="rotate(-8 50 31)">СВЕРХУ</text><text x="31" y="66" text-anchor="middle" transform="rotate(28 31 66)">СПЕРЕДИ</text><text x="69" y="66" text-anchor="middle" transform="rotate(-28 69 66)">СПРАВА</text></svg>

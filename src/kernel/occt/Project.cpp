@@ -44,16 +44,39 @@ Vec3 ToVec(const gp_Dir& d) { return {d.X(), d.Y(), d.Z()}; }
 /// spaced evenly along it, in the edge's own direction.
 Expected<ProjectedCurve> ProjectAsSpline(const TopoDS_Edge& edge, const BRepAdaptor_Curve& curve, const Frame& frame) {
     const double a = curve.FirstParameter(), b = curve.LastParameter();
+    // How much the projection turns: a few points are enough for a gentle
+    // curve, a winding one needs more; a helix (many turns on one circle)
+    // would come out as a scribble and, stacked on itself, makes the sketch's
+    // regions take minutes — it is refused, as its rim is what one projects.
+    constexpr int kProbe = 256;
+    double turning = 0;
+    {
+        Vec2 prev = frame.ToLocal(ToVec(curve.Value(a))), dirPrev{};
+        bool haveDir = false;
+        for (int i = 1; i <= kProbe; ++i) {
+            const Vec2 p = frame.ToLocal(ToVec(curve.Value(a + (b - a) * i / kProbe)));
+            const Vec2 d = p - prev;
+            if (d.Length() > 1e-9) {
+                if (haveDir) turning += std::abs(std::atan2(dirPrev.x * d.y - dirPrev.y * d.x, dirPrev.Dot(d)));
+                dirPrev = d;
+                haveDir = true;
+            }
+            prev = p;
+        }
+    }
+    if (turning > 4 * kPi + 0.5)
+        return Error{"Ребро закручено больше чем на два оборота (винтовая линия) — спроецируйте ребро торца или грань"};
+    const int spans = std::clamp(kSplineSpans * static_cast<int>(std::ceil(turning / kPi)), kSplineSpans, 4 * kSplineSpans);
     std::vector<double> at;
     try {
-        GCPnts_UniformAbscissa even(curve, kSplineSpans + 1, a, b);
-        if (even.IsDone() && even.NbPoints() == kSplineSpans + 1)
+        GCPnts_UniformAbscissa even(curve, spans + 1, a, b);
+        if (even.IsDone() && even.NbPoints() == spans + 1)
             for (int i = 1; i <= even.NbPoints(); ++i) at.push_back(even.Parameter(i));
     } catch (const Standard_Failure&) {
         at.clear();
     }
     if (at.empty())
-        for (int i = 0; i <= kSplineSpans; ++i) at.push_back(a + (b - a) * i / kSplineSpans);
+        for (int i = 0; i <= spans; ++i) at.push_back(a + (b - a) * i / spans);
     if (edge.Orientation() == TopAbs_REVERSED) std::reverse(at.begin(), at.end());
     ProjectedCurve out;
     out.kind = ProjectedCurve::Kind::Spline;

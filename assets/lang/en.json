@@ -2876,6 +2876,15 @@
     "размер диаметр отверстие вал": "dimension diameter hole shaft",
     "размер длина расстояние": "dimension length distance",
     "размер радиус скругление": "dimension radius fillet",
-    "размер угол": "dimension angle"
+    "размер угол": "dimension angle",
+    "Конец линии разреза. Почти горизонтальная или вертикальная выравнивается; Ctrl — под любым углом": "End of the cutting line. Nearly horizontal or vertical snaps straight; Ctrl — any angle",
+    "На листе нет видов: разрез проводится по виду модели": "There are no views on the sheet: a section is cut along a view of the model",
+    "Разрез": "Section",
+    "Разрез {}–{} ({})": "Section {}–{} ({})",
+    "Разрез не построился: ядро не смогло рассечь модель": "The section failed: the kernel could not cut the model",
+    "Разрез по линии на виде (ГОСТ 2.305): два щелчка — концы линии, третий — место разреза; штриховка по ГОСТ 2.306": "A section along a line on a view (GOST 2.305): two clicks — the line's ends, the third — where the section goes; hatching per GOST 2.306",
+    "Разрез: щелчок — начало линии разреза на виде (Esc — выйти)": "Section: click — the start of the cutting line on a view (Esc — exit)",
+    "Щелчок — место разреза: взгляд направлен в его сторону": "Click — where the section goes: the sight points toward it",
+    "разрез сечение штриховка": "section cut hatching"
   }
 }

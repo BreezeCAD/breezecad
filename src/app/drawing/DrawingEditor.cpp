@@ -198,11 +198,15 @@ const char* DirectionName(dw::ViewDirection d) {
         case dw::ViewDirection::Left:   return N_("Вид слева");
         case dw::ViewDirection::Right:  return N_("Вид справа");
         case dw::ViewDirection::Iso:    return N_("Изометрия");
+        case dw::ViewDirection::Section: return N_("Разрез");
     }
     return N_("Вид спереди");
 }
 
-std::string ViewTitle(const dw::View& v) { return std::format("{} ({})", Tr(DirectionName(v.direction)), dw::ScaleText(v.scale)); }
+std::string ViewTitle(const dw::View& v) {
+    if (v.section) return Trf("Разрез {}–{} ({})", v.section->letter, v.section->letter, dw::ScaleText(v.scale));
+    return std::format("{} ({})", Tr(DirectionName(v.direction)), dw::ScaleText(v.scale));
+}
 
 /// The index of the sheet shown in the drawing.
 std::size_t SheetIndex(const DrawingState& d) {
@@ -235,7 +239,7 @@ Box2 BoxOfView(AppContext& app, DrawingState& d, const dw::View& v) {
     }
     Box2 b;
     if (const auto bounds = views.ModelBounds(app.workspace, d, v.model)) {
-        const Box2 e = dw::Extent(v.direction, BoxOf(*bounds));
+        const Box2 e = dw::Extent(v, BoxOf(*bounds));
         b.Include(v.at + e.min * v.scale.Value());
         b.Include(v.at + e.max * v.scale.Value());
     }
@@ -585,6 +589,49 @@ void DimensionMenu(DrawingState& d) {
     ImGui::EndPopup();
 }
 
+/// A section being made (ГОСТ 2.305): the cutting line's two ends on a view,
+/// then the place of the section; the sight goes toward that place.
+struct SectionTool {
+    bool     active = false;
+    ObjectId parent;
+    std::vector<Vec2> points;   ///< the line's ends picked, in the parent's plane (1:1)
+    void Reset() {
+        parent = {};
+        points.clear();
+    }
+};
+
+SectionTool& Cutter() {
+    static SectionTool tool;
+    return tool;
+}
+
+/// The second end of the cutting line: across or along the sheet when it is
+/// within 10° of it (hold Ctrl for any angle).
+Vec2 SnapCut(Vec2 a, Vec2 b, bool free) {
+    if (free) return b;
+    const Vec2 d = b - a;
+    const double angle = std::atan2(std::abs(d.y), std::abs(d.x)) * 180.0 / kPi;
+    if (angle < 10) return {b.x, a.y};
+    if (angle > 80) return {a.x, b.y};
+    return b;
+}
+
+/// The section view the tool makes when put at `cursor` (sheet mm); nullopt without the model's box.
+std::optional<dw::View> SectionAt(AppContext& app, DrawingState& d, const dw::View& parent, Vec2 a, Vec2 b, Vec2 cursor) {
+    const auto bounds = DrawingViews::Of(d).ModelBounds(app.workspace, d, parent.model);
+    if (!bounds || (b - a).Length() < 1e-6) return std::nullopt;
+    dw::View v;
+    v.model     = parent.model;
+    v.direction = dw::ViewDirection::Section;
+    v.scale     = parent.scale;
+    v.hidden    = false;   // ГОСТ 2.305: a section shows no hidden contour as a rule
+    v.section   = dw::MakeCut(parent, a, b, dw::ViewPointOf(parent, cursor), dw::NextSectionLetter(d.Sheet()));
+    const Box2 e = dw::Extent(v, BoxOf(*bounds));
+    v.at = cursor - (e.min + e.max) * 0.5 * v.scale.Value();
+    return v;
+}
+
 /// A dimension being made: its edges picked one by one on a view, then its
 /// line placed with a click (as in КОМПАС: the command stays on for the next one).
 struct DimensionTool {
@@ -610,6 +657,7 @@ DimensionTool& Tool() {
 }
 
 void StartDimension(AppContext& app, dw::DimensionKind kind) {
+    Cutter().active = false;
     DimensionTool& t = Tool();
     t.Reset();
     t.active = true;
@@ -618,6 +666,20 @@ void StartDimension(AppContext& app, dw::DimensionKind kind) {
         d->selectedAnnotation = {};
         if (dw::ViewsOf(d->Sheet()).empty()) {
             app.notes.Info(Tr("На листе нет видов: размеры ставятся на виды модели"));
+            t.active = false;
+        }
+    }
+}
+
+void StartSectionTool(AppContext& app) {
+    Tool().active = false;
+    SectionTool& t = Cutter();
+    t.Reset();
+    t.active = true;
+    if (DrawingState* d = ActiveDrawing(app)) {
+        if (d->selectedView) t.parent = d->selectedView;
+        if (dw::ViewsOf(d->Sheet()).empty()) {
+            app.notes.Info(Tr("На листе нет видов: разрез проводится по виду модели"));
             t.active = false;
         }
     }
@@ -806,6 +868,13 @@ void RegisterDrawingActions(AppContext& app) {
     a.Add({"drawing.standardViews", N_("Стандартные виды"), "ds-hidden-lines", 0,
            N_("Главный вид, вид сверху и вид слева по детали чертежа (ГОСТ 2.305), в масштабе, который помещается на лист"), inDrawing,
            [&app] { AddStandardViews(app); }, 0, N_("вид спереди сверху слева проекции")});
+    a.Add({"drawing.section", N_("Разрез"), "section", 0,
+           N_("Разрез по линии на виде (ГОСТ 2.305): два щелчка — концы линии, третий — место разреза; штриховка по ГОСТ 2.306"),
+           [&app] {
+               DrawingState* d = ActiveDrawing(app);
+               return d && d->Sheet().kind == dw::SheetKind::Drawing;
+           },
+           [&app] { StartSectionTool(app); }, 0, N_("разрез сечение штриховка")});
     a.Add({"drawing.isoView", N_("Изометрия"), "ui-cube", 0, N_("Изометрия детали (ГОСТ 2.317) на свободном месте листа"), inDrawing,
            [&app] { AddIsoView(app); }, 0, N_("аксонометрия вид")});
     const auto onSheet = [&app] {
@@ -850,7 +919,7 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
             sink.Large("drawing.isoView", N_("Изометрия"));
             sink.EndGroup();
             sink.BeginGroup(N_("Разрезы"));
-            sink.LargeLater("section", N_("Разрез /\nсечение"));
+            sink.Large("drawing.section", N_("Разрез /\nсечение"), Cutter().active);
             sink.LargeLater("sk-circle", N_("Выносной\nэлемент"));
             sink.LargeLater("sk-rectangle", N_("Местный\nвид"));
             sink.EndGroup();
@@ -1121,7 +1190,74 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
             phantom.reset();
         }
     }
-    if (!tool.active && hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+    // A section being made: the line's ends on a view, then its place.
+    SectionTool& cutter = Cutter();
+    if (cutter.active && (sheet.kind != dw::SheetKind::Drawing || (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape)))) {
+        cutter.active = false;
+        cutter.Reset();
+    }
+    std::optional<dw::View> sectionGhost, sectionParent;
+    std::optional<std::pair<Vec2, Vec2>> cutGhost;   // the line on the sheet while its second end is picked
+    if (cutter.active && hovered) {
+        const Vec2 at = view.ToSheet(io.MousePos);
+        // The line starts outside the contour as a rule: the view nearest within 25 mm, if none is under the cursor.
+        ObjectId id = cutter.parent && !cutter.points.empty() ? cutter.parent : viewAt(at);
+        if (!id) {
+            double best = 25;
+            for (std::size_t i = 0; i < onSheet.size(); ++i) {
+                const Box2& b = boxes[i];
+                const double dx = std::max({b.min.x - at.x, 0.0, at.x - b.max.x}), dy = std::max({b.min.y - at.y, 0.0, at.y - b.max.y});
+                if (const double dist = std::hypot(dx, dy); dist < best && !onSheet[i].section) {
+                    best = dist;
+                    id = onSheet[i].id;
+                }
+            }
+        }
+        const auto v = std::find_if(onSheet.begin(), onSheet.end(), [&](const dw::View& x) { return x.id == id; });
+        if (v != onSheet.end() && !v->section) {
+            const Vec2 here = dw::ViewPointOf(*v, at);
+            const double s = v->scale.Value();
+            if (cutter.points.size() == 1) {
+                const Vec2 b = SnapCut(cutter.points[0], here, io.KeyCtrl);
+                cutGhost = std::pair{v->at + cutter.points[0] * s, v->at + b * s};
+            } else if (cutter.points.size() == 2) {
+                sectionGhost = SectionAt(app, d, *v, cutter.points[0], cutter.points[1], at);
+                sectionParent = *v;
+            }
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (cutter.points.empty()) {
+                    cutter.parent = v->id;
+                    cutter.points.push_back(here);
+                } else if (cutter.points.size() == 1) {
+                    const Vec2 b = SnapCut(cutter.points[0], here, io.KeyCtrl);
+                    if ((b - cutter.points[0]).Length() * s > 2) cutter.points.push_back(b);
+                } else if (sectionGhost) {
+                    dw::View made = *sectionGhost;
+                    const ObjectId sheetId = d.Sheet().id;
+                    d.Change(Tr("Разрез"), [&](dw::Drawing& dr) {
+                        for (dw::Sheet& sh : dr.sheets)
+                            if (sh.id == sheetId) {
+                                made.id = dr.Ids().Next();
+                                sh.views.push_back(dw::MakeViewItem(made));
+                            }
+                    });
+                    d.selectedView = made.id;
+                    d.selectedAnnotation = {};
+                    cutter.active = false;
+                    cutter.Reset();
+                    sectionGhost.reset();
+                }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            if (cutter.points.empty()) cutter.active = false;
+            cutter.Reset();
+            sectionGhost.reset();
+            cutGhost.reset();
+        }
+    }
+    const bool busy = tool.active || cutter.active;
+    if (!busy && hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
         const Vec2 at = view.ToSheet(io.MousePos);
         // A dimension over the views is picked first.
         dimDrag = {};
@@ -1162,7 +1298,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
                 }
         dimDrag = {};
     }
-    if (!tool.active && !d.selectedAnnotation && hovered &&
+    if (!busy && !d.selectedAnnotation && hovered &&
         (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
         const Vec2 at = view.ToSheet(io.MousePos);
         d.selectedView = viewAt(at);
@@ -1213,7 +1349,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         drag = {};
     }
     // Right click on a view or a dimension (not a drag of the sheet): its menu.
-    const bool rightClick = hovered && !tool.active && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+    const bool rightClick = hovered && !busy && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
                             ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0 && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).y == 0;
     if (rightClick && d.selectedAnnotation) ImGui::OpenPopup("##dim-menu");
     else if (rightClick && d.selectedView) ImGui::OpenPopup("##view-menu");
@@ -1242,6 +1378,28 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         for (const dw::View& v : onSheet)
             if (v.id == tool.view)
                 for (const dw::ModelEdge& e : tool.edges) DrawPickedEdge(dl, view, v, e, ui::ToU32(c.accent), ui.S(3));
+    if (cutGhost) {
+        const float w = std::max(2.0f, static_cast<float>(0.7 * view.zoom));
+        dl->AddLine(view.ToScreen(cutGhost->first), view.ToScreen(cutGhost->second), ui::ToU32(c.accent), w);
+    }
+    if (sectionGhost && sectionParent) {
+        // The cutting line with its arrows on the parent, and where the section goes.
+        dw::SheetLayout ghost;
+        dw::AddCuttingLine(ghost, *sectionParent, *sectionGhost);
+        const ImU32 accent = ui::ToU32(c.accent);
+        const float thick = std::max(1.5f, static_cast<float>(0.5 * view.zoom));
+        for (const dw::Stroke& st : ghost.strokes) dl->AddLine(view.ToScreen(st.a), view.ToScreen(st.b), accent, thick);
+        for (const dw::Polyline& p : ghost.polylines) DrawPolyline(dl, view, p, accent, thick, 1.0f);
+        for (const dw::Fill& f : ghost.fills) DrawFill(dl, view, f, accent);
+        for (const dw::Label& l : ghost.labels) DrawLabel(dl, ui.fonts.body, view, l, accent);
+        if (const auto bounds = views.ModelBounds(app.workspace, d, sectionGhost->model)) {
+            const Box2 e = dw::Extent(*sectionGhost, BoxOf(*bounds));
+            const double s = sectionGhost->scale.Value();
+            const ImVec2 p0 = view.ToScreen(sectionGhost->at + Vec2{e.min.x, e.max.y} * s);
+            const ImVec2 p1 = view.ToScreen(sectionGhost->at + Vec2{e.max.x, e.min.y} * s);
+            dl->AddRect(p0, p1, accent, 0, 0, 1.5f);
+        }
+    }
     if (phantom && phantomView) {
         dw::SheetLayout ghost;
         ghost.width = now.width;
@@ -1274,6 +1432,10 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size();
     std::string note;
     if (tool.active) note = Tr(ToolPrompt(tool));
+    else if (cutter.active)
+        note = cutter.points.empty()      ? Tr("Разрез: щелчок — начало линии разреза на виде (Esc — выйти)")
+               : cutter.points.size() == 1 ? Tr("Конец линии разреза. Почти горизонтальная или вертикальная выравнивается; Ctrl — под любым углом")
+                                           : Tr("Щелчок — место разреза: взгляд направлен в его сторону");
     else if (newer > 0) note = Trf("На листе есть объекты из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer);
     else if (onSheet.empty() && sheet.kind == dw::SheetKind::Drawing) note = Tr("«Стандартные виды» на вкладке «Виды» — главный вид, сверху и слева по детали. Двойной щелчок по надписи — заполнить её");
     else if (views.Busy()) note = Tr("Виды считаются…");

@@ -3,13 +3,19 @@
 // and the centre lines of the hole.
 #include "../Fixtures.h"
 #include "document/HoleFeature.h"
+#include "document/BzcFile.h"
+#include "document/JsonIO.h"
+#include "drawing/Dimension.h"
+#include "drawing/DrawingFile.h"
 #include "drawing/DrawingView.h"
 #include "kernel/Model.h"
 #include "kernel/drawing/HiddenLines.h"
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 // The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
 TEST_SUITE_BEGIN("fast");
@@ -109,6 +115,78 @@ TEST_CASE("view lines: an isometry has lines; an empty model none") {
     kernel::Model empty;
     CHECK(kernel::ViewShapes::Of(empty).Empty());
     CHECK_FALSE(kernel::ViewShapes().Project({0, -1, 0}, {0, 0, 1}));
+}
+
+TEST_CASE("dimension edges: picked on a view, found again after the plate grows") {
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(Plate());
+    const drawing::ViewBasis front = drawing::BasisOf(drawing::ViewDirection::Front);
+    // The top edge of the front view: y = 30 there, from x −60 to 60 (the front one, nearer the viewer).
+    const auto top = shapes.EdgeAt(front.eye, front.up, {10, 30.2}, 1.0);
+    REQUIRE(top);
+    CHECK(top->edge.kind == kernel::ModelEdge::Kind::Line);
+    CHECK(std::abs(top->edge.a.x - top->edge.b.x) == doctest::Approx(120));
+    CHECK(top->edge.a.y == doctest::Approx(-40));   // the near side: the front view looks along +Y
+    CHECK_FALSE(shapes.EdgeAt(front.eye, front.up, {10, 15}, 1.0));   // the middle of the face: no edge
+
+    // The hole's rim from above.
+    const drawing::ViewBasis above = drawing::BasisOf(drawing::ViewDirection::Top);
+    const auto rim = shapes.EdgeAt(above.eye, above.up, {5.1, 0}, 0.5);
+    REQUIRE(rim);
+    CHECK(rim->edge.kind == kernel::ModelEdge::Kind::Circle);
+    CHECK(rim->edge.radius == doctest::Approx(5));
+    CHECK(rim->edge.center.z == doctest::Approx(30));   // the upper rim, nearer the viewer
+
+    // Found again on the same bodies.
+    const auto again = shapes.Resolve({top->ref, rim->ref});
+    REQUIRE(again.size() == 2);
+    REQUIRE(again[0]);
+    REQUIRE(again[1]);
+    CHECK(again[1]->radius == doctest::Approx(5));
+}
+
+TEST_CASE("dimension edges: the golden drawing's dimensions on the bracket they were made on") {
+    // a3-dimensions.bzd was made in the program on кронштейн.bzc: a linear one,
+    // a diameter and an angle (ADR-0012, step 5). Its references must keep finding the edges.
+    const std::filesystem::path data = std::filesystem::path(BZ_SOURCE_DIR) / "tests" / "data";
+    auto part = doc::LoadBzc(data / "кронштейн.bzc");
+    REQUIRE(part);
+    kernel::Model model;
+    model.Rebuild(*part);
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(model);
+    const auto drawing = drawing::LoadDrawing(data / "drawings" / "v1" / "a3-dimensions.bzd");
+    REQUIRE(drawing);
+    const drawing::Sheet& sheet = drawing->sheets.front();
+    const std::vector<drawing::View> views = drawing::ViewsOf(sheet);
+    const std::vector<drawing::Dimension> dims = drawing::DimensionsOf(sheet);
+    REQUIRE(dims.size() == 3);
+    std::vector<double> values;
+    for (const drawing::Dimension& dim : dims) {
+        std::vector<doc::EdgeReference> refs(dim.edges.size());
+        for (std::size_t i = 0; i < refs.size(); ++i) REQUIRE(doc::json_io::Read(dim.edges[i], refs[i]));
+        const auto found = shapes.Resolve(refs);
+        std::vector<std::optional<drawing::ModelEdge>> edges;
+        for (const auto& e : found) {
+            REQUIRE(e);
+            drawing::ModelEdge x;
+            x.kind = e->kind == kernel::ModelEdge::Kind::Line ? drawing::ModelEdge::Kind::Line
+                     : e->kind == kernel::ModelEdge::Kind::Circle ? drawing::ModelEdge::Kind::Circle
+                                                                  : drawing::ModelEdge::Kind::Other;
+            x.a = e->a;
+            x.b = e->b;
+            x.center = e->center;
+            x.axis = e->axis;
+            x.radius = e->radius;
+            edges.push_back(x);
+        }
+        const auto view = std::find_if(views.begin(), views.end(), [&](const drawing::View& v) { return v.id == dim.view; });
+        REQUIRE(view != views.end());
+        const auto m = drawing::MeasureOf(*view, dim, edges);
+        REQUIRE(m);
+        values.push_back(m->value);
+    }
+    CHECK(values[0] == doctest::Approx(110));   // the plate's bottom edge, between its fillets
+    CHECK(values[1] == doctest::Approx(8));     // a fixing hole
+    CHECK(values[2] == doctest::Approx(90));
 }
 
 TEST_SUITE_END();

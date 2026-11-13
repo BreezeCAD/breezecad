@@ -50,6 +50,8 @@ public:
     int activePage = 0;
     /// The view picked on the sheet or in the tree (not saved).
     ObjectId selectedView;
+    /// The dimension picked (not saved); a view and a dimension are not picked together.
+    ObjectId selectedAnnotation;
     /// The lines of the views, computed from the models (app/drawing/DrawingViews).
     std::shared_ptr<DrawingViews> views;
 

@@ -1,6 +1,7 @@
 #include "kernel/drawing/HiddenLines.h"
 
 #include "kernel/Model.h"
+#include "kernel/occt/EdgeMatch.h"
 #include "kernel/occt/ModelImpl.h"
 
 #include <BRepAdaptor_Curve.hxx>
@@ -9,6 +10,7 @@
 #include <BRepLib.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
 #include <HLRAlgo_Projector.hxx>
 #include <HLRBRep_Algo.hxx>
@@ -16,8 +18,11 @@
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Cylinder.hxx>
 
 #include <algorithm>
@@ -209,6 +214,85 @@ Expected<ProjectedLines> ViewShapes::Project(Vec3 eye, Vec3 up) const {
         AddAxes(myData->shape, eyeDir, rightDir, upDir, out);
     } catch (const Standard_Failure&) {
         return Error{"Вид не построился: ядро не смогло убрать невидимые линии"};
+    }
+    return out;
+}
+
+namespace {
+
+ModelEdge EdgeOf(const TopoDS_Edge& edge) {
+    ModelEdge out;
+    BRepAdaptor_Curve c(edge);
+    const gp_Pnt a = c.Value(c.FirstParameter()), b = c.Value(c.LastParameter());
+    out.a = {a.X(), a.Y(), a.Z()};
+    out.b = {b.X(), b.Y(), b.Z()};
+    if (c.GetType() == GeomAbs_Line) {
+        out.kind = ModelEdge::Kind::Line;
+    } else if (c.GetType() == GeomAbs_Circle) {
+        const gp_Circ circle = c.Circle();
+        out.kind   = ModelEdge::Kind::Circle;
+        out.center = {circle.Location().X(), circle.Location().Y(), circle.Location().Z()};
+        out.axis   = {circle.Axis().Direction().X(), circle.Axis().Direction().Y(), circle.Axis().Direction().Z()};
+        out.radius = circle.Radius();
+    }
+    return out;
+}
+
+} // namespace
+
+std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double tolerance) const {
+    if (!myData) return std::nullopt;
+    const Vec3 e = eye.Normalized(), u = up.Normalized(), r = u.Cross(e).Normalized();
+    const auto to2d = [&](const gp_Pnt& q) { return Vec2{q.X() * r.x + q.Y() * r.y + q.Z() * r.z, q.X() * u.x + q.Y() * u.y + q.Z() * u.z}; };
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(myData->shape, TopAbs_EDGE, edges);
+    std::optional<TopoDS_Edge> best;
+    double bestDistance = tolerance, bestDepth = -1e300;
+    try {
+        for (int i = 1; i <= edges.Extent(); ++i) {
+            const TopoDS_Edge& edge = TopoDS::Edge(edges(i));
+            if (BRep_Tool::Degenerated(edge)) continue;
+            BRepAdaptor_Curve c(edge);
+            std::vector<gp_Pnt> points;
+            if (c.GetType() == GeomAbs_Line) {
+                points = {c.Value(c.FirstParameter()), c.Value(c.LastParameter())};
+            } else {
+                GCPnts_TangentialDeflection d(c, 0.08, 0.01);
+                for (int k = 1; k <= d.NbPoints(); ++k) points.push_back(d.Value(k));
+            }
+            double distance = 1e300, depth = -1e300;
+            for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+                const double l = Distance(p, to2d(points[k]), to2d(points[k + 1]));
+                if (l < distance) {
+                    distance = l;
+                    const gp_Pnt m((points[k].XYZ() + points[k + 1].XYZ()) / 2);
+                    depth = m.X() * e.x + m.Y() * e.y + m.Z() * e.z;   // toward the eye
+                }
+            }
+            // Edges seen on top of each other (a box's front and back): the nearer one.
+            const double same = 1e-3 * std::max(1.0, tolerance);
+            if (distance < bestDistance - same || (distance <= bestDistance + same && depth > bestDepth && distance <= tolerance)) {
+                bestDistance = std::min(bestDistance, distance);
+                bestDepth = depth;
+                best = edge;
+            }
+        }
+        if (!best) return std::nullopt;
+        return PickedEdge{occt::DescribeEdge(*best, myData->shape), EdgeOf(*best)};
+    } catch (const Standard_Failure&) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::optional<ModelEdge>> ViewShapes::Resolve(const std::vector<doc::EdgeReference>& refs) const {
+    std::vector<std::optional<ModelEdge>> out(refs.size());
+    if (!myData || refs.empty()) return out;
+    try {
+        const std::vector<std::optional<TopoDS_Edge>> found = occt::ResolveEdges(refs, myData->shape);
+        for (std::size_t i = 0; i < found.size() && i < out.size(); ++i)
+            if (found[i]) out[i] = EdgeOf(*found[i]);
+    } catch (const Standard_Failure&) {
+        return std::vector<std::optional<ModelEdge>>(refs.size());
     }
     return out;
 }

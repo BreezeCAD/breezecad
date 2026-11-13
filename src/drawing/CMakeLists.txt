@@ -2,6 +2,7 @@
 # вывод в PDF (свой маленький писатель, шрифт TrueType встраивается).
 # Без OpenCASCADE — виды из модели считает kernel (шаг 3 ADR).
 add_library(bz_drawing STATIC
+    Dimension.cpp
     Drawing.cpp
     DrawingFile.cpp
     DrawingPdf.cpp

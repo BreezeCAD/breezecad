@@ -12,6 +12,7 @@
 
 #include "core/Math.h"
 #include "drawing/Drawing.h"
+#include "drawing/Balloon.h"
 #include "drawing/Dimension.h"
 #include "drawing/DrawingView.h"
 #include "drawing/Specification.h"
@@ -133,6 +134,8 @@ struct SheetContent {
     /// The model edges of a dimension of the view now (Dimension.h); none
     /// given — dimensions are left out.
     std::function<std::vector<std::optional<ModelEdge>>(const Sheet&, const View&, const std::vector<Json>&)> edges;
+    /// A position of an assembly view now: its number and dot (Balloon.h); none given — positions are left out.
+    std::function<std::optional<BalloonTarget>(const Sheet&, const View&, const Balloon&)> balloon;
     std::function<Fields(const Sheet&)>               fields;
     std::function<std::vector<SpecRow>(const Sheet&)> spec;
 };

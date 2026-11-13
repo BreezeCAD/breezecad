@@ -27,6 +27,7 @@
 #include <format>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -454,6 +455,8 @@ void ChangeView(DrawingState& d, ObjectId id, const std::string& label, const st
     });
 }
 
+std::optional<std::pair<ObjectId, Vec2>> AnnotationPlace(const dw::Item& item);
+
 void DeleteView(DrawingState& d, ObjectId id) {
     const ObjectId sheet = d.Sheet().id;
     d.Change(Tr("Удалить вид"), [&](dw::Drawing& dr) {
@@ -465,8 +468,8 @@ void DeleteView(DrawingState& d, ObjectId id) {
             });
             // Its dimensions go with it.
             std::erase_if(s.annotations, [&](const dw::Item& i) {
-                const auto dim = dw::ReadDimension(i);
-                return dim && dim->view == id;
+                const auto place = AnnotationPlace(i);
+                return place && place->first == id;
             });
             // Views in projection with it stay, on their own.
             for (dw::Item& item : s.views)
@@ -542,17 +545,46 @@ void ChangeDimension(DrawingState& d, ObjectId id, const std::string& label, con
     });
 }
 
+/// The view of a dimension or a position this version reads, and where it stands ("at"); nullopt for others.
+std::optional<std::pair<ObjectId, Vec2>> AnnotationPlace(const dw::Item& item) {
+    if (const auto dim = dw::ReadDimension(item)) return std::pair{dim->view, dim->at};
+    if (const auto b = dw::ReadBalloon(item)) return std::pair{b->view, b->at};
+    return std::nullopt;
+}
+
+void MoveAnnotation(dw::Item& item, Vec2 at) {
+    if (auto dim = dw::ReadDimension(item)) {
+        dim->at = at;
+        dw::WriteDimension(item, *dim);
+    } else if (auto b = dw::ReadBalloon(item)) {
+        b->at = at;
+        dw::WriteBalloon(item, *b);
+    }
+}
+
 void DeleteAnnotation(DrawingState& d, ObjectId id) {
     const ObjectId sheet = d.Sheet().id;
-    d.Change(Tr("Удалить размер"), [&](dw::Drawing& dr) {
+    const bool balloon = std::any_of(d.Sheet().annotations.begin(), d.Sheet().annotations.end(), [&](const dw::Item& i) {
+        const auto b = dw::ReadBalloon(i);
+        return b && b->id == id;
+    });
+    d.Change(balloon ? Tr("Удалить позицию") : Tr("Удалить размер"), [&](dw::Drawing& dr) {
         for (dw::Sheet& s : dr.sheets)
             if (s.id == sheet)
                 std::erase_if(s.annotations, [&](const dw::Item& i) {
                     const auto dim = dw::ReadDimension(i);
-                    return dim && dim->id == id;
+                    const auto b = dw::ReadBalloon(i);
+                    return (dim && dim->id == id) || (b && b->id == id);
                 });
     });
     if (d.selectedAnnotation == id) d.selectedAnnotation = {};
+}
+
+/// The menu of a position: delete it.
+void BalloonMenu(DrawingState& d) {
+    if (!ImGui::BeginPopup("##balloon-menu")) return;
+    if (ImGui::MenuItem(Tr("Удалить позицию"), "Delete")) DeleteAnnotation(d, d.selectedAnnotation);
+    ImGui::EndPopup();
 }
 
 /// The menu of a dimension: how a linear one measures, its text, delete.
@@ -632,6 +664,111 @@ std::optional<dw::View> SectionAt(AppContext& app, DrawingState& d, const dw::Vi
     return v;
 }
 
+/// A position being placed (ГОСТ 2.109): a click on a component of an
+/// assembly view sets the dot, the next one the shelf.
+struct BalloonTool {
+    bool     active = false;
+    ObjectId view, component;
+    Vec3     point;    ///< the dot in the component's part coordinates
+    bool     picked = false;
+    void Reset() {
+        view = component = {};
+        picked = false;
+    }
+};
+
+BalloonTool& Pointer() {
+    static BalloonTool tool;
+    return tool;
+}
+
+/// The component of an assembly view under a sheet point, and the point on
+/// it (part coordinates): the edge picked there, its component the smallest
+/// whose box holds it.
+std::optional<std::pair<ObjectId, Vec3>> ComponentAt(AppContext& app, DrawingState& d, const dw::View& v, Vec2 at) {
+    DrawingViews& views = DrawingViews::Of(d);
+    const std::vector<DrawingViews::Part> parts = views.Parts(app.workspace, d, v.model);
+    if (parts.empty()) return std::nullopt;
+    dw::Json ref;
+    const auto e = views.EdgeAt(app.workspace, d, v, at, 6.0 / std::max(d.zoom, 1e-6), ref);
+    if (!e) return std::nullopt;
+    const Vec3 p = e->kind == dw::ModelEdge::Kind::Circle ? e->center + (e->a - e->center) : (e->a + e->b) * 0.5;
+    const DrawingViews::Part* best = nullptr;
+    double volume = 1e300;
+    for (const DrawingViews::Part& part : parts) {
+        const Box3& b = part.box;
+        constexpr double tol = 0.01;
+        if (p.x < b.min.x - tol || p.y < b.min.y - tol || p.z < b.min.z - tol || p.x > b.max.x + tol || p.y > b.max.y + tol || p.z > b.max.z + tol)
+            continue;
+        const double vol = (b.max.x - b.min.x) * (b.max.y - b.min.y) * (b.max.z - b.min.z);
+        if (vol < volume) {
+            volume = vol;
+            best = &part;
+        }
+    }
+    if (!best) return std::nullopt;
+    return std::pair{best->id, best->placement.Inverse().Point(p)};
+}
+
+/// «Расставить позиции»: one position per row of the specification that has
+/// none on the sheet yet, the dot in the middle of the first such component,
+/// the shelves in a column beside the view.
+void ArrangeBalloons(AppContext& app) {
+    DrawingState* d = ActiveDrawing(app);
+    if (!d) return;
+    const std::vector<dw::View> onSheet = dw::ViewsOf(d->Sheet());
+    DrawingViews& views = DrawingViews::Of(*d);
+    // The picked view, else the first one of an assembly.
+    std::optional<dw::View> view;
+    for (const dw::View& v : onSheet)
+        if (v.id == d->selectedView && !views.Parts(app.workspace, *d, v.model).empty()) view = v;
+    for (const dw::View& v : onSheet)
+        if (!view && !v.section && v.direction != dw::ViewDirection::Iso && !views.Parts(app.workspace, *d, v.model).empty()) view = v;
+    if (!view) {
+        app.notes.Info(Tr("Позиции ставятся на виды сборки: на листе таких нет"));
+        return;
+    }
+    const dw::ViewLines* lines = views.Lines(app.workspace, *d, *view);
+    if (!lines) {
+        app.notes.Info(Tr("Вид ещё считается — повторите через секунду"));
+        return;
+    }
+    std::set<std::string> have;
+    for (const dw::Balloon& b : dw::BalloonsOf(d->Sheet())) {
+        if (const auto t = views.BalloonTarget(app.workspace, *d, *view, b)) have.insert(t->number);
+    }
+    std::vector<dw::Balloon> made;
+    std::vector<Vec2> dots;
+    for (const DrawingViews::Part& part : views.Parts(app.workspace, *d, view->model)) {
+        dw::Balloon b;
+        b.view = view->id;
+        b.component = part.id;
+        b.point = part.placement.Inverse().Point((part.box.min + part.box.max) * 0.5);
+        const auto t = views.BalloonTarget(app.workspace, *d, *view, b);
+        if (!t || have.count(t->number)) continue;
+        have.insert(t->number);
+        dots.push_back(view->at + dw::ProjectPoint(*view, t->anchor) * view->scale.Value());
+        made.push_back(b);
+    }
+    if (made.empty()) {
+        app.notes.Info(Tr("У всех позиций спецификации уже есть выноски"));
+        return;
+    }
+    const Box2 box = dw::ViewBox(*view, *lines);
+    const std::vector<Vec2> shelves = dw::ArrangeShelves(box, dots, dw::SheetSizeMm(d->Sheet().size, d->Sheet().orientation).x);
+    const ObjectId sheetId = d->Sheet().id;
+    d->Change(Tr("Расставить позиции"), [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets)
+            if (s.id == sheetId)
+                for (std::size_t i = 0; i < made.size(); ++i) {
+                    dw::Balloon b = made[i];
+                    b.id = dr.Ids().Next();
+                    b.at = dw::ViewPointOf(*view, shelves[i]);
+                    s.annotations.push_back(dw::MakeBalloonItem(b));
+                }
+    });
+}
+
 /// A dimension being made: its edges picked one by one on a view, then its
 /// line placed with a click (as in КОМПАС: the command stays on for the next one).
 struct DimensionTool {
@@ -658,6 +795,7 @@ DimensionTool& Tool() {
 
 void StartDimension(AppContext& app, dw::DimensionKind kind) {
     Cutter().active = false;
+    Pointer().active = false;
     DimensionTool& t = Tool();
     t.Reset();
     t.active = true;
@@ -673,6 +811,7 @@ void StartDimension(AppContext& app, dw::DimensionKind kind) {
 
 void StartSectionTool(AppContext& app) {
     Tool().active = false;
+    Pointer().active = false;
     SectionTool& t = Cutter();
     t.Reset();
     t.active = true;
@@ -875,6 +1014,26 @@ void RegisterDrawingActions(AppContext& app) {
                return d && d->Sheet().kind == dw::SheetKind::Drawing;
            },
            [&app] { StartSectionTool(app); }, 0, N_("разрез сечение штриховка")});
+    a.Add({"drawing.balloon", N_("Позиция"), "ui-marker", 0,
+           N_("Позиционная выноска сборки (ГОСТ 2.109): щелчок по детали на виде, затем место полки; номер — из спецификации"),
+           [&app] {
+               DrawingState* d = ActiveDrawing(app);
+               return d && d->Sheet().kind == dw::SheetKind::Drawing;
+           },
+           [&app] {
+               Tool().active = false;
+               Cutter().active = false;
+               Pointer().Reset();
+               Pointer().active = true;
+           },
+           0, N_("позиция выноска номер сборка")});
+    a.Add({"drawing.arrangeBalloons", N_("Расставить позиции"), "ui-list", 0,
+           N_("Выноски всех позиций спецификации, которых ещё нет на листе, — столбцом у вида сборки"),
+           [&app] {
+               DrawingState* d = ActiveDrawing(app);
+               return d && d->Sheet().kind == dw::SheetKind::Drawing;
+           },
+           [&app] { ArrangeBalloons(app); }, 0, N_("позиции выноски расставить")});
     a.Add({"drawing.isoView", N_("Изометрия"), "ui-cube", 0, N_("Изометрия детали (ГОСТ 2.317) на свободном месте листа"), inDrawing,
            [&app] { AddIsoView(app); }, 0, N_("аксонометрия вид")});
     const auto onSheet = [&app] {
@@ -931,6 +1090,10 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
             sink.Large("drawing.dimDiameter", N_("Диамет-\nральный"), Tool().active && Tool().kind == dw::DimensionKind::Diameter);
             sink.Large("drawing.dimRadius", N_("Радиальный"), Tool().active && Tool().kind == dw::DimensionKind::Radius);
             sink.Large("drawing.dimAngle", N_("Угловой"), Tool().active && Tool().kind == dw::DimensionKind::Angle);
+            sink.EndGroup();
+            sink.BeginGroup(N_("Позиции"));
+            sink.Large("drawing.balloon", N_("Позиция"), Pointer().active);
+            sink.Large("drawing.arrangeBalloons", N_("Расставить\nпозиции"));
             sink.EndGroup();
             sink.BeginGroup(N_("Обозначения"));
             sink.LargeLater("a-axis", N_("Обозначение\nцентра"));
@@ -1030,9 +1193,28 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
                     y += ui.S(30);
                     ImGui::PopID();
                 }
+                // Its positions: the number now; red when the component is gone.
+                for (const dw::Balloon& b : dw::BalloonsOf(sheet)) {
+                    if (b.view != v.id) continue;
+                    ImGui::PushID(static_cast<int>(b.id.value));
+                    const auto t = DrawingViews::Of(d).BalloonTarget(app.workspace, d, v, b);
+                    const std::string text = t ? Trf("Позиция {}", t->number) : Tr("Позиция: компонента нет");
+                    const float in = indent + ui.S(16);
+                    if (TreeRow(ui, "##balloon", "ui-marker", text, x + in, y, width - in, d.selectedAnnotation == b.id, false, nullptr, !t)) {
+                        d.selectedAnnotation = b.id;
+                        d.selectedView = {};
+                    }
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                        d.selectedAnnotation = b.id;
+                        d.selectedView = {};
+                        ImGui::OpenPopup("##balloon-menu");
+                    }
+                    y += ui.S(30);
+                    ImGui::PopID();
+                }
                 ImGui::PopID();
             }
-            const std::size_t newer = sheet.views.size() - views.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size();
+            const std::size_t newer = sheet.views.size() - views.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size() - dw::BalloonsOf(sheet).size();
             if (newer > 0) {
                 TreeRow(ui, "##newer", nullptr, Trf("Объектов из более новой версии: {}", newer), x + ui.S(24), y, width - ui.S(24), false, true);
                 y += ui.S(30);
@@ -1065,6 +1247,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
     }
     ViewMenu(d);
     DimensionMenu(d);
+    BalloonMenu(d);
     ImGui::SetCursorScreenPos({pos.x, y});
     ImGui::Dummy({1, ui.S(8)});
     EndArea();
@@ -1256,7 +1439,57 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
             cutGhost.reset();
         }
     }
-    const bool busy = tool.active || cutter.active;
+    // A position being placed: the component's dot, then the shelf.
+    BalloonTool& pointer = Pointer();
+    if (pointer.active && (sheet.kind != dw::SheetKind::Drawing || (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape)))) {
+        pointer.active = false;
+        pointer.Reset();
+    }
+    std::optional<dw::Balloon> balloonGhost;
+    std::optional<dw::View>    balloonView;
+    if (pointer.active && hovered) {
+        const Vec2 at = view.ToSheet(io.MousePos);
+        const ObjectId id = pointer.picked ? pointer.view : viewAt(at);
+        const auto v = std::find_if(onSheet.begin(), onSheet.end(), [&](const dw::View& x) { return x.id == id; });
+        if (v != onSheet.end()) {
+            if (pointer.picked) {
+                balloonGhost = dw::Balloon{{}, v->id, pointer.component, pointer.point, dw::ViewPointOf(*v, at)};
+                balloonView = *v;
+            }
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (!pointer.picked) {
+                    if (const auto hit = ComponentAt(app, d, *v, at)) {
+                        pointer.view = v->id;
+                        pointer.component = hit->first;
+                        pointer.point = hit->second;
+                        pointer.picked = true;
+                    } else if (views.Parts(app.workspace, d, v->model).empty()) {
+                        app.notes.Info(Tr("Позиции ставятся на виды сборки"));
+                    }
+                } else if (balloonGhost) {
+                    dw::Balloon made = *balloonGhost;
+                    const ObjectId sheetId = d.Sheet().id;
+                    d.Change(Tr("Позиция"), [&](dw::Drawing& dr) {
+                        for (dw::Sheet& sh : dr.sheets)
+                            if (sh.id == sheetId) {
+                                made.id = dr.Ids().Next();
+                                sh.annotations.push_back(dw::MakeBalloonItem(made));
+                            }
+                    });
+                    d.selectedAnnotation = made.id;
+                    d.selectedView = {};
+                    pointer.Reset();   // stays on for the next one
+                    balloonGhost.reset();
+                }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            if (!pointer.picked) pointer.active = false;
+            pointer.Reset();
+            balloonGhost.reset();
+        }
+    }
+    const bool busy = tool.active || cutter.active || pointer.active;
     if (!busy && hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
         const Vec2 at = view.ToSheet(io.MousePos);
         // A dimension over the views is picked first.
@@ -1271,30 +1504,30 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         }
         if (d.selectedAnnotation) {
             d.selectedView = {};
-            for (const dw::Dimension& x : dw::DimensionsOf(sheet))
-                if (x.id == d.selectedAnnotation && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            if (const dw::Item* item = dw::FindAnnotation(d.Sheet(), d.selectedAnnotation); item && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                if (const auto place = AnnotationPlace(*item))
                     for (const dw::View& v : onSheet)
-                        if (v.id == x.view) dimDrag = {x.id, at, x.at, v.scale.Value(), false};
+                        if (v.id == place->first) dimDrag = {d.selectedAnnotation, at, place->second, v.scale.Value(), false};
         }
     }
     if (dimDrag.id && ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         const Vec2 delta = view.ToSheet(io.MousePos) - dimDrag.start;
         if (std::abs(delta.x) + std::abs(delta.y) > 0) dimDrag.moved = true;
-        if (dw::Item* item = dw::FindAnnotation(d.Sheet(), dimDrag.id))
-            if (auto x = dw::ReadDimension(*item)) {
-                x->at = dimDrag.from + delta / dimDrag.scale;
-                dw::WriteDimension(*item, *x);
-            }
+        if (dw::Item* item = dw::FindAnnotation(d.Sheet(), dimDrag.id)) MoveAnnotation(*item, dimDrag.from + delta / dimDrag.scale);
     }
     if (dimDrag.id && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (dimDrag.moved)
             if (dw::Item* item = dw::FindAnnotation(d.Sheet(), dimDrag.id))
-                if (auto x = dw::ReadDimension(*item)) {
+                if (const auto place = AnnotationPlace(*item)) {
                     // One undo step: back where it was, then the change.
-                    const Vec2 to = x->at;
-                    x->at = dimDrag.from;
-                    dw::WriteDimension(*item, *x);
-                    ChangeDimension(d, dimDrag.id, Tr("Сдвинуть размер"), [to](dw::Dimension& y) { y.at = to; });
+                    const Vec2 to = place->second;
+                    const ObjectId id = dimDrag.id, sheetId = d.Sheet().id;
+                    MoveAnnotation(*item, dimDrag.from);
+                    d.Change(Tr("Сдвинуть обозначение"), [&](dw::Drawing& dr) {
+                        for (dw::Sheet& s : dr.sheets)
+                            if (s.id == sheetId)
+                                if (dw::Item* it = dw::FindAnnotation(s, id)) MoveAnnotation(*it, to);
+                    });
                 }
         dimDrag = {};
     }
@@ -1351,7 +1584,10 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     // Right click on a view or a dimension (not a drag of the sheet): its menu.
     const bool rightClick = hovered && !busy && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
                             ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0 && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).y == 0;
-    if (rightClick && d.selectedAnnotation) ImGui::OpenPopup("##dim-menu");
+    if (rightClick && d.selectedAnnotation) {
+        const dw::Item* item = dw::FindAnnotation(d.Sheet(), d.selectedAnnotation);
+        ImGui::OpenPopup(item && dw::ReadBalloon(*item) ? "##balloon-menu" : "##dim-menu");
+    }
     else if (rightClick && d.selectedView) ImGui::OpenPopup("##view-menu");
     const bool deleteKey = (hovered || ImGui::IsWindowFocused()) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete);
     if (deleteKey && d.selectedAnnotation) DeleteAnnotation(d, d.selectedAnnotation);
@@ -1378,6 +1614,14 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         for (const dw::View& v : onSheet)
             if (v.id == tool.view)
                 for (const dw::ModelEdge& e : tool.edges) DrawPickedEdge(dl, view, v, e, ui::ToU32(c.accent), ui.S(3));
+    if (balloonGhost && balloonView) {
+        dw::SheetLayout ghost;
+        dw::AddBalloon(ghost, *balloonView, *balloonGhost, views.BalloonTarget(app.workspace, d, *balloonView, *balloonGhost));
+        const ImU32 accent = ui::ToU32(c.accent);
+        for (const dw::Polyline& p : ghost.polylines) DrawPolyline(dl, view, p, accent, 1.0f, 1.0f);
+        for (const dw::Fill& f : ghost.fills) DrawFill(dl, view, f, accent);
+        for (const dw::Label& l : ghost.labels) DrawLabel(dl, ui.fonts.body, view, l, accent);
+    }
     if (cutGhost) {
         const float w = std::max(2.0f, static_cast<float>(0.7 * view.zoom));
         dl->AddLine(view.ToScreen(cutGhost->first), view.ToScreen(cutGhost->second), ui::ToU32(c.accent), w);
@@ -1429,9 +1673,11 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     ImGui::PopClipRect();
 
     // A note at the top, as over the part's view: what to do now.
-    const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size();
+    const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size() - dw::BalloonsOf(sheet).size();
     std::string note;
     if (tool.active) note = Tr(ToolPrompt(tool));
+    else if (pointer.active)
+        note = pointer.picked ? Tr("Щелчок — место полки с номером (Esc — выйти)") : Tr("Позиция: щелчок по детали на виде сборки (Esc — выйти)");
     else if (cutter.active)
         note = cutter.points.empty()      ? Tr("Разрез: щелчок — начало линии разреза на виде (Esc — выйти)")
                : cutter.points.size() == 1 ? Tr("Конец линии разреза. Почти горизонтальная или вертикальная выравнивается; Ctrl — под любым углом")
@@ -1448,6 +1694,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
 
     ViewMenu(d);
     DimensionMenu(d);
+    BalloonMenu(d);
     // The whole sheet again: a button in the corner, as «Домой» over the model.
     ImGui::SetCursorScreenPos({pos.x + size.x - ui.S(48), pos.y + ui.S(12)});
     if (ui::IconButton(ui, "##sheet-fit", "view-fit", 36, 20, Tr("Лист целиком (F)"))) d.zoom = 0;

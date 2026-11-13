@@ -2859,7 +2859,6 @@
     "Размер: ребро пропало": "Dimension: edge lost",
     "Ребро размера пропало из модели": "The dimension's edge is gone from the model",
     "Рёбра угла параллельны": "The angle's edges are parallel",
-    "Сдвинуть размер": "Move dimension",
     "Текст размера": "Dimension text",
     "Текст размера («<>» — значение):": "Dimension text («<>» — the value):",
     "Угловой размер": "Angular dimension",
@@ -2885,6 +2884,24 @@
     "Разрез по линии на виде (ГОСТ 2.305): два щелчка — концы линии, третий — место разреза; штриховка по ГОСТ 2.306": "A section along a line on a view (GOST 2.305): two clicks — the line's ends, the third — where the section goes; hatching per GOST 2.306",
     "Разрез: щелчок — начало линии разреза на виде (Esc — выйти)": "Section: click — the start of the cutting line on a view (Esc — exit)",
     "Щелчок — место разреза: взгляд направлен в его сторону": "Click — where the section goes: the sight points toward it",
-    "разрез сечение штриховка": "section cut hatching"
+    "разрез сечение штриховка": "section cut hatching",
+    "Вид ещё считается — повторите через секунду": "The view is still being computed — try again in a second",
+    "Выноски всех позиций спецификации, которых ещё нет на листе, — столбцом у вида сборки": "Leaders for every specification position not yet on the sheet — in a column beside the assembly view",
+    "Позиции": "Positions",
+    "Позиции ставятся на виды сборки": "Positions are placed on assembly views",
+    "Позиции ставятся на виды сборки: на листе таких нет": "Positions are placed on assembly views: there are none on the sheet",
+    "Позиционная выноска сборки (ГОСТ 2.109): щелчок по детали на виде, затем место полки; номер — из спецификации": "Assembly position leader (GOST 2.109): click a part on a view, then the shelf's place; the number comes from the specification",
+    "Позиция": "Position",
+    "Позиция {}": "Position {}",
+    "Позиция: компонента нет": "Position: the component is gone",
+    "Позиция: щелчок по детали на виде сборки (Esc — выйти)": "Position: click a part on an assembly view (Esc — exit)",
+    "Расставить\nпозиции": "Arrange\npositions",
+    "Расставить позиции": "Arrange positions",
+    "Сдвинуть обозначение": "Move annotation",
+    "У всех позиций спецификации уже есть выноски": "Every specification position already has a leader",
+    "Удалить позицию": "Delete position",
+    "Щелчок — место полки с номером (Esc — выйти)": "Click — where the numbered shelf goes (Esc — exit)",
+    "позиции выноски расставить": "positions leaders arrange",
+    "позиция выноска номер сборка": "position leader number assembly"
   }
 }

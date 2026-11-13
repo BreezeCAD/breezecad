@@ -8,7 +8,11 @@
 #include "kernel/occt/FaceMatch.h"
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
 #include "kernel/occt/Section.h"
+
+#include <atomic>
+#include <tuple>
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
@@ -315,6 +319,9 @@ std::optional<Frame> PlanarFaceFrame(const TopoDS_Face& face) {
 
 namespace {
 
+/// Faces left bare by the last Sync (MeshBareFaces).
+std::atomic<int> gBareFaces{0};
+
 /// How finely bodies are meshed for display, by quality level (0 best).
 /// Finer than OCCT's default (20°): round faces look round.
 void SetMeshPrecision(const Handle(Prs3d_Drawer)& drawer, int quality) {
@@ -350,6 +357,39 @@ void SetMeshPrecisionFor(const Handle(Prs3d_Drawer)& drawer, int quality, Meshed
     }
 }
 
+/// Faces BRepMesh left without triangles while the body as a whole was
+/// meshed (it skips a face it cannot do: a hole in the body on screen).
+/// Each is meshed again on its own, by other means: deflection relative to
+/// the face, then coarser; a face still bare is written to the log and
+/// counted (Viewport::BareFaces). Under a deadline, guarded.
+int MeshBareFaces(const TopoDS_Shape& shape) {
+    int bare = 0;
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(e.Current());
+        TopLoc_Location where;
+        if (!BRep_Tool::Triangulation(face, where).IsNull()) continue;
+        bool done = false;
+        std::string fault;
+        for (const auto& [deflection, angle, relative] : {std::tuple{0.01, 0.35, true}, std::tuple{0.05, 0.6, true}, std::tuple{0.5, 0.8, false}}) {
+            if (!guard::RunGuarded([&] {
+                    try {
+                        kernel::occt::ops::Triangulate(face, deflection, angle, relative, 2.0);
+                    } catch (...) {
+                    }
+                }, &fault))
+                log::Warn("Meshing a bare face faulted ({})", fault);
+            if (!BRep_Tool::Triangulation(face, where).IsNull()) {
+                done = true;
+                break;
+            }
+        }
+        if (!done) ++bare;
+    }
+    if (bare > 0) log::Warn("Meshing for display: {} face(s) left without triangles — shown as holes", bare);
+    gBareFaces.fetch_add(bare);
+    return bare;
+}
+
 /// Failed: even the coarsest mesh did not work — the body is then shown as
 /// edges only (in AIS_Shaded OCCT would mesh it inside drawing, unguarded).
 Meshed MeshForDisplay(const TopoDS_Shape& shape, int quality) {
@@ -382,10 +422,12 @@ Meshed MeshForDisplay(const TopoDS_Shape& shape, int quality) {
         return false;
     };
     const int level = std::clamp(quality, 0, 2);
-    if (attempt(level, 0, 0)) return Meshed::AsAsked;
-    if (level < 2 && attempt(2, 0, 0)) return Meshed::Coarser;
-    if (attempt(2, 30.0, 0.01)) return Meshed::Coarsest;
-    return Meshed::Failed;
+    Meshed meshed = Meshed::Failed;
+    if (attempt(level, 0, 0)) meshed = Meshed::AsAsked;
+    else if (level < 2 && attempt(2, 0, 0)) meshed = Meshed::Coarser;
+    else if (attempt(2, 30.0, 0.01)) meshed = Meshed::Coarsest;
+    if (meshed != Meshed::Failed) MeshBareFaces(shape);
+    return meshed;
 }
 
 } // namespace
@@ -1014,7 +1056,10 @@ void Viewport::PrepareMeshes(const kernel::Model& model, int quality) {
     for (const kernel::Body& body : model.GetImpl().bodies) MeshForDisplay(body.shape, quality);
 }
 
+int Viewport::BareFaces() const { return gBareFaces.load(); }
+
 void Viewport::Sync(const kernel::Model& model) {
+    gBareFaces.store(0);   // counted anew for the bodies meshed now
     Impl& m = *myImpl;
     if (&model == m.syncedModel && model.Revision() == m.syncedRevision) return;
     m.syncedModel = &model;

@@ -8,6 +8,7 @@
 #include "core/PathText.h"
 #include "document/BzcFile.h"
 #include "document/JsonIO.h"
+#include "kernel/Model.h"
 
 #include <nlohmann/json.hpp>
 
@@ -79,7 +80,7 @@ bool Autosave::Write(Session& session, double now) {
             if (!e.session || !(e.created || e.session->IsModified())) continue;
             std::filesystem::create_directories(partsFolder, ec);
             const std::string name = std::format("part{}.bzc", ++n);
-            if (const Status written = doc::SaveBzc(e.session->doc, partsFolder / name, "BreezeCAD autosave"); !written) {
+            if (const Status written = doc::SaveBzc(e.session->doc, partsFolder / name, "BreezeCAD autosave", kernel::GeometryKernelVersion()); !written) {
                 log::Warn("Autosave of {} failed: {}", ToUtf8(e.file.filename()), written.GetError().message);
                 session.unsavedSince = now;
                 return false;

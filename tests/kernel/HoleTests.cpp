@@ -7,6 +7,9 @@
 
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -307,3 +310,5 @@ TEST_CASE("holes from a sketch: at its circles' centres, following the sketch") 
     REQUIRE(back.LoadFields(j));
     CHECK(back.sketch == sk.id);
 }
+
+TEST_SUITE_END();

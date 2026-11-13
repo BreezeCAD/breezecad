@@ -17,6 +17,7 @@
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
 #include "ui/Widgets.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <format>
@@ -443,7 +444,7 @@ bool WriteCreatedParts(Session& as, const std::vector<std::vector<ObjectId>>& us
         std::error_code ec;
         std::filesystem::create_directories(e.file.parent_path(), ec);
         e.session->RebuildNow();
-        if (const Status s = doc::SaveBzc(e.session->doc, e.file, kGenerator); !s) {
+        if (const Status s = doc::SaveBzc(e.session->doc, e.file, kGenerator, kernel::GeometryKernelVersion()); !s) {
             error = std::format("Деталь «{}» не записана: {}", ToUtf8(e.file.filename()), s.GetError().message);
             return false;
         }
@@ -495,7 +496,7 @@ bool WriteEditedParts(Session& as, const std::vector<std::vector<ObjectId>>& use
         const bool moved = !(*now == e.file);
         if (e.created || moved || e.session->IsModified()) {
             e.session->RebuildNow();
-            if (const Status s = doc::SaveBzc(e.session->doc, *now, kGenerator); !s) {
+            if (const Status s = doc::SaveBzc(e.session->doc, *now, kGenerator, kernel::GeometryKernelVersion()); !s) {
                 error = std::format("Деталь «{}» не записана: {}", ToUtf8(now->filename()), s.GetError().message);
                 return false;
             }

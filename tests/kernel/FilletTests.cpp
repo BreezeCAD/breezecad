@@ -9,6 +9,9 @@
 #include <cmath>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::CurveKind;
@@ -233,3 +236,5 @@ TEST_CASE("chamfer: one edge turned on its own") {
     CHECK_FALSE(read->FlippedAt(1));
     CHECK(read->FlippedAt(0));
 }
+
+TEST_SUITE_END();

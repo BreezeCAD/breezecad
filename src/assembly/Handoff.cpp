@@ -442,7 +442,10 @@ Expected<ApplyReport> ApplyReturn(const Session& session, const fs::path& return
                 if (const auto it = original.find(c.path); it != original.end()) c.path = it->second;
             std::vector<std::uint8_t> preview;
             if (auto p = doc::ReadBzcPreview(temp); p) preview = std::move(*p);
-            const Status saved = SaveAssembly(*a, fixed, std::format("BreezeCAD {}", version), preview);
+            // Only its paths change: the kernel it was saved with stays.
+            std::string kernel;
+            if (auto archive = doc::ReadBzcArchive(temp); archive) kernel = archive->kernel;
+            const Status saved = SaveAssembly(*a, fixed, std::format("BreezeCAD {}", version), kernel, preview);
             fs::remove(temp, ec);
             if (!saved) return saved.GetError();
             Expected<std::string> fixedBytes = ReadBytes(fixed);

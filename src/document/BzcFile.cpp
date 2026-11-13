@@ -42,8 +42,8 @@ std::string NowIso() {
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", now);
 }
 
-Json Manifest(std::string_view documentType, std::string_view generator) {
-    return Json{
+Json Manifest(std::string_view documentType, std::string_view generator, std::string_view kernel) {
+    Json manifest{
         {"format", "bzc"},
         {"formatVersion", kBzcFormatVersion},
         {"documentType", documentType},
@@ -52,6 +52,10 @@ Json Manifest(std::string_view documentType, std::string_view generator) {
         {"internalUnits", {{"length", "mm"}, {"angle", "rad"}}},
         {"content", {{"document", kDocumentName}}},
     };
+    // Which kernel built the geometry this file was saved from: a part that
+    // rebuilds differently can be traced to a kernel change (STAB-0).
+    if (!kernel.empty()) manifest["kernel"] = kernel;
+    return manifest;
 }
 
 Expected<std::string> ReadWholeFile(const std::filesystem::path& path) {
@@ -247,9 +251,10 @@ Expected<Document> DocumentFromJson(std::string_view text, LoadReport* report) {
 }
 
 Status WriteBzcArchive(const std::filesystem::path& path, std::string_view documentType, std::string_view generator,
-                       const std::string& document, const std::map<std::string, std::vector<std::uint8_t>>& pictures,
+                       std::string_view kernel, const std::string& document,
+                       const std::map<std::string, std::vector<std::uint8_t>>& pictures,
                        std::span<const std::uint8_t> preview) {
-    const std::string manifest = Manifest(documentType, generator).dump(1, '\t');
+    const std::string manifest = Manifest(documentType, generator, kernel).dump(1, '\t');
     // No new picture (a part written while another document is on the
     // screen): the one the file had stays, a little old rather than none.
     std::vector<std::uint8_t> kept;
@@ -343,6 +348,8 @@ Expected<BzcArchive> ReadBzcArchive(const std::filesystem::path& path) {
             return Error{"Файл не является документом BreezeCAD (.bzc)"};
         archive.formatVersion = manifest.value("formatVersion", 0);
         archive.documentType  = manifest.value("documentType", std::string(kPartType));
+        // Files before 0.2.6 have no "kernel": it stays empty.
+        if (!ReadMember(manifest, "kernel", archive.kernel)) archive.kernel.clear();
     } catch (const Json::exception&) {   // a field of the wrong type
         return Error{"Файл не является документом BreezeCAD (.bzc)"};
     }
@@ -381,8 +388,8 @@ Expected<std::vector<std::uint8_t>> ReadBzcPreview(const std::filesystem::path& 
 }
 
 Status SaveBzc(const Document& doc, const std::filesystem::path& path, std::string_view generator,
-               std::span<const std::uint8_t> preview) {
-    return WriteBzcArchive(path, kPartType, generator, DocumentToJson(doc), doc.look.pictures, preview);
+               std::string_view kernel, std::span<const std::uint8_t> preview) {
+    return WriteBzcArchive(path, kPartType, generator, kernel, DocumentToJson(doc), doc.look.pictures, preview);
 }
 
 Expected<Document> LoadBzc(const std::filesystem::path& path, LoadReport* report) {

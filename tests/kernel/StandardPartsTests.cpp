@@ -12,6 +12,9 @@
 #include <string>
 #include <tuple>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::doc::parts;
 using doc::FeatureState;
@@ -411,3 +414,5 @@ TEST_CASE("the user's library: a part saved with its variables as a table") {
     ClearPacks();
     fs::remove_all(dir);
 }
+
+TEST_SUITE_END();

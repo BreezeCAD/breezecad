@@ -30,6 +30,9 @@
 #include <algorithm>
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -535,3 +538,5 @@ TEST_CASE("a washer turns on a screw head both ways round") {
     CHECK(over.translation.z == doctest::Approx(6.0).epsilon(1e-6));
     std::filesystem::remove_all(dir);
 }
+
+TEST_SUITE_END();

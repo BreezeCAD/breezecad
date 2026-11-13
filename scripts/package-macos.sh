@@ -3,8 +3,8 @@
 # macOS package: BreezeCAD.app (Apple Silicon) that runs on its own, zipped.
 #
 #   BreezeCAD.app/Contents/MacOS/breezecad      the program
-#   BreezeCAD.app/Contents/Frameworks/*.dylib   OCCT, GLFW, freetype… from
-#                                               Homebrew, paths rewritten to
+#   BreezeCAD.app/Contents/Frameworks/*.dylib   OCCT (BZ_OCCT_PREFIX), GLFW,
+#                                               freetype… (Homebrew), paths rewritten to
 #                                               @executable_path/../Frameworks
 #   BreezeCAD.app/Contents/Resources/assets     icons, fonts, splash
 #
@@ -62,15 +62,19 @@ printf 'APPL????' > "$app/Contents/PkgInfo"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
 # The libraries into Frameworks, every reference rewritten.
+# OCCT is our own build (scripts/deps/build-occt.sh), in BZ_OCCT_PREFIX.
 prefix="$(brew --prefix)"
+occt="${BZ_OCCT_PREFIX:-}"
 dylibbundler -of -cd -b -x "$app/Contents/MacOS/breezecad" -d "$app/Contents/Frameworks" \
-    -p @executable_path/../Frameworks/ -s "$prefix/lib" > "$stage/dylibbundler.log"
+    -p @executable_path/../Frameworks/ -s "$prefix/lib" ${occt:+-s "$occt/lib"} > "$stage/dylibbundler.log"
 
 binaries=("$app/Contents/MacOS/breezecad" "$app"/Contents/Frameworks/*.dylib)
-# Search paths into Homebrew are not needed any more and would only hide a miss.
+# Search paths into Homebrew and the OCCT build are not needed any more and
+# would only hide a miss.
 for f in "${binaries[@]}"; do
     otool -l "$f" | awk '/LC_RPATH/ {getline; getline; print $2}' | while read -r rp; do
         case "$rp" in /opt/homebrew/*|/usr/local/*) install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null ;; esac
+        if [ -n "$occt" ] && [ "${rp#"$occt"}" != "$rp" ]; then install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null; fi
     done
 done
 # Each search path once: dylibbundler adds @executable_path/../Frameworks/ to

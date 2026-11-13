@@ -8,6 +8,9 @@
 
 #include <cstdlib>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -111,3 +114,5 @@ TEST_CASE("sweep of a ring makes a tube") {
     REQUIRE(p.sweep->status.state == FeatureState::Ok);
     CHECK(model.Volume() == doctest::Approx(kPi * (4 - 1) * 90).epsilon(1e-3));
 }
+
+TEST_SUITE_END();

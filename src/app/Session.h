@@ -84,6 +84,10 @@ public:
 
     // --- autosave bookkeeping ---
     double        unsavedSince      = -1.0;   ///< time of the first unsaved change, -1 = clean
+    /// A failure was recovered from since the last save (app/Recovery): the
+    /// «Сохранить изменения?» question says so, not to save a broken state
+    /// unawares (BETA-BUGS, «Кубик монолит», 12.11.2026).
+    bool          recoveredSinceSave = false;
     std::uint64_t autosavedRevision = 0;
 
     /// File name without extension, or the untitled name.

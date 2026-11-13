@@ -5,6 +5,9 @@
 
 #include <vector>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::BooleanOp;
@@ -57,3 +60,5 @@ TEST_CASE("выдавливание: с какой стороны плоскос
         CHECK(model.MaterialSide(Frame{}, samples, 0) == 0);
     }
 }
+
+TEST_SUITE_END();

@@ -1127,10 +1127,18 @@ bool FollowSupport(doc::SketchFeature& sk, const doc::Document& doc, const std::
     if (!p.onFace || !p.face.IsSet()) return true;
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
         if (const auto plane = occt::ResolvePlaneFrame(it->shape, p.face)) {
-            const Vec3 n = p.frame.normal;
+            // The face's clean plane (FaceMatch), not the normal stored when
+            // the face was picked: a sketch on the face of a square part is
+            // square, so what it makes meets the part exactly. The sketch's
+            // own x axis is kept (squared to the normal, cleaned): sketch
+            // coordinates stay the same.
+            const Vec3 n = plane->normal;
             const double shift = (plane->origin - p.frame.origin).Dot(n);
-            p.frame.origin = p.frame.origin + n * shift;
+            p.frame.xDir = CleanDirection(p.frame.xDir - n * p.frame.xDir.Dot(n));
+            p.frame.normal = n;
+            p.frame.origin = CleanPosition(p.frame.origin + n * shift);
             p.face.point = p.face.point + n * shift;   // keep the reference on the face as it is now
+            p.face.normal = n;
             return true;
         }
     return false;

@@ -96,8 +96,15 @@ struct SheetView {
 /// turned (ImGui draws no turned text).
 void DrawLabel(ImDrawList* dl, ImFont* font, const SheetView& v, const dw::Label& label, ImU32 color) {
     if (label.text.empty()) return;
-    // ГОСТ 2.304 gives the height of capitals; a font's size is more than that.
-    const float size = static_cast<float>(label.height * v.zoom / 0.72);
+    // ГОСТ 2.304: the size of a font is the height of its capitals. The font's
+    // own «Н» says what part of its size they take (as the PDF does from the
+    // font's cap height, DrawingPdf.cpp).
+    static float capitals = 0;
+    if (capitals <= 0) {
+        const ImFontGlyph* g = font->FindGlyph(static_cast<ImWchar>(0x041D));
+        capitals = g && g->Y1 > g->Y0 && font->FontSize > 0 ? (g->Y1 - g->Y0) / font->FontSize : 0.7f;
+    }
+    const float size = static_cast<float>(label.height * v.zoom) / capitals;
     if (size < 3.0f) return;   // smaller than a pixel row a letter: not worth drawing
     const ImVec2 anchor = v.ToScreen(label.at);
     const float ascent = font->Ascent * size / font->FontSize;

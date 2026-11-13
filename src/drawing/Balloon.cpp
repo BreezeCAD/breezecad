@@ -17,12 +17,12 @@ bool ReadId(const Json& j, const char* key, ObjectId& out) {
     return true;
 }
 
-/// About the width of a text on the sheet: a character 0.6 of the height (Dimension.cpp does the same).
+/// About the width of a text on the sheet: a character 0.8 of the height (Dimension.cpp does the same).
 double TextWidth(const std::string& text, double height) {
     std::size_t chars = 0;
     for (const char c : text)
         if ((static_cast<unsigned char>(c) & 0xC0U) != 0x80U) ++chars;
-    return static_cast<double>(chars) * height * 0.6;
+    return static_cast<double>(chars) * height * 0.8;
 }
 
 } // namespace

@@ -53,6 +53,7 @@ add_executable(bz_tests
     kernel/CoilTests.cpp
     kernel/OpsTests.cpp
     kernel/FilletTests.cpp
+    kernel/TopologyChangeTests.cpp
     kernel/SlotSeatTests.cpp
     kernel/SeamTests.cpp
     kernel/HiddenLinesTests.cpp

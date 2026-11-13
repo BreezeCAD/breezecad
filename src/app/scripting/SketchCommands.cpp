@@ -494,6 +494,10 @@ Json Project(AppContext& app, const Json& args) {
         case kernel::ProjectedCurve::Kind::Ellipse:
             curve = sk.AddEllipse(edit.Ids(), point(pc->centre), point(pc->start), point(pc->end));
             break;
+        case kernel::ProjectedCurve::Kind::Spline:
+            curve = kernel::AddProjectedSpline(sk, edit.Ids(), *pc, point);
+            if (!curve.IsValid()) continue;
+            break;
         }
         edit.Feature().projections.push_back({edge.ref, curve, {}});
         curves.push_back({{"edge", edge.index}, {"curve", curve.value}});

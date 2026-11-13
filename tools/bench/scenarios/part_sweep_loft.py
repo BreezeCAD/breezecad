@@ -75,7 +75,11 @@ def loft(new):
     b.settle()
     b.click("done")
     b.settle()
-    clean(b, "лофт прямыми")
+    # Over the smooth loft the ruled one adds nothing (it lies inside it): that
+    # is a warning now («Добавление ничего не изменило»), not an error — it
+    # only must build.
+    bad = [(f["name"], f.get("message")) for f in b.run("part.tree")["features"] if f.get("state") == "error"]
+    check(not bad, f"лофт прямыми: операции с ошибкой: {bad}")
 
 
 def coil(new):

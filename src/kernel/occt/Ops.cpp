@@ -216,9 +216,11 @@ Built RunOnce(ops::Kind kind, const TopoDS_Shape& a, const NCollection_List<Topo
                 op->SetRunParallel(false);   // as every boolean (SetUpOcct in Model.cpp)
                 if (at.fuzzy > 0) op->SetFuzzyValue(at.fuzzy);
                 if (at.glue) op->SetGlue(BOPAlgo_GlueShift);
-                // A failed boolean must not change the arguments' tolerances:
-                // the next attempt and the body itself go on with them.
-                if (at.fuzzy > 0 || at.glue) op->SetNonDestructive(true);
+                // No boolean changes its arguments (OCCT may raise their
+                // tolerances otherwise): the next attempt, the body kept for
+                // an earlier point of the tree and a cached tool (a coil, a
+                // thread: ToolCache.h) go on as they were.
+                op->SetNonDestructive(true);
                 op->Build(Message_ProgressRange(deadline->Start()));
                 if (deadline->Passed()) {
                     timeout = true;

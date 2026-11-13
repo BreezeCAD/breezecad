@@ -1,5 +1,6 @@
 #include "render/Viewport.h"
 
+#include "core/FaultGuard.h"
 #include "core/Log.h"
 #include "core/Profile.h"
 #include "kernel/occt/Import.h"
@@ -7,7 +8,11 @@
 #include "kernel/occt/FaceMatch.h"
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
 #include "kernel/occt/Section.h"
+
+#include <atomic>
+#include <tuple>
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
@@ -314,6 +319,9 @@ std::optional<Frame> PlanarFaceFrame(const TopoDS_Face& face) {
 
 namespace {
 
+/// Faces left bare by the last Sync (MeshBareFaces).
+std::atomic<int> gBareFaces{0};
+
 /// How finely bodies are meshed for display, by quality level (0 best).
 /// Finer than OCCT's default (20°): round faces look round.
 void SetMeshPrecision(const Handle(Prs3d_Drawer)& drawer, int quality) {
@@ -325,6 +333,101 @@ void SetMeshPrecision(const Handle(Prs3d_Drawer)& drawer, int quality) {
     // and mesh it all again. SetQuality cleans them itself when it changes.
     drawer->UpdatePreviousDeviationAngle();
     drawer->UpdatePreviousDeviationCoefficient();
+}
+
+/// Meshes `shape` for display at `quality`, so drawing it never meshes. A
+/// fault or an exception inside BRepMesh (it happens on some spline faces:
+/// hundreds of them after a «Пружина» cut) is caught here, on the shape's
+/// own triangles: they are cleaned and the shape is meshed coarser.
+enum class Meshed { AsAsked, Coarser, Coarsest, Failed };
+
+/// The precision a presentation must ask for, so drawing finds the triangles
+/// MeshForDisplay made good enough and does not mesh again (unguarded).
+void SetMeshPrecisionFor(const Handle(Prs3d_Drawer)& drawer, int quality, Meshed meshed) {
+    if (meshed == Meshed::Coarser) {
+        SetMeshPrecision(drawer, 2);
+    } else if (meshed == Meshed::Coarsest) {
+        SetMeshPrecision(drawer, 2);
+        drawer->SetDeviationAngle(30.0 * kPi / 180.0);
+        drawer->SetDeviationCoefficient(0.01);
+        drawer->UpdatePreviousDeviationAngle();
+        drawer->UpdatePreviousDeviationCoefficient();
+    } else {
+        SetMeshPrecision(drawer, std::clamp(quality, 0, 2));
+    }
+}
+
+/// Faces BRepMesh left without triangles while the body as a whole was
+/// meshed (it skips a face it cannot do: a hole in the body on screen).
+/// Each is meshed again on its own, by other means: deflection relative to
+/// the face, then coarser; a face still bare is written to the log and
+/// counted (Viewport::BareFaces). Under a deadline, guarded.
+int MeshBareFaces(const TopoDS_Shape& shape) {
+    int bare = 0;
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(e.Current());
+        TopLoc_Location where;
+        if (!BRep_Tool::Triangulation(face, where).IsNull()) continue;
+        bool done = false;
+        std::string fault;
+        for (const auto& [deflection, angle, relative] : {std::tuple{0.01, 0.35, true}, std::tuple{0.05, 0.6, true}, std::tuple{0.5, 0.8, false}}) {
+            if (!guard::RunGuarded([&] {
+                    try {
+                        kernel::occt::ops::Triangulate(face, deflection, angle, relative, 2.0);
+                    } catch (...) {
+                    }
+                }, &fault))
+                log::Warn("Meshing a bare face faulted ({})", fault);
+            if (!BRep_Tool::Triangulation(face, where).IsNull()) {
+                done = true;
+                break;
+            }
+        }
+        if (!done) ++bare;
+    }
+    if (bare > 0) log::Warn("Meshing for display: {} face(s) left without triangles — shown as holes", bare);
+    gBareFaces.fetch_add(bare);
+    return bare;
+}
+
+/// Failed: even the coarsest mesh did not work — the body is then shown as
+/// edges only (in AIS_Shaded OCCT would mesh it inside drawing, unguarded).
+Meshed MeshForDisplay(const TopoDS_Shape& shape, int quality) {
+    const auto attempt = [&](int level, double angleDeg, double coefficient) {
+        Handle(Prs3d_Drawer) drawer = new Prs3d_Drawer();
+        SetMeshPrecision(drawer, level);
+        if (angleDeg > 0) {
+            drawer->SetDeviationAngle(angleDeg * kPi / 180.0);
+            drawer->SetDeviationCoefficient(coefficient);
+        }
+        bool ok = false;
+        std::string fault;
+        const bool survived = guard::RunGuarded(
+            [&] {
+                try {
+                    StdPrs_ToolTriangulatedShape::Tessellate(shape, drawer);
+                    ok = true;
+                } catch (...) {   // Standard_Failure and anything else
+                }
+            },
+            &fault);
+        if (!survived) log::Error("Meshing for display faulted ({}) at quality {}", fault, level);
+        if (survived && ok) return true;
+        guard::RunGuarded([&] {
+            try {
+                BRepTools::Clean(shape);   // half-made triangles must not be drawn
+            } catch (...) {
+            }
+        });
+        return false;
+    };
+    const int level = std::clamp(quality, 0, 2);
+    Meshed meshed = Meshed::Failed;
+    if (attempt(level, 0, 0)) meshed = Meshed::AsAsked;
+    else if (level < 2 && attempt(2, 0, 0)) meshed = Meshed::Coarser;
+    else if (attempt(2, 30.0, 0.01)) meshed = Meshed::Coarsest;
+    if (meshed != Meshed::Failed) MeshBareFaces(shape);
+    return meshed;
 }
 
 } // namespace
@@ -950,12 +1053,13 @@ void Viewport::SetSize(double width, double height, double pixelScale) {
 }
 
 void Viewport::PrepareMeshes(const kernel::Model& model, int quality) {
-    Handle(Prs3d_Drawer) drawer = new Prs3d_Drawer();
-    SetMeshPrecision(drawer, std::clamp(quality, 0, 2));
-    for (const kernel::Body& body : model.GetImpl().bodies) StdPrs_ToolTriangulatedShape::Tessellate(body.shape, drawer);
+    for (const kernel::Body& body : model.GetImpl().bodies) MeshForDisplay(body.shape, quality);
 }
 
+int Viewport::BareFaces() const { return gBareFaces.load(); }
+
 void Viewport::Sync(const kernel::Model& model) {
+    gBareFaces.store(0);   // counted anew for the bodies meshed now
     Impl& m = *myImpl;
     if (&model == m.syncedModel && model.Revision() == m.syncedRevision) return;
     m.syncedModel = &model;
@@ -986,11 +1090,15 @@ void Viewport::Sync(const kernel::Model& model) {
             m.spare.erase(kept);
             continue;
         }
+        const Meshed meshed = MeshForDisplay(body.shape, m.quality);
+        if (meshed == Meshed::Failed) log::Error("Body {} could not be meshed: shown as edges", body.name);
+        else if (meshed != Meshed::AsAsked) log::Warn("Body {} meshed coarser than asked: finer meshing failed", body.name);
         Handle(AIS_ColoredShape) ais = new BodyShape(body.shape);
         const Impl::Shown fresh{body.id, ais, m.nextDepthBias};
         m.nextDepthBias = (m.nextDepthBias + 1) % Impl::kDepthBiasClasses;
         m.ApplyLook(fresh);
-        m.context->Display(ais, AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
+        if (meshed == Meshed::Coarser || meshed == Meshed::Coarsest) SetMeshPrecisionFor(ais->Attributes(), m.quality, meshed);
+        m.context->Display(ais, meshed == Meshed::Failed ? AIS_WireFrame : AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
         m.shown.push_back(fresh);
     }
     for (const auto& s : previous) {
@@ -1036,6 +1144,32 @@ void Viewport::Sync(const kernel::Model& model) {
 
 void Viewport::ForgetSynced() {
     Impl& m = *myImpl;
+    // From scratch indeed: Sync keeps a presentation whose shape did not
+    // change, so after a crash in drawing or meshing the same (possibly
+    // broken) presentation and triangles were drawn again and crashed again —
+    // the recovery loop of BZ-HANG-766282 («Кубик монолит», 12.11.2026).
+    // Each step guarded on its own: the context may be what is broken.
+    const auto drop = [&](std::vector<Impl::Shown>& list) {
+        for (const Impl::Shown& s : list) {
+            if (s.shape.IsNull()) continue;
+            guard::RunGuarded([&] {
+                try {
+                    m.ClearTextured(s.shape.get());
+                    m.context->Remove(s.shape, false);
+                } catch (...) {
+                }
+            });
+            guard::RunGuarded([&] {
+                try {
+                    BRepTools::Clean(s.shape->Shape());   // its triangles too: meshed again
+                } catch (...) {
+                }
+            });
+        }
+        list.clear();
+    };
+    drop(m.shown);
+    drop(m.spare);
     m.syncedModel = nullptr;
     m.syncedRevision = static_cast<std::uint64_t>(-1);
     m.surroundings.model = nullptr;

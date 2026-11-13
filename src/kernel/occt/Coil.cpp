@@ -1,8 +1,9 @@
 #include "kernel/occt/Coil.h"
+#include "kernel/occt/Helix.h"
+#include "kernel/occt/Ops.h"
+#include "kernel/occt/ToolCache.h"
 
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -20,6 +21,8 @@
 #include <gp_Ax3.hxx>
 
 #include <algorithm>
+#include <sstream>
+#include <string>
 #include <cmath>
 
 namespace bz::kernel::occt {
@@ -30,15 +33,40 @@ Expected<TopoDS_Shape> SweepWire(const TopoDS_Wire& profile, const TopoDS_Wire& 
     BRepOffsetAPI_MakePipeShell sweep(helix);
     sweep.SetMode(axis);   // the section keeps its tilt to the axis, as a coil does
     sweep.Add(profile, false, false);
-    sweep.Build();
+    Handle(Deadline) deadline = new Deadline(ops::kSweepSeconds);
+    sweep.Build(Message_ProgressRange(deadline->Start()));
+    if (deadline->Passed()) return Error{"Пружина не уложилась в отведённое время — уменьшите число витков или упростите профиль"};
     if (!sweep.IsDone() || !sweep.MakeSolid()) return Error{"Пружина не строится с такими размерами"};
     return sweep.Shape();
 }
 
 } // namespace
 
+namespace {
+
+/// The coils swept last (ToolCache.h).
+ToolCache& Cache() {
+    static ToolCache cache(8);
+    return cache;
+}
+
+/// Everything a coil's tool depends on: the profile as it is in space, the
+/// axis, the sizes, the way the helix is split.
+std::string KeyOf(const std::vector<TopoDS_Face>& faces, const doc::CoilFeature& f, const Vec3& a, const Vec3& b) {
+    std::ostringstream profile;
+    for (const TopoDS_Face& face : faces) BRepTools::Write(face, profile);
+    std::string key = profile.str();
+    for (double v : {a.x, a.y, a.z, b.x, b.y, b.z, f.pitch.value, f.turns.value}) AddToKey(key, v);
+    key += f.leftHanded ? "L" : "R";
+    key += std::to_string(static_cast<int>(DefaultHelixSplit()));
+    return key;
+}
+
+} // namespace
+
 Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc::CoilFeature& f, const sketch::Sketch& sk,
-                                const Frame& frame) {
+                                const Frame& frame, CoilNotes* notes) {
+    if (notes) *notes = {};
     for (const Parameter* p : {&f.pitch, &f.turns})
         if (p->HasError()) return Error{p->error};
     if (f.pitch.value <= 1e-6 || f.turns.value <= 1e-6) return Error{"Шаг и число витков должны быть больше нуля"};
@@ -79,26 +107,23 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
             }
         if (nearest < 1e-6) return Error{"Профиль касается оси или пересекает её — отодвиньте его от осевой линии"};
         if (hi - lo >= f.pitch.value - 1e-6) return Error{"Шаг меньше высоты профиля: витки пересекаются"};
+        // What is left between two turns along the axis: a coil's gap, or
+        // the web between two turns of a groove.
+        if (notes) notes->web = f.pitch.value - (hi - lo);
+        const std::string key = KeyOf(faces, f, a, b);
+        if (std::optional<TopoDS_Shape> cached = Cache().Find(key)) {
+            if (notes) notes->cached = true;
+            return *cached;
+        }
 
-        // The helix: one edge per half turn on the cylinder through the profile centre.
+        // The helix on the cylinder through the profile centre (its edges: Helix.h).
         const gp_Dir axis(dir.x, dir.y, dir.z);
         const gp_Dir across((centre - foot).x, (centre - foot).y, (centre - foot).z);
         const gp_Ax3 helixFrame(gp_Pnt(foot.x, foot.y, foot.z), axis, across);
-        Handle(Geom_CylindricalSurface) cylinder = new Geom_CylindricalSurface(helixFrame, radius);
-        const double angle = 2 * kPi * f.turns.value, height = f.pitch.value * f.turns.value;
-        const int pieces = std::max(1, static_cast<int>(std::ceil(f.turns.value * 2 - 1e-9)));
-        const double sign = f.leftHanded ? -1.0 : 1.0;
-        BRepBuilderAPI_MakeWire helixWire;
-        for (int i = 0; i < pieces; ++i) {
-            const double t0 = static_cast<double>(i) / pieces, t1 = static_cast<double>(i + 1) / pieces;
-            const Handle(Geom2d_TrimmedCurve) segment =
-                GCE2d_MakeSegment(gp_Pnt2d(sign * angle * t0, height * t0), gp_Pnt2d(sign * angle * t1, height * t1));
-            TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(segment, cylinder);
-            BRepLib::BuildCurves3d(edge);
-            helixWire.Add(edge);
-        }
-        if (!helixWire.IsDone()) return Error{"Пружина: не удалось построить винтовую линию"};
-        const TopoDS_Wire helix = helixWire.Wire();
+        const Expected<TopoDS_Wire> helixWire =
+            MakeHelix(helixFrame, radius, f.turns.value, f.pitch.value * f.turns.value, f.leftHanded);
+        if (!helixWire) return Error{"Пружина: не удалось построить винтовую линию"};
+        const TopoDS_Wire helix = *helixWire;
 
         // Each region: its outer boundary swept, its holes swept and cut out.
         TopoDS_Shape result;
@@ -112,14 +137,17 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
                 if (wire.IsSame(outer)) continue;
                 Expected<TopoDS_Shape> hole = SweepWire(wire, helix, axis);
                 if (!hole) return hole;
-                piece = BRepAlgoAPI_Cut(piece, *hole).Shape();
+                piece = ops::OrThrow(ops::Cut(piece, *hole, ops::Tool()));
             }
-            result = result.IsNull() ? piece : BRepAlgoAPI_Fuse(result, piece).Shape();
+            result = result.IsNull() ? piece : ops::OrThrow(ops::Fuse(result, piece, ops::Tool()));
         }
         if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Пружина получилась некорректной"};
+        Cache().Put(key, result);
         return result;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка пружины: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка пружины");
     }
 }
 

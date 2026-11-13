@@ -22,6 +22,9 @@
 #include <string>
 #include <string_view>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::BooleanOp;
@@ -78,6 +81,7 @@ ObjectId Place(doc::Document& d, doc::SketchFeature& sk, const kernel::RevolvedP
                 return id;
             }
             case kernel::ProjectedCurve::Kind::Ellipse: return s.AddEllipse(ids, point(c.centre), point(c.start), point(c.end));
+            case kernel::ProjectedCurve::Kind::Spline: return kernel::AddProjectedSpline(s, ids, c, point);
         }
         return {};
     };
@@ -284,3 +288,5 @@ TEST_CASE("a projected sphere outline turns into a body without an OCCT fault") 
     CHECK_MESSAGE(rev.status.state == FeatureState::Ok, rev.status.message);
     if (rev.status.state == FeatureState::Ok) CHECK(BodiesMesh(model));
 }
+
+TEST_SUITE_END();

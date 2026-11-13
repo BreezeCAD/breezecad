@@ -1,6 +1,16 @@
 #include "../Fixtures.h"
 #include "document/CoilFeature.h"
 #include "kernel/Model.h"
+#include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Coil.h"
+#include "kernel/occt/Helix.h"
+#include "kernel/occt/SketchGeometry.h"
+#include "kernel/occt/Ops.h"
+
+#include <TopExp_Explorer.hxx>
+
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 
 #include <doctest.h>
 
@@ -9,6 +19,9 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
 
 using namespace bz;
 using namespace bz::test;
@@ -168,9 +181,124 @@ TEST_CASE("a coil cut whose profile has corners exactly on the hole's wall cuts 
         part.d.MarkChanged(0);
         model.Rebuild(part.d);
         const double removed = before - model.Volume();
-        CHECK(part.coil->status.state == FeatureState::Ok);
+        // The groove leaves 0.02 mm between its turns (pitch 0.5, 0.48 wide):
+        // built, with the warning about the web (STAB-3).
+        CHECK(part.coil->status.state == FeatureState::Warning);
+        CHECK(part.coil->status.message.find("Перемычка между витками 0.020 мм") == 0);
         // 4 turns of a groove of 0.06 mm² (onWall: 0.07) on a radius of 11.1: 16–20 mm³.
         CHECK(removed > 12.0);
         CHECK(removed < 25.0);
     }
+}
+
+TEST_CASE("a coil whose turns leave a web thinner than 0.05 mm warns") {
+    doc::Document d;
+    auto& f = AddCoil(d, 10, 1, "2.03", "3");   // the profile is 2 mm high: 0.03 mm between turns
+    kernel::Model model;
+    model.Rebuild(d);
+    CHECK(f.status.state == FeatureState::Warning);
+    CHECK(f.status.message.find("Перемычка между витками 0.030 мм") == 0);
+    f.pitch.expression = "2.5";
+    d.MarkChanged(1);
+    model.Rebuild(d);
+    CHECK(f.status.state == FeatureState::Ok);
+}
+
+TEST_CASE("a coil's tool is swept once for the same profile and sizes") {
+    doc::Document d;
+    auto& f = AddCoil(d, 10, 1, "5", "3");
+    kernel::Model model;
+    model.Rebuild(d);
+    REQUIRE(f.status.state == FeatureState::Ok);
+    const auto& profile = model.GetImpl().sketches.at(f.sketch);
+    const std::vector<TopoDS_Face> faces = kernel::occt::SelectFaces(profile, f.profiles);
+    const auto* sk = d.FindAs<doc::SketchFeature>(f.sketch);
+    kernel::occt::CoilNotes first, second;
+    const auto a = kernel::occt::MakeCoil(faces, f, sk->sketch, profile.frame, &first);
+    const auto b = kernel::occt::MakeCoil(faces, f, sk->sketch, profile.frame, &second);
+    REQUIRE(a);
+    REQUIRE(b);
+    CHECK(second.cached);
+    CHECK(a->IsSame(*b));
+    // Another size: swept anew.
+    f.turns.value = 4;
+    kernel::occt::CoilNotes third;
+    REQUIRE(kernel::occt::MakeCoil(faces, f, sk->sketch, profile.frame, &third));
+    CHECK_FALSE(third.cached);
+}
+
+TEST_SUITE_END();
+
+// What each touching tolerance does to the coil whose profile has corners
+// exactly on the hole's wall (BETA-BUGS №4): the numbers behind kFuzzySteps.
+// Run: bz_tests -ts=measure -s
+TEST_CASE("measure: touching tolerance on a coil cut with corners on the wall" * doctest::test_suite("measure")) {
+    GroovedBlock part(4, true);
+    kernel::Model model;
+    part.coil->suppressed = true;
+    model.Rebuild(part.d);
+    const TopoDS_Shape body = model.GetImpl().bodies.front().shape;
+    part.coil->suppressed = false;
+    part.d.MarkChanged(0);
+    model.Rebuild(part.d);
+    const TopoDS_Shape tool = model.GetImpl().tools.at(part.coil->id).shape;
+    const auto volume = [](const TopoDS_Shape& s) {
+        GProp_GProps p;
+        BRepGProp::VolumeProperties(s, p);
+        return p.Mass();
+    };
+    for (double fuzzy : {0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2}) {
+        kernel::occt::ops::Options o;
+        o.exactFirst = fuzzy == 0.0;
+        o.retry = fuzzy > 0.0;
+        o.fuzzySteps = {fuzzy};
+        o.glue = false;
+        o.slivers = true;
+        const auto t = std::chrono::steady_clock::now();
+        const auto r = kernel::occt::ops::Boolean(kernel::occt::ops::Kind::Cut, body, tool, o);
+        MESSAGE("coil on the wall, fuzzy " << fuzzy << ": code " << static_cast<int>(r.code) << ", removed "
+                                          << (r.Usable() ? volume(body) - volume(r.shape) : 0.0) << " mm3, sliver "
+                                          << std::string(r.sliver ? "yes" : "no") << ", " << MsSince(t) << " ms");
+    }
+    for (bool glue : {true}) {
+        kernel::occt::ops::Options o;
+        o.exactFirst = false;
+        o.fuzzySteps = {};
+        o.glue = glue;
+        o.slivers = true;
+        const auto r = kernel::occt::ops::Boolean(kernel::occt::ops::Kind::Cut, body, tool, o);
+        MESSAGE("coil on the wall, glued: code " << static_cast<int>(r.code) << ", sliver " << std::string(r.sliver ? "yes" : "no"));
+    }
+}
+
+// How the helix is cut into edges, against what a coil cut and everything
+// after it cost (BETA-BUGS №7): the numbers behind DefaultHelixSplit.
+// Run: BZ_BENCH_TURNS=28 bz_tests -ts=measure -tc="*helix split*" -s
+TEST_CASE("measure: helix split of a coil cut" * doctest::test_suite("measure")) {
+    const char* env = std::getenv("BZ_BENCH_TURNS");
+    const double turns = env ? std::atof(env) : 12;
+    using kernel::occt::HelixSplit;
+    const HelixSplit was = kernel::occt::DefaultHelixSplit();
+    for (HelixSplit split : {HelixSplit::HalfTurns, HelixSplit::Turns, HelixSplit::Single}) {
+        kernel::occt::SetHelixSplitForMeasurement(split);
+        GroovedBlock part(turns);
+        doc::ExtrudeFeature& pocket = part.AddPocket(11, "20");
+        kernel::Model model;
+        auto t = std::chrono::steady_clock::now();
+        model.Rebuild(part.d);
+        const double whole = MsSince(t);
+        const double coilMs = model.GetImpl().costMs.at(part.coil->id);
+        int faces = 0;
+        for (TopExp_Explorer e(model.GetImpl().bodies.front().shape, TopAbs_FACE); e.More(); e.Next()) ++faces;
+        const double volume = model.Volume();
+        pocket.distance.expression = "21";
+        part.d.MarkChanged(static_cast<std::size_t>(part.d.IndexOf(pocket.id)));
+        t = std::chrono::steady_clock::now();
+        model.Rebuild(part.d);
+        const double after = MsSince(t);
+        MESSAGE("split " << static_cast<int>(split) << " (" << turns << " turns): coil " << part.coil->status.state << " "
+                         << coilMs << " ms, whole part " << whole << " ms, a pocket after it " << after << " ms, faces " << faces
+                         << ", volume " << volume);
+    }
+    kernel::occt::SetHelixSplitForMeasurement(was);
 }

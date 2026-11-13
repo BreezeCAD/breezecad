@@ -6,7 +6,8 @@
 #   BreezeCAD/assets/       icons, fonts, splash
 #   BreezeCAD/lib/          every library it needs that a desktop may lack
 #
-# Built with conda-forge (GCC 13, OCCT, GLFW): its libraries need glibc 2.28
+# Built with conda-forge (GCC 13, GLFW, FreeType) and our OCCT built with the
+# same compiler (scripts/deps/build-occt.sh): the libraries need glibc 2.28
 # at most, so the package runs on any distribution from 2019 on. What stays
 # with the system: glibc itself, the OpenGL driver stack and X11 (they must
 # match the machine), and fontconfig (its configuration is the system's).

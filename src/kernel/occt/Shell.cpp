@@ -1,6 +1,6 @@
 #include "kernel/occt/Shell.h"
 
-#include "kernel/occt/Extrude.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffset_Analyse.hxx>
@@ -35,6 +35,7 @@ namespace {
 
 constexpr double kTolerance = 1e-4;
 constexpr const char* kFailed = "Не удалось построить оболочку: толщина слишком большая для этого тела?";
+constexpr const char* kTooLong = "Оболочка не уложилась в отведённое время и остановлена — упростите тело или уменьшите толщину";
 constexpr const char* kMixedEdges =
     "Оболочка не строится: у тела есть рёбра, вдоль которых грани переходят от угла к касанию "
     "(как у лофта квадрат→круг) — ядро OCCT такие рёбра не смещает. Обход: два лофта, "
@@ -87,7 +88,10 @@ bool HasMixedEdges(const TopoDS_Shape& body) {
 /// The whole body offset by `distance` (negative: inside) with sharp corners.
 Expected<TopoDS_Shape> Offset(const TopoDS_Shape& body, double distance) {
     BRepOffsetAPI_MakeOffsetShape offset;
-    offset.PerformByJoin(body, distance, kTolerance, BRepOffset_Skin, false, false, GeomAbs_Intersection);
+    Handle(Deadline) deadline = new Deadline(ops::kBooleanSeconds);
+    offset.PerformByJoin(body, distance, kTolerance, BRepOffset_Skin, false, false, GeomAbs_Intersection, false,
+                         Message_ProgressRange(deadline->Start()));
+    if (deadline->Passed()) return Error{kTooLong};
     if (!offset.IsDone() || offset.Shape().IsNull()) return Error{kFailed};
     return offset.Shape();
 }
@@ -114,8 +118,9 @@ bool IsHollowed(const TopoDS_Shape& body, const TopoDS_Shape& result, bool outwa
 std::optional<TopoDS_Shape> Thicken(const TopoDS_Shape& faces, double distance) {
     BRepOffset_MakeOffset offset;
     offset.Initialize(faces, distance, kTolerance, BRepOffset_Skin, false, false, GeomAbs_Intersection, true);
-    offset.MakeOffsetShape();
-    if (!offset.IsDone() || offset.Shape().IsNull()) return std::nullopt;
+    Handle(Deadline) deadline = new Deadline(ops::kBooleanSeconds);
+    offset.MakeOffsetShape(Message_ProgressRange(deadline->Start()));
+    if (deadline->Passed() || !offset.IsDone() || offset.Shape().IsNull()) return std::nullopt;
     return offset.Shape();
 }
 
@@ -149,7 +154,7 @@ Expected<TopoDS_Shape> ShellBySlabs(const TopoDS_Shape& body, const std::vector<
 
     const BRepOffset_Analyse analyse(body, 1.0 * 3.14159265358979 / 180);
     const auto concave = [&](const TopoDS_Shape& edge) {
-        const BRepOffset_ListOfInterval& types = analyse.Type(TopoDS::Edge(edge));
+        const auto& types = analyse.Type(TopoDS::Edge(edge));   // NCollection_List<BRepOffset_Interval> (OCCT 8)
         return !types.IsEmpty() && types.First().Type() == ChFiDS_Concave;
     };
     // The faces around a corner, or nothing if one of them is removed: the
@@ -219,8 +224,10 @@ Expected<TopoDS_Shape> MakeShell(const TopoDS_Shape& body, const std::vector<Top
             TopTools_ListOfShape faces;
             for (const TopoDS_Face& f : open) faces.Append(f);
             BRepOffsetAPI_MakeThickSolid solid;
+            Handle(Deadline) deadline = new Deadline(ops::kBooleanSeconds);
             solid.MakeThickSolidByJoin(body, faces, outward ? thickness : -thickness, kTolerance, BRepOffset_Skin, false,
-                                       false, GeomAbs_Intersection);
+                                       false, GeomAbs_Intersection, false, Message_ProgressRange(deadline->Start()));
+            if (deadline->Passed()) return Error{kTooLong};
             if (solid.IsDone()) result = solid.Shape();
         }
     } catch (const Standard_Failure&) {

@@ -2114,6 +2114,15 @@ void DrawDialogs(AppContext& app) {
                 ImGui::TextUnformatted(Trf("В документе «{}» есть несохранённые изменения. Если не сохранить, они пропадут.", s->Title()).c_str());
                 ImGui::PopTextWrapPos();
                 ImGui::PopStyleColor();
+                if (s->recoveredSinceSave) {
+                    // After a failure: the user decides knowing it (the state may be the one that failed).
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(c.danger));
+                    ImGui::PushTextWrapPos(0);
+                    ImGui::TextUnformatted(Tr("После последнего сохранения в программе был сбой: действие, на котором он случился, "
+                                              "отменено. Проверьте модель перед сохранением — или сохраните копию через «Сохранить как»."));
+                    ImGui::PopTextWrapPos();
+                    ImGui::PopStyleColor();
+                }
             }
             ImGui::Dummy({0, ui.S(8)});
             const float bw = (ImGui::GetContentRegionAvail().x - ui.S(16)) / 3;

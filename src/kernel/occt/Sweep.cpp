@@ -1,7 +1,6 @@
 #include "kernel/occt/Sweep.h"
+#include "kernel/occt/Ops.h"
 
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
@@ -24,7 +23,9 @@ std::optional<TopoDS_Shape> PipeOf(const TopoDS_Wire& wire, const TopoDS_Wire& p
     pipe.SetMode(false);   // corrected Frenet: the profile does not twist
     pipe.SetTransitionMode(BRepBuilderAPI_RightCorner);
     pipe.Add(wire);
-    pipe.Build();
+    Handle(Deadline) deadline = new Deadline(ops::kSweepSeconds);
+    pipe.Build(Message_ProgressRange(deadline->Start()));
+    if (deadline->Passed()) throw ops::Failed("Сдвиг не уложился в отведённое время — упростите профиль или траекторию");
     if (!pipe.IsDone() || !pipe.MakeSolid()) return std::nullopt;
     return pipe.Shape();
 }
@@ -45,15 +46,17 @@ Expected<TopoDS_Shape> MakeSweep(const std::vector<TopoDS_Face>& faces, const To
                 if (wire.IsSame(outer)) continue;
                 const std::optional<TopoDS_Shape> hole = PipeOf(wire, path);
                 if (!hole) return Error{"Сдвиг не строится вдоль этой траектории"};
-                piece = BRepAlgoAPI_Cut(*piece, *hole).Shape();
+                piece = ops::OrThrow(ops::Cut(*piece, *hole, ops::Tool()));
             }
-            result = result.IsNull() ? *piece : BRepAlgoAPI_Fuse(result, *piece).Shape();
+            result = result.IsNull() ? *piece : ops::OrThrow(ops::Fuse(result, *piece, ops::Tool()));
         }
         if (!BRepCheck_Analyzer(result).IsValid())
             return Error{"Сдвиг получился некорректным: профиль слишком велик для изгибов траектории?"};
         return result;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка сдвига: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка сдвига");
     }
 }
 

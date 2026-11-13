@@ -18,7 +18,9 @@ add_library(bz_kernel STATIC
     occt/Extrude.cpp
     occt/FaceMatch.cpp
     occt/Fillet.cpp
+    occt/Helix.cpp
     occt/Hole.cpp
+    occt/Ops.cpp
     occt/Import.cpp
     occt/Loft.cpp
     occt/Measure.cpp

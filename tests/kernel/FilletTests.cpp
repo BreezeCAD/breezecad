@@ -9,6 +9,9 @@
 #include <cmath>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::CurveKind;
@@ -233,3 +236,68 @@ TEST_CASE("chamfer: one edge turned on its own") {
     CHECK_FALSE(read->FlippedAt(1));
     CHECK(read->FlippedAt(0));
 }
+
+namespace {
+EdgeReference LineEdge(Vec3 middle, Vec3 dir, Vec3 n1, Vec3 n2) {
+    EdgeReference e;
+    e.curve = CurveKind::Line;
+    e.direction = dir;
+    e.middle = middle;
+    e.faces = {{{SurfaceKind::Plane, n1}, {SurfaceKind::Plane, n2}}};
+    return e;
+}
+} // namespace
+
+// Скругление «понимает территорию»: группа рёбер, где одно не строится,
+// больше не отказывает целиком — строятся остальные, предупреждение
+// называет место; одно ребро, которое не строится, — подсказка радиуса.
+TEST_CASE("скругление: ребро, которое не строится, не валит остальные") {
+    doc::Document d;
+    auto& base = AddSketch(d);
+    AddRect(d, base, {0, 0}, {40, 20});
+    AddExtrude(d, base.id, "10");
+    auto& rib = AddSketch(d);
+    rib.placement.frame.origin = {0, 0, 10};
+    AddRect(d, rib, {19, 0}, {21, 20});
+    AddExtrude(d, rib.id, "5", doc::BooleanOp::Join);
+    auto f = std::make_unique<doc::FilletFeature>();
+    f->id = d.Ids().Next();
+    f->name = "Скругление";
+    f->edges = {LineEdge({20, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 0, -1}),     // bottom front edge: builds
+                LineEdge({19, 10, 15}, {0, 1, 0}, {-1, 0, 0}, {0, 0, 1})};   // the rib's top edge, 2 mm wide: R3 cannot
+    std::vector<Parameter*> ps;
+    f->CollectParameters(ps);
+    for (Parameter* p : ps) p->expression = "3";
+    auto* fillet = f.get();
+    d.Insert(std::move(f), d.FeatureCount());
+    kernel::Model model;
+    model.Rebuild(d);
+    CHECK(fillet->status.state == FeatureState::Warning);
+    CHECK(fillet->status.message.find("1 рёбрах из 2") != std::string::npos);
+    const double plain = 40 * 20 * 10 + 2 * 20 * 5;
+    const double rounded = 9 * (1 - kPi / 4) * 40;   // R3 along the 40 mm bottom edge
+    CHECK(model.Volume() == doctest::Approx(plain - rounded).epsilon(1e-6));
+}
+
+TEST_CASE("скругление: одно ребро с большим радиусом — подсказка, какой строится") {
+    doc::Document d;
+    auto& base = AddSketch(d);
+    AddRect(d, base, {0, 0}, {10, 10});
+    AddExtrude(d, base.id, "4");
+    auto f = std::make_unique<doc::FilletFeature>();
+    f->id = d.Ids().Next();
+    f->name = "Скругление";
+    f->edges = {LineEdge({5, 0, 4}, {1, 0, 0}, {0, -1, 0}, {0, 0, 1})};
+    std::vector<Parameter*> ps;
+    f->CollectParameters(ps);
+    for (Parameter* p : ps) p->expression = "6";
+    auto* fillet = f.get();
+    d.Insert(std::move(f), d.FeatureCount());
+    kernel::Model model;
+    model.Rebuild(d);
+    CHECK(fillet->status.state == FeatureState::Error);
+    MESSAGE(fillet->status.message);
+    CHECK(fillet->status.message.find("строится радиус до") != std::string::npos);
+}
+
+TEST_SUITE_END();

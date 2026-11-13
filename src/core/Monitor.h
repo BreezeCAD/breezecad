@@ -27,6 +27,9 @@ bool Enabled();
 void Action(std::string_view source, std::string_view name);
 /// The last action, for crash and hang reports ("" if none).
 std::string_view LastAction();
+/// The longest start of `text[0..size)` that ends on a whole UTF-8 letter:
+/// where a fixed-size copy of Russian text may be cut.
+std::size_t Utf8Prefix(const char* text, std::size_t size);
 /// What exactly that action was asked (a command's arguments): a line of
 /// its own in a hang report, not part of the action (and of the error code).
 void ActionDetail(std::string_view detail);

@@ -5,6 +5,9 @@
 
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -172,3 +175,5 @@ TEST_CASE("booleans run on the calling thread (FaultGuard can catch a fault in t
     const kernel::Model model;   // sets OCCT up
     CHECK_FALSE(BOPAlgo_Options::GetParallelMode());
 }
+
+TEST_SUITE_END();

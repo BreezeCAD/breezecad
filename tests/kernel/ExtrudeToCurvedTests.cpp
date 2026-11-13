@@ -11,6 +11,9 @@
 #include <cmath>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::BooleanOp;
@@ -236,3 +239,5 @@ TEST_CASE("up to the inside of a funnel: a cone, carried on to its apex and no f
     REQUIRE(box);
     CHECK(box->min.z == doctest::Approx(-30).epsilon(1e-6));   // the funnel's bottom, nothing below it
 }
+
+TEST_SUITE_END();

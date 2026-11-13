@@ -49,8 +49,6 @@
 #include <BOPAlgo_Options.hxx>
 #include <TopoDS.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
-#include <BRepAlgoAPI_Common.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <IntCurvesFace_ShapeIntersector.hxx>
@@ -120,27 +118,20 @@ bool Meets(const TopoDS_Shape& body, const TopoDS_Shape& tool, bool touching) {
     if (a.IsVoid() || b.IsVoid()) return false;
     a.Enlarge(1e-4);
     if (a.IsOut(b)) return false;
-    try {
-        BRepAlgoAPI_Common common(body, tool);
-        if (common.IsDone()) {
-            GProp_GProps props;
-            BRepGProp::VolumeProperties(common.Shape(), props);
-            if (props.Mass() > 1e-6) return true;
-        }
-        if (!touching) return false;
-        // Touching: fused, they make fewer pieces than apart. (Not by the
-        // distance between them: BRepExtrema_DistShapeShape between solids
-        // crashes in OCCT 8, see FaceMatch.cpp.)
-        const auto pieces = [](const TopoDS_Shape& s) {
-            int n = 0;
-            for (TopExp_Explorer e(s, TopAbs_SOLID); e.More(); e.Next()) ++n;
-            return n;
-        };
-        BRepAlgoAPI_Fuse fuse(body, tool);
-        return fuse.IsDone() && !fuse.Shape().IsNull() && pieces(fuse.Shape()) < pieces(body) + pieces(tool);
-    } catch (const Standard_Failure&) {
-        return false;
-    }
+    // Through the one pipeline (ops), as quick queries: no checks, a short
+    // deadline — a body OCCT cannot intersect in time counts as not met.
+    if (occt::ops::SharedVolume(body, tool) > 1e-6) return true;
+    if (!touching) return false;
+    // Touching: fused, they make fewer pieces than apart. (Not by the
+    // distance between them: BRepExtrema_DistShapeShape between solids
+    // crashes in OCCT 8, see FaceMatch.cpp.)
+    const auto pieces = [](const TopoDS_Shape& s) {
+        int n = 0;
+        for (TopExp_Explorer e(s, TopAbs_SOLID); e.More(); e.Next()) ++n;
+        return n;
+    };
+    const occt::ops::Result fused = occt::ops::Boolean(occt::ops::Kind::Fuse, body, tool, occt::ops::Quick());
+    return fused.Usable() && !fused.shape.IsNull() && pieces(fused.shape) < pieces(body) + pieces(tool);
 }
 
 /// Indices of the bodies `tool` acts on (see Meets), in body order.
@@ -159,6 +150,48 @@ Body* LastSolid(std::vector<Body>& bodies) {
 }
 const Body* LastSolid(const std::vector<Body>& bodies) { return LastSolid(const_cast<std::vector<Body>&>(bodies)); }
 
+/// `n` points spread evenly (by length) along the polyline `points`; the
+/// same points when there are `n` of them already.
+std::vector<Vec2> ResampleAlong(const std::vector<Vec2>& points, std::size_t n) {
+    if (points.size() == n || n < 2) return points;
+    std::vector<double> run{0.0};
+    for (std::size_t i = 1; i < points.size(); ++i) run.push_back(run.back() + (points[i] - points[i - 1]).Length());
+    std::vector<Vec2> out;
+    std::size_t k = 1;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double s = run.back() * static_cast<double>(i) / static_cast<double>(n - 1);
+        while (k + 1 < run.size() && run[k] < s) ++k;
+        const double span = run[k] - run[k - 1];
+        const double t = span > 0 ? std::clamp((s - run[k - 1]) / span, 0.0, 1.0) : 0.0;
+        out.push_back(points[k - 1] + (points[k] - points[k - 1]) * t);
+    }
+    out.front() = points.front();
+    out.back() = points.back();
+    return out;
+}
+
+/// Every solid body of the part as one shape (meshes left out): what a
+/// projected edge or face is looked for on. Only the most recent body was
+/// searched — an edge of any other body of a multi-body part was «lost» on
+/// the next rebuild, or worse, swapped for a look-alike edge of the last one.
+TopoDS_Shape AllSolids(const std::vector<Body>& bodies) {
+    const Body* only = nullptr;
+    int count = 0;
+    for (const Body& b : bodies)
+        if (!b.mesh && !b.shape.IsNull()) {
+            only = &b;
+            ++count;
+        }
+    if (count == 0) return {};
+    if (count == 1) return only->shape;
+    TopoDS_Compound all;
+    BRep_Builder builder;
+    builder.MakeCompound(all);
+    for (const Body& b : bodies)
+        if (!b.mesh && !b.shape.IsNull()) builder.Add(all, b.shape);
+    return all;
+}
+
 /// The last step of every operation that makes a solid: keep it as a new
 /// body, or join, cut or intersect it with the bodies it reaches. A join
 /// merges every body it touches into the first of them; a cut and an
@@ -166,16 +199,9 @@ const Body* LastSolid(const std::vector<Body>& bodies) { return LastSolid(const_
 /// is reported: a cut that misses is a warning (nothing changed), a join
 /// goes to the most recent body as a separate piece. The solid is also kept
 /// as the operation's tool for patterns and mirrors.
-/// The warning for a strip a hair wide left by an operation (FindNewSliver).
-std::string SliverMessage(const Vec3& at) {
-    return std::format("Операция оставила полоску тоньше 0,05 мм у точки ({:.2f}; {:.2f}; {:.2f}): две поверхности почти совпадают, "
-                       "но не точно. Такая полоска видна линией и не даёт скруглить рёбра рядом — задайте эти размеры одним выражением "
-                       "(совпадут точно) или разнесите их хотя бы на 0,05 мм",
-                       at.x, at.y, at.z);
-}
-
 void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Model::Impl& impl, std::vector<Body>& bodies,
-                  doc::FeatureStatus& status) {
+                  doc::FeatureStatus& status, occt::BooleanNote* summary = nullptr) {
+    if (summary) *summary = {};
     // A new body copied by a pattern joins the body it started.
     if (op != doc::BooleanOp::Intersect) impl.tools[id] = {tool, op == doc::BooleanOp::Cut ? doc::BooleanOp::Cut : doc::BooleanOp::Join, {}};
 
@@ -205,13 +231,14 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
             box.Enlarge(1e-4);
             if (box.IsOut(toolBox)) continue;
             occt::BooleanNote note;
-            Expected<TopoDS_Shape> result = occt::ApplyBoolean(body.shape, tool, op, &note);
+            Expected<TopoDS_Shape> result = occt::ApplyBoolean(body.shape, tool, op, &note, !sliver);
             if (!result) {
                 status = {FeatureState::Error, std::format("«{}»: {}", body.name, result.GetError().message)};
                 return;
             }
             if (!note.touched && !note.partial) continue;
-            if (!sliver) sliver = occt::FindNewSliver(body.shape, *result, tool);
+            if (!sliver) sliver = note.sliver;
+            if (summary) summary->retried = summary->retried || note.retried;
             body.shape = *result;
             reached = true;
             partial = partial || note.partial;
@@ -220,7 +247,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         else if (partial)
             status = {FeatureState::Warning,
                       "Вырез получился частичным: профиль касается поверхности тела — сдвиньте его на 0,01–0,05 мм внутрь или наружу"};
-        else if (sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        else if (sliver) status = {FeatureState::Warning, occt::ops::SliverMessage(*sliver)};
         else status = {FeatureState::Ok, {}};
         return;
     }
@@ -245,7 +272,8 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         // Every touched body and the tool become the first touched body.
         std::vector<TopoDS_Shape> tools{tool};
         for (std::size_t k = 1; k < met.size(); ++k) tools.push_back(bodies[met[k]].shape);
-        Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies[met.front()].shape, tools, op);
+        occt::BooleanNote note;
+        Expected<TopoDS_Shape> result = occt::ApplyBoolean(bodies[met.front()].shape, tools, op, &note);
         if (!result) {
             status = {FeatureState::Error, result.GetError().message};
             return;
@@ -264,7 +292,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
         const std::optional<Vec3> sliver = occt::FindNewSliver(bodies[met.front()].shape, *result, tool);
         bodies[met.front()].shape = *result;
         for (std::size_t k = met.size(); k-- > 1;) bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(met[k]));
-        if ((added || met.size() > 1) && sliver) status = {FeatureState::Warning, SliverMessage(*sliver)};
+        if ((added || met.size() > 1) && sliver) status = {FeatureState::Warning, occt::ops::SliverMessage(*sliver)};
         else if (added || met.size() > 1) status = {FeatureState::Ok, {}};
         else
             status = {FeatureState::Warning,
@@ -316,7 +344,8 @@ void ApplyLoft(doc::LoftFeature& f, Model::Impl& impl, std::vector<Body>& bodies
 /// new body or combine it with the most recent body.
 template <class MakeTool>
 void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::vector<Body>& bodies,
-                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool) {
+                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool,
+                      occt::BooleanNote* summary = nullptr) {
     const auto* sketch = doc.FindAs<doc::SketchFeature>(f.sketch);
     const auto profile = impl.sketches.find(f.sketch);
     if (!sketch || profile == impl.sketches.end()) {
@@ -343,7 +372,7 @@ void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::
         status = {FeatureState::Error, tool.GetError().message};
         return;
     }
-    CombineSolid(f.id, f.operation, *tool, impl, bodies, status);
+    CombineSolid(f.id, f.operation, *tool, impl, bodies, status, summary);
 }
 
 /// Distance from `p` to `shape`, mm (1e300 when it cannot be measured).
@@ -448,6 +477,27 @@ void ApplyToLastBody(std::vector<Body>& bodies, doc::FeatureStatus& status, cons
 }
 
 /// A thread is cut from the body that has its face (the most recent one first).
+/// The warnings of a coil or a thread that built fine (STAB-3): a web
+/// between turns thinner than anything printed or milled; a profile lying
+/// exactly on the body's wall, so the cut needed the touching tolerance.
+/// A thin web replaces a warning of a strip (it is its cause); a partial
+/// cut stays (it says more than "touching").
+void WarnHelical(doc::FeatureStatus& status, double web, bool touching, bool cut) {
+    if (status.state == FeatureState::Error) return;
+    constexpr double kThinWeb = 0.05;   // mm, as FindNewSliver
+    // A thin web is the cause of any strip near the coil: said first.
+    if (web < kThinWeb) {
+        status = {FeatureState::Warning,
+                  std::format("Перемычка между витками {:.3f} мм — тоньше 0,05 мм: напечатать или выфрезеровать её не выйдет. "
+                              "Увеличьте шаг или уменьшите профиль",
+                              web)};
+    } else if (touching && cut && status.state == FeatureState::Ok) {
+        status = {FeatureState::Warning,
+                  "Профиль касается стенки тела: вырез построен с допуском касания (0,0001–0,001 мм). Сдвиньте профиль на "
+                  "0,01–0,05 мм внутрь или наружу — вырез станет точным и быстрым"};
+    }
+}
+
 void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body>& bodies) {
     thread.site.reset();
     Body* target = LastSolid(bodies);
@@ -474,8 +524,12 @@ void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body
         thread.status = {FeatureState::Ok, {}};
         return;
     }
-    const Expected<TopoDS_Shape> tool = occt::ThreadTool(target->shape, thread);
-    Expected<TopoDS_Shape> result = tool ? occt::ApplyBoolean(target->shape, *tool, doc::BooleanOp::Cut) : tool;
+    occt::ThreadNotes notes;
+    const Expected<TopoDS_Shape> tool = occt::ThreadTool(target->shape, thread, &notes);
+    occt::BooleanNote note;
+    // No strips looked for: a groove running out of a face leaves narrow
+    // faces at its ends by nature (the mouth of a tapped hole).
+    Expected<TopoDS_Shape> result = tool ? occt::ApplyBoolean(target->shape, *tool, doc::BooleanOp::Cut, &note) : tool;
     if (!result) {
         thread.status = {FeatureState::Error, result.GetError().message};
         return;
@@ -483,6 +537,8 @@ void ApplyThread(doc::ThreadFeature& thread, Model::Impl& impl, std::vector<Body
     impl.tools[thread.id] = {*tool, doc::BooleanOp::Cut, {}};
     target->shape = *result;
     thread.status = {FeatureState::Ok, {}};
+    WarnHelical(thread.status, notes.web, note.retried, true);
+    if (note.partial) thread.status = {FeatureState::Warning, note.warning};
 }
 
 /// Patterns and mirrors: the tools of the source operations, moved by each
@@ -945,6 +1001,15 @@ bool PlaceProjected(sketch::Sketch& sk, ObjectId curve, const ProjectedCurve& pc
                 return true;
             }
             return false;
+        case ProjectedCurve::Kind::Spline:
+            // Its points move; as many as it has (the edge, changed, may ask
+            // for another count: then the new points are spread evenly along it).
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() >= 2 && pc.points.size() >= 2) {
+                const std::vector<Vec2> at = ResampleAlong(pc.points, s->points.size());
+                for (std::size_t i = 0; i < at.size(); ++i) move(s->points[i], at[i]);
+                return true;
+            }
+            return false;
     }
     return false;
 }
@@ -1017,11 +1082,11 @@ bool UpdateProjections(doc::SketchFeature& sk, const std::vector<Body>& bodies, 
             refs.push_back(sk.projections[i].edge);
             byEdge.push_back(i);
         }
+    const TopoDS_Shape body = AllSolids(bodies);
     const std::vector<std::optional<TopoDS_Edge>> found =
-        !LastSolid(bodies) || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, LastSolid(bodies)->shape);
+        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, body);
     std::vector<std::optional<TopoDS_Edge>> edges(sk.projections.size());
     for (std::size_t k = 0; k < byEdge.size(); ++k) edges[byEdge[k]] = found[k];
-    const TopoDS_Shape body = LastSolid(bodies) ? LastSolid(bodies)->shape : TopoDS_Shape();
     std::vector<std::pair<ObjectId, ProjectedCurve>> place;
     const auto lose = [&](ObjectId curve) {
         sk.lostProjections.insert(curve);
@@ -1098,10 +1163,18 @@ bool FollowSupport(doc::SketchFeature& sk, const doc::Document& doc, const std::
     if (!p.onFace || !p.face.IsSet()) return true;
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
         if (const auto plane = occt::ResolvePlaneFrame(it->shape, p.face)) {
-            const Vec3 n = p.frame.normal;
+            // The face's clean plane (FaceMatch), not the normal stored when
+            // the face was picked: a sketch on the face of a square part is
+            // square, so what it makes meets the part exactly. The sketch's
+            // own x axis is kept (squared to the normal, cleaned): sketch
+            // coordinates stay the same.
+            const Vec3 n = plane->normal;
             const double shift = (plane->origin - p.frame.origin).Dot(n);
-            p.frame.origin = p.frame.origin + n * shift;
+            p.frame.xDir = CleanDirection(p.frame.xDir - n * p.frame.xDir.Dot(n));
+            p.frame.normal = n;
+            p.frame.origin = CleanPosition(p.frame.origin + n * shift);
             p.face.point = p.face.point + n * shift;   // keep the reference on the face as it is now
+            p.face.normal = n;
             return true;
         }
     return false;
@@ -1520,10 +1593,12 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                      return occt::MakeRevolution(faces, *rev, profile.sketch, frame);
                                  });
             } else if (auto* fillet = dynamic_cast<doc::FilletFeature*>(&f)) {
+                std::string partly;
                 ApplyEdgeFeature(*fillet, bodies, fillet->status,
                                  [&](const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, const std::vector<std::size_t>&) {
-                                     return occt::MakeFillet(body, edges, fillet->radius.value);
+                                     return occt::MakeFillet(body, edges, fillet->radius.value, &partly);
                                  });
+                if (!partly.empty() && fillet->status.state == FeatureState::Ok) fillet->status = {FeatureState::Warning, partly};
             } else if (auto* chamfer = dynamic_cast<doc::ChamferFeature*>(&f)) {
                 ApplyEdgeFeature(*chamfer, bodies, chamfer->status,
                                  [&](const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, const std::vector<std::size_t>& kept) {
@@ -1616,10 +1691,15 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                          return occt::MakeSweep(faces, *path);
                                      });
             } else if (auto* coil = dynamic_cast<doc::CoilFeature*>(&f)) {
-                ApplySketchSolid(*coil, impl, bodies, coil->status, doc,
-                                 [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
-                                     return occt::MakeCoil(faces, *coil, profile.sketch, frame);
-                                 });
+                occt::CoilNotes notes;
+                occt::BooleanNote combined;
+                ApplySketchSolid(
+                    *coil, impl, bodies, coil->status, doc,
+                    [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
+                        return occt::MakeCoil(faces, *coil, profile.sketch, frame, &notes);
+                    },
+                    &combined);
+                WarnHelical(coil->status, notes.web, combined.retried, coil->operation == doc::BooleanOp::Cut);
             } else if (auto* imported = dynamic_cast<doc::ImportFeature*>(&f)) {
                 ApplyImported(*imported, impl, bodies);
             } else if (auto* loft = dynamic_cast<doc::LoftFeature*>(&f)) {
@@ -1643,7 +1723,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
             }
         } catch (const Standard_Failure& failure) {
             bodies = before;
-            f.status = {FeatureState::Error, std::format("Ошибка геометрического ядра: {}", failure.GetMessageString())};
+            f.status = {FeatureState::Error, occt::ops::FromFailure(failure, "Ошибка геометрического ядра").message};
         } catch (const std::exception& e) {
             bodies = before;
             f.status = {FeatureState::Error, std::format("Внутренняя ошибка: {}", e.what())};
@@ -1707,6 +1787,12 @@ std::size_t Model::FirstToRebuild(const doc::Document& doc) const {
     for (std::size_t i = 0; i < start; ++i)
         if (i >= myImpl->cachedOrder.size() || myImpl->cachedOrder[i] != doc.Features()[i]->id) return i;
     return start;
+}
+
+std::optional<double> Model::CostMs(ObjectId feature) const {
+    const auto it = myImpl->costMs.find(feature);
+    if (it == myImpl->costMs.end()) return std::nullopt;
+    return it->second;
 }
 
 double Model::EstimateRebuildMs(const doc::Document& doc, std::size_t last) const {
@@ -1842,8 +1928,10 @@ const std::vector<SketchRegion>* Model::Regions(ObjectId sketchFeature) const {
 
 Expected<ProjectedCurve> Model::ProjectEdge(const doc::EdgeReference& edge, const Frame& plane, std::size_t featureIndex) const {
     const auto& after = myImpl->bodiesAfter;
-    if (featureIndex == 0 || featureIndex > after.size() || after[featureIndex - 1].empty()) return Error{"Нет тела, с которого проецировать"};
-    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, after[featureIndex - 1].back().shape).front();
+    if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
+    const TopoDS_Shape bodies = AllSolids(after[featureIndex - 1]);
+    if (bodies.IsNull()) return Error{"Нет тела, с которого проецировать"};
+    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies).front();
     if (!found) return Error{"Ребро не найдено"};
     return occt::ProjectEdge(*found, plane);
 }
@@ -1861,8 +1949,16 @@ std::vector<ProjectedCurve> Model::ProjectSection(const Frame& plane, std::size_
 
 Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex) const {
     const auto& after = myImpl->bodiesAfter;
-    if (featureIndex == 0 || featureIndex > after.size() || after[featureIndex - 1].empty()) return Error{"Нет тела, с которого проецировать"};
-    const TopoDS_Shape& body = after[featureIndex - 1].back().shape;
+    if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
+    // The body that has the face: ProjectRevolved needs the face's own solid.
+    for (auto it = after[featureIndex - 1].rbegin(); it != after[featureIndex - 1].rend(); ++it) {
+        if (it->mesh) continue;
+        const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(it->shape, face);
+        if (found && DistanceTo(*found, face.point) < 1e-4) return occt::ProjectRevolved(it->shape, *found, plane);
+    }
+    const Body* last = LastSolid(after[featureIndex - 1]);
+    if (!last) return Error{"Нет тела, с которого проецировать"};
+    const TopoDS_Shape& body = last->shape;
     const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(body, face);
     if (!found) return Error{"Грань не найдена"};
     return occt::ProjectRevolved(body, *found, plane);
@@ -1996,14 +2092,15 @@ const std::vector<Interference>& Model::Interferences() const {
             if (m.bodies[i].mesh || m.bodies[j].mesh) continue;   // a mesh has no inside to share
             if (boxes[i].IsOut(boxes[j])) continue;
             try {
-                BRepAlgoAPI_Common common(m.bodies[i].shape, m.bodies[j].shape);
-                if (!common.IsDone()) continue;
+                const occt::ops::Result common =
+                    occt::ops::Boolean(occt::ops::Kind::Common, m.bodies[i].shape, m.bodies[j].shape, occt::ops::Quick());
+                if (!common.Usable() || common.shape.IsNull()) continue;   // a pair OCCT cannot intersect in time is left out
                 GProp_GProps props;
-                BRepGProp::VolumeProperties(common.Shape(), props);
+                BRepGProp::VolumeProperties(common.shape, props);
                 if (props.Mass() < 1e-6) continue;   // only touching
                 const gp_Pnt c = props.CentreOfMass();
                 m.interferences.push_back({i, j, props.Mass(), {c.X(), c.Y(), c.Z()}});
-                m.overlaps.push_back(common.Shape());
+                m.overlaps.push_back(common.shape);
             } catch (const Standard_Failure&) {
                 // a pair OCCT cannot intersect is left out rather than failing the check
             }
@@ -2073,10 +2170,17 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
     std::unordered_map<ObjectId, std::vector<Target>> wanted;   // point -> what the curves want of it
     const auto want = [&](std::size_t item, ObjectId point, Vec2 at) { wanted[point].push_back({item, at}); };
     std::vector<int> reversed(curves.size(), -1);   // lines: -1 undecided, 0 as it came, 1 the other way
+    // The two ends of a line or of an open spline (what may come reversed).
+    const auto endsOf = [&](ObjectId curve) -> std::optional<std::pair<ObjectId, ObjectId>> {
+        if (const sketch::Line* l = sk.FindLine(curve)) return std::pair{l->start, l->end};
+        if (const sketch::Spline* s = sk.FindSpline(curve); s && !s->Closed() && s->points.size() >= 2)
+            return std::pair{s->points.front(), s->points.back()};
+        return std::nullopt;
+    };
     for (std::size_t i = 0; i < curves.size(); ++i) {
         const auto& [curve, pc] = curves[i];
-        if (pc.kind == ProjectedCurve::Kind::Line) {
-            if (sk.FindLine(curve)) reversed[i] = 0;
+        if (pc.kind == ProjectedCurve::Kind::Line || pc.kind == ProjectedCurve::Kind::Spline) {
+            if (endsOf(curve)) reversed[i] = 0;
             continue;
         }
         if (pc.kind == ProjectedCurve::Kind::Circle) {
@@ -2112,16 +2216,16 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
         bool changed = false;
         for (std::size_t i = 0; i < curves.size(); ++i) {
             if (reversed[i] < 0) continue;
-            const sketch::Line* l = sk.FindLine(curves[i].first);
+            const auto [first, last] = *endsOf(curves[i].first);
             const ProjectedCurve& pc = curves[i].second;
-            const double asCame = misfit(i, l->start, pc.start) + misfit(i, l->end, pc.end);
-            const double turned = misfit(i, l->start, pc.end) + misfit(i, l->end, pc.start);
+            const double asCame = misfit(i, first, pc.start) + misfit(i, last, pc.end);
+            const double turned = misfit(i, first, pc.end) + misfit(i, last, pc.start);
             const int now = turned + 1e-9 < asCame ? 1 : 0;
             if (round > 0 && now == reversed[i]) continue;
             // Replace what this line wanted of its ends.
-            for (ObjectId point : {l->start, l->end}) std::erase_if(wanted[point], [&](const Target& t) { return t.item == i; });
-            want(i, l->start, now ? pc.end : pc.start);
-            want(i, l->end, now ? pc.start : pc.end);
+            for (ObjectId point : {first, last}) std::erase_if(wanted[point], [&](const Target& t) { return t.item == i; });
+            want(i, first, now ? pc.end : pc.start);
+            want(i, last, now ? pc.start : pc.end);
             changed = changed || now != reversed[i];
             reversed[i] = now;
         }
@@ -2130,7 +2234,10 @@ std::vector<bool> PlaceProjectedCurves(sketch::Sketch& sk, const std::vector<std
     std::vector<bool> out(curves.size(), false);
     for (std::size_t i = 0; i < curves.size(); ++i) {
         ProjectedCurve pc = curves[i].second;
-        if (reversed[i] == 1) std::swap(pc.start, pc.end);
+        if (reversed[i] == 1) {
+            std::swap(pc.start, pc.end);
+            std::reverse(pc.points.begin(), pc.points.end());
+        }
         out[i] = PlaceProjected(sk, curves[i].first, pc);
     }
     return out;
@@ -2154,6 +2261,17 @@ bool CurveMatches(const sketch::Sketch& sk, ObjectId curve, const ProjectedCurve
             return false;
         case ProjectedCurve::Kind::Ellipse:
             if (const sketch::Ellipse* e = sk.FindEllipse(curve)) return at(e->center, pc.centre) && at(e->major, pc.start) && at(e->minor, pc.end);
+            return false;
+        case ProjectedCurve::Kind::Spline:
+            if (const sketch::Spline* s = sk.FindSpline(curve); s && s->points.size() >= 2 && pc.points.size() >= 2) {
+                const std::vector<Vec2> want = ResampleAlong(pc.points, s->points.size());
+                bool asCame = true, turned = true;
+                for (std::size_t i = 0; i < want.size(); ++i) {
+                    asCame = asCame && at(s->points[i], want[i]);
+                    turned = turned && at(s->points[i], want[want.size() - 1 - i]);
+                }
+                return asCame || turned;
+            }
             return false;
     }
     return false;

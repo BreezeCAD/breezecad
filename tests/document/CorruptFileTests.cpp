@@ -10,6 +10,9 @@
 #include <fstream>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 
 namespace {
@@ -119,3 +122,5 @@ TEST_CASE("B-01: a manifest with fields of the wrong type is rejected, not throw
         std::filesystem::remove(path);
     }
 }
+
+TEST_SUITE_END();

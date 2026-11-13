@@ -86,6 +86,8 @@ private:
     State              myState;
     std::deque<double> myRecent;   ///< when the last failures (of the same stage) happened
     std::string        myLastStage;
+    std::string        myOrigin;      ///< the action before the failures (not a «recovery: …» one)
+    int                myRepeats = 0;   ///< failures since that action
     int                myRecovered = 0;
     bool               myRecovering = false;
     int                myHeld = 0;   ///< Hold objects alive

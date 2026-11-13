@@ -8,6 +8,9 @@
 #include <regex>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 namespace {
 
 /// Lines of our sources (comments and strings stripped roughly) matching `pattern`.
@@ -35,3 +38,22 @@ TEST_CASE("no identifiers that windows.h turns into macros") {
     // Win32 API names that are macros (…A / …W): a function of ours by that name breaks.
     CHECK(Offenders(std::regex(R"(\b(LoadImage|DrawText|CreateWindow|GetObject|SendMessage|CreateFont)\s*\()")) == "");
 }
+
+TEST_CASE("booleans of the geometry kernel only in kernel/occt/Ops") {
+    // STAB-3: every boolean goes through one pipeline (exact → fuzzy → glued →
+    // healed, checked, under a deadline). A bare BRepAlgoAPI_* elsewhere skips
+    // all that and puts OCCT's words in front of the user.
+    std::string offenders = Offenders(std::regex(R"(\b(BRepAlgoAPI_\w+|BOPAlgo_(Builder|BOP|Splitter|MakerVolume|Section))\b)"));
+    // Allowed: the pipeline itself; projections (Project.cpp) — stage 5 of the plan, not touched yet.
+    std::string kept;
+    for (std::size_t at = 0, next; at < offenders.size(); at = next + 1) {
+        next = offenders.find('\n', at);
+        if (next == std::string::npos) next = offenders.size();
+        const std::string line = offenders.substr(at, next - at);
+        if (line.starts_with("Ops.cpp:") || line.starts_with("Ops.h:") || line.starts_with("Project.cpp:")) continue;
+        kept += line + "\n";
+    }
+    CHECK(kept == "");
+}
+
+TEST_SUITE_END();

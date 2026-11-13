@@ -397,13 +397,17 @@ jobs:
         run: |
           want=$(sha256sum scripts/deps/build-occt.sh | cut -d' ' -f1)   # cloud-setup.sh compares the same
           have=$(gh release download dev-deps -p bz-occt-linux-x64.sha -O - 2>/dev/null || true)
-          if [ "$have" = "$want" ]; then echo "dev-deps already has this OCCT"; exit 0; fi
-          tar -C .deps/occt -I 'xz -6 -T0' -cf bz-occt-linux-x64.tar.xz .
-          echo "$want" > bz-occt-linux-x64.sha
-          gh release view dev-deps > /dev/null 2>&1 || gh release create dev-deps --prerelease --title "Зависимости для облачной песочницы" \
-            --notes "Для разработки, не для пользователей: OCCT для Linux x86_64, тот же, что в сборках (scripts/deps/build-occt.sh). Распаковывает scripts/dev/cloud-setup.sh."
-          gh release upload dev-deps bz-occt-linux-x64.tar.xz bz-occt-linux-x64.sha --clobber
-          echo "::notice title=dev-deps::OCCT archive for the sandbox updated ($(du -h bz-occt-linux-x64.tar.xz | cut -f1))"
+          # No early "exit": this login shell's logout script made it a failure.
+          if [ "$have" = "$want" ]; then
+            echo "::notice title=dev-deps::already has this OCCT"
+          else
+            tar -C .deps/occt -I 'xz -6 -T0' -cf bz-occt-linux-x64.tar.xz .
+            echo "$want" > bz-occt-linux-x64.sha
+            gh release view dev-deps > /dev/null 2>&1 || gh release create dev-deps --prerelease --title "Зависимости для облачной песочницы" \
+              --notes "Для разработки, не для пользователей: OCCT для Linux x86_64, тот же, что в сборках (scripts/deps/build-occt.sh). Распаковывает scripts/dev/cloud-setup.sh."
+            gh release upload dev-deps bz-occt-linux-x64.tar.xz bz-occt-linux-x64.sha --clobber
+            echo "::notice title=dev-deps::OCCT archive for the sandbox updated ($(du -h bz-occt-linux-x64.tar.xz | cut -f1))"
+          fi
       - name: Versions
         run: |
           $CXX --version | head -1

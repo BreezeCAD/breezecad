@@ -16,7 +16,7 @@
 # the same key every time, so a new APK installs over the old one. Without
 # it — a throwaway key, and the old app must be removed first.
 #
-# FreeType and OCCT for Android come from scripts/android/build-deps.sh
+# FreeType and OCCT for Android come from scripts/deps/build-occt.sh
 # (about an hour per ABI the first time) and stay in the Actions cache.
 #
 # Separate from build.yml on purpose: it never holds up or breaks the
@@ -67,7 +67,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.BZ_ANDROID_DEPS }}
-          key: android-deps-${{ matrix.abi }}-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/android/build-deps.sh') }}
+          key: android-deps-${{ matrix.abi }}-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/deps/build-occt.sh', 'scripts/android/build-deps.sh') }}
       - name: Build FreeType and OCCT (first run, about an hour)
         if: steps.deps.outputs.cache-hit != 'true'
         run: |
@@ -75,6 +75,7 @@ jobs:
           bash scripts/android/build-deps.sh ${{ matrix.abi }} "$BZ_ANDROID_DEPS" > deps.log 2>&1
           status=$?
           tail -3 deps.log
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' deps.log | head -80
           exit $status
       # Saved before BreezeCAD builds: a failing BreezeCAD build must not
       # cost the hour of OCCT again.
@@ -84,6 +85,11 @@ jobs:
         with:
           path: ${{ env.BZ_ANDROID_DEPS }}
           key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Versions
+        run: |
+          occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' "$BZ_ANDROID_DEPS/include/opencascade/Standard_Version.hxx")
+          echo "::notice title=OCCT (${{ matrix.abi }})::OCCT $occt (cache: ${{ steps.deps.outputs.cache-hit == 'true' && 'hit' || 'built' }})"
+          cat "$BZ_ANDROID_DEPS/occt-build.txt" 2>/dev/null || true
       - name: Configure
         run: |
           preset=android-${{ matrix.abi == 'arm64-v8a' && 'arm64' || 'x86_64' }}

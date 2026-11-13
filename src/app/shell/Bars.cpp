@@ -1,13 +1,17 @@
 // Bottom bars: open documents as tabs and the information line.
 
+#include "app/testing/UiProbe.h"
+#include "app/Import.h"
 #include "app/Format.h"
 #include "app/Operations.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "app/sketch/SketchRepair.h"
 #include "app/mobile/TouchText.h"
 #include "core/I18n.h"
+#include "core/Monitor.h"
 #include "kernel/Model.h"
 #include "document/SketchFeature.h"
 #include "ui/Menus.h"
@@ -72,6 +76,7 @@ void DrawProjectTabs(AppContext& app, ImVec2 pos, float width) {
         // and while the cross is held.
         ImGui::SetNextItemAllowOverlap();
         const bool clicked = ImGui::InvisibleButton("##doc-tab", {w, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        probe::Name("doc", title);
         const bool hovered =
             ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         if (clicked && ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) {
@@ -136,7 +141,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
 
     // Mode and what to do next.
     std::string mode = Tr(app.Doc() && app.Doc()->assembly ? "Сборка" : "Деталь"), hint;
-    if (const OperationEditor* operation = app.ops.Active()) {
+    if (s->drawing) {
+        mode = Tr("Чертёж");
+        hint = Trf("{} · колесо — масштаб, перетаскивание — сдвиг листа, двойной щелчок по основной надписи — заполнить",
+                   DrawingSheetCaption(*s->drawing));
+    } else if (const OperationEditor* operation = app.ops.Active()) {
         mode = operation->Title();
         hint = operation->Hint();
     } else if (s->mode == EditMode::Sketch) {
@@ -169,7 +178,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     const ObjectId editing = operation ? operation->EditedFeature() : ObjectId{};
     int errors = 0;
     for (const auto& f : s->doc.Features()) errors += f->status.state == doc::FeatureState::Error && f->id != editing ? 1 : 0;
-    if (s->Rebuilding()) {
+    if (const std::optional<double> importing = ImportProgressOf(*s)) {
+        // «Импорт» on another thread: how far, and how to stop it.
+        rightText(Tr("Отмена — Esc"), c.textSecondary);
+        rightText(Trf("Импорт — {}%", static_cast<int>(*importing * 100)), c.accent);
+    } else if (s->Rebuilding()) {
         // A rebuild under way in slices: a bar with how far it is.
         const kernel::Model::Progress p = s->RebuildProgress();
         const float barW = ui.S(90), barH = ui.S(6);
@@ -191,6 +204,23 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
         right -= ui.S(8) + lw;
         dl->AddText(font, fs, {right, ty}, ui::ToU32(c.textSecondary), label.c_str());
         right -= ui.S(18);
+        // Which operation it is at, and how many there are: a long rebuild
+        // is seen to move (and which operation is the slow one).
+        if (const mon::WorkState work = mon::CurrentWork(); work.active && !work.step.empty()) {
+            std::string at = Trf("«{}»", work.step);
+            if (p.total > 1) at += " · " + Trf("{} из {}", std::min(p.done + 1, p.total), p.total);
+            rightText(at, c.textSecondary);
+        }
+        // A module's command waits for it: the window is locked, this stops it.
+        if (app.shell.waiting.locked) {
+            const std::string cancel = Tr("Отменить (Esc)");
+            const float cw = font->CalcTextSizeA(fs, FLT_MAX, 0, cancel.c_str()).x;
+            right -= cw;
+            dl->AddText(font, fs, {right, ty}, ui::ToU32(c.accent), cancel.c_str());
+            app.shell.waiting.cancelMin = {right - ui.S(6), pos.y};
+            app.shell.waiting.cancelMax = {right + cw + ui.S(6), pos.y + h};
+            right -= ui.S(18);
+        }
     } else {
         rightText(errors ? Trf("Ошибок: {}", errors) : Tr("Готово"), errors ? c.danger : c.success);
     }

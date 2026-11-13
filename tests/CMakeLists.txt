@@ -18,6 +18,10 @@ add_executable(bz_tests
     ${PROJECT_SOURCE_DIR}/src/app/mobile/Gestures.cpp
     ${PROJECT_SOURCE_DIR}/src/app/mobile/TouchText.cpp
     ${PROJECT_SOURCE_DIR}/src/app/features/ExtrudeDirection.cpp
+    drawing/DrawingTests.cpp
+    drawing/DrawingViewTests.cpp
+    drawing/PdfTests.cpp
+    drawing/SpecificationTests.cpp
     assembly/AssemblyFileTests.cpp
     assembly/HandoffTests.cpp
     assembly/InventorConstraintsTests.cpp
@@ -26,6 +30,7 @@ add_executable(bz_tests
     assembly/RotationAnglesTests.cpp
     assembly/SolverTests.cpp
     core/CrashCodeTests.cpp
+    core/MathTests.cpp
     core/ExpressionTests.cpp
     core/FaultGuardTests.cpp
     core/FoldersTests.cpp
@@ -40,14 +45,18 @@ add_executable(bz_tests
     document/StandardPacksTests.cpp
     kernel/AssemblyDesignTests.cpp
     kernel/ChangeDialogTests.cpp
+    kernel/CorpusTests.cpp
     kernel/AssemblyModelTests.cpp
     kernel/AutoDropTests.cpp
     kernel/ComponentPatternTests.cpp
     kernel/BracketTests.cpp
     kernel/CoilTests.cpp
     kernel/FilletTests.cpp
+    kernel/SlotSeatTests.cpp
     kernel/SeamTests.cpp
+    kernel/HiddenLinesTests.cpp
     kernel/HoleTests.cpp
+    kernel/ImportTests.cpp
     kernel/LoftTests.cpp
     kernel/MaterialSideTests.cpp
     kernel/MeasureTests.cpp
@@ -85,14 +94,16 @@ add_executable(bz_tests
     sketch/SolverTests.cpp
     sketch/StressTests.cpp
     sketch/TrimTests.cpp)
-target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
+target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::drawing bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
 add_dependencies(bz_tests bz_example_module bz_example_module_fail)
+target_link_libraries(bz_tests PRIVATE bz::occt_exchange)   # ImportTests write their own STEP files
 if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop only (GLFW)
     # The assembly as the program runs it (solving, adaptivity, undo): its
     # state and the part sessions in it, without a window.
-    target_sources(bz_tests PRIVATE app/AssemblyAdaptTests.cpp app/ChangeQueueTests.cpp
+    target_sources(bz_tests PRIVATE app/AssemblyAdaptTests.cpp app/ChangeQueueTests.cpp app/DrawingSessionTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/AssemblyState.cpp
         ${PROJECT_SOURCE_DIR}/src/app/Session.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/drawing/DrawingState.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchRepair.cpp
         app/SketchSnapTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchPick.cpp

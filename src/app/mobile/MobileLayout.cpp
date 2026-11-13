@@ -1,5 +1,7 @@
 #include "app/mobile/MobileLayout.h"
 
+#include "app/drawing/DrawingEditor.h"
+
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
 #include "app/mobile/PhoneHome.h"
@@ -1070,7 +1072,8 @@ void DrawPhoneRoot(AppContext& app) {
     // the view takes the whole width, nothing over it.
     if (m.controlsHidden || m.setupStep == 1) {
         const ImVec2 viewPos{x0, m.insets.top};
-        DrawViewport(app, *session, viewPos, {x1 - x0, stripBottom - m.insets.top});
+        if (session->drawing) DrawDrawingSheet(app, *session, viewPos, {x1 - x0, stripBottom - m.insets.top});
+        else DrawViewport(app, *session, viewPos, {x1 - x0, stripBottom - m.insets.top});
         m.rView = {viewPos, {x1, stripBottom}};
         ImGui::End();
         if (m.controlsHidden && cameraW == 0) {
@@ -1103,7 +1106,9 @@ void DrawPhoneRoot(AppContext& app) {
     const ImVec2 viewPos{vx0, m.insets.top};
     const ImVec2 viewSize{vx1 - vx0, stripBottom - stripH - m.insets.top};
     m.choices.clear();   // the tool panel (block 1) fills them again this frame
-    DrawViewport(app, *session, viewPos, viewSize);
+    // A drawing on a phone: its sheet to look at (editing it — on a computer or a tablet for now).
+    if (session->drawing) DrawDrawingSheet(app, *session, viewPos, viewSize);
+    else DrawViewport(app, *session, viewPos, viewSize);
     DrawStrip(app, {vx0, stripBottom - stripH}, {vx1 - vx0, stripH});
     DrawBlock1(app, *session, {b1x, 0}, {w1, H}, !lefty, logoInBrow);
     DrawBlock2(app, *session, {b2x, 0}, {w2, H}, !lefty, ms.iconsOnly);
@@ -1278,9 +1283,9 @@ void DrawSaveAsk(AppContext& app) {
     ImGui::SetNextWindowSize({w, 0});
     ui::FontScope font(ui.fonts.body);
     if (!ImGui::BeginPopupModal("##save-ask", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) return;
-    const char* ext = session->assembly ? ".bza" : ".bzc";
+    const char* ext = session->drawing ? ".bzd" : session->assembly ? ".bza" : ".bzc";
     ImGui::PushFont(ui.fonts.strong);
-    ImGui::TextUnformatted(session->assembly ? Tr("Сохранить сборку") : Tr("Сохранить деталь"));
+    ImGui::TextUnformatted(session->drawing ? Tr("Сохранить чертёж") : session->assembly ? Tr("Сохранить сборку") : Tr("Сохранить деталь"));
     ImGui::PopFont();
     ImGui::Spacing();
     ImGui::TextDisabled("%s", Tr("Имя файла"));

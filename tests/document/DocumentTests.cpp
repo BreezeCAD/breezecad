@@ -21,6 +21,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::doc;
 
@@ -101,6 +104,26 @@ TEST_CASE("cycles and bad expressions are reported per parameter") {
     CHECK(plate.doc.variables[3].HasError());
     CHECK(plate.doc.variables[3].value == doctest::Approx(9.0));   // keeps the last good value
     CHECK_FALSE(plate.doc.variables[0].HasError());
+}
+
+TEST_CASE("a parameter using a variable whose expression is wrong is wrong too, keeping its value") {
+    // As in Inventor: the dimension that uses «width» says so, instead of a
+    // model that looks current with the last good width.
+    Plate plate;
+    REQUIRE(plate.doc.EvaluateParameters() == 0);
+    auto* sk = plate.doc.FindAs<SketchFeature>(plate.sketchId);
+    Parameter& usesWidth = sk->sketch.constraints[5].parameter;   // "width"
+    REQUIRE(usesWidth.value == doctest::Approx(60.0));
+    plate.doc.variables[0].expression = "abc";
+    CHECK(plate.doc.EvaluateParameters() >= 2);   // the variable, and each dimension using it, at any depth
+    CHECK(plate.doc.variables[0].HasError());
+    REQUIRE(usesWidth.HasError());
+    CHECK(usesWidth.error.find("width") != std::string::npos);
+    CHECK(usesWidth.value == doctest::Approx(60.0));
+    // Fixed: both evaluate again.
+    plate.doc.variables[0].expression = "70";
+    CHECK(plate.doc.EvaluateParameters() == 0);
+    CHECK(usesWidth.value == doctest::Approx(70.0));
 }
 
 TEST_CASE("recompute solves sketches from expressions") {
@@ -191,6 +214,23 @@ TEST_CASE("end marker follows inserts and moves") {
     CHECK(plate.doc.Find(plate.extrudeId)->status.state == FeatureState::NotComputed);
     history.Undo(plate.doc);
     CHECK(plate.doc.EndMarker() == 2);
+}
+
+TEST_CASE("a feature below the end marker deleted and brought back stays rolled back") {
+    // Audit: Ctrl+Z after deleting a rolled-back cut made it active again.
+    Plate plate;
+    History history;
+    history.Execute(plate.doc, SetEndMarker(plate.doc, 1));
+    REQUIRE_FALSE(plate.doc.IsActive(1));
+    history.Execute(plate.doc, RemoveFeature(plate.doc, plate.extrudeId));
+    CHECK(plate.doc.EndMarker() == 1);
+    history.Undo(plate.doc);
+    CHECK(plate.doc.IndexOf(plate.extrudeId) == 1);
+    CHECK(plate.doc.EndMarker() == 1);
+    CHECK_FALSE(plate.doc.IsActive(1));
+    history.Redo(plate.doc);
+    CHECK(plate.doc.IndexOf(plate.extrudeId) < 0);
+    CHECK(plate.doc.EndMarker() == 1);
 }
 
 TEST_CASE("json round trip keeps the recipe") {
@@ -402,3 +442,5 @@ TEST_CASE("switching the document units keeps the part the same size, undo resto
         CHECK(ex->distance.value == doctest::Approx(depth));
     }
 }
+
+TEST_SUITE_END();

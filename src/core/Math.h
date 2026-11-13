@@ -99,4 +99,34 @@ struct Frame {
     }
 };
 
+/// Below this a component of a unit direction is noise, not intent: a face
+/// picked on a body drifted by 1e-7 gave a sketch normal (-3.6e-12, -1, 0)
+/// (stabilization plan, stage 2; «Кубик монолит», 12.11.2026).
+inline constexpr double kDirectionNoise = 1e-9;
+/// Coordinates are kept on this grid (mm): far finer than anything drawn,
+/// coarser than the 1e-10 noise of a measured position.
+inline constexpr double kPositionGrid = 1e-9;
+
+/// `d` with its noise components set to zero, unit again.
+inline Vec3 CleanDirection(Vec3 d) {
+    d = d.Normalized();
+    const auto clean = [](double c) { return std::abs(c) < kDirectionNoise ? 0.0 : c; };
+    return Vec3{clean(d.x), clean(d.y), clean(d.z)}.Normalized();
+}
+/// `p` rounded to kPositionGrid.
+inline Vec3 CleanPosition(Vec3 p) {
+    const auto clean = [](double c) { return std::round(c / kPositionGrid) * kPositionGrid; };
+    return {clean(p.x), clean(p.y), clean(p.z)};
+}
+/// A frame with clean directions (x made square to the normal again) and a
+/// clean origin: so a sketch on a face of an axis-aligned part is exactly
+/// axis-aligned, and faces made from it meet the part's own faces exactly.
+inline Frame CleanFrame(const Frame& f) {
+    Frame out;
+    out.normal = CleanDirection(f.normal);
+    out.xDir = CleanDirection(f.xDir - out.normal * f.xDir.Dot(out.normal));
+    out.origin = CleanPosition(f.origin);
+    return out;
+}
+
 } // namespace bz

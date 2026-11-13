@@ -1,13 +1,16 @@
 // Every user command, registered once. Ribbon, menus, the command search and
 // keyboard shortcuts all run actions from here.
 
+#include "app/viewport/Section.h"
 #include "app/Application.h"
 #include "app/BetaTesting.h"
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/features/DxfEditor.h"
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/InPlace.h"
 #include "app/features/OperationEditors.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/handoff/HandoffUi.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
@@ -25,13 +28,19 @@ ImGuiKeyChord CtrlShift(ImGuiKey key) { return ImGuiMod_Ctrl | ImGuiMod_Shift | 
 
 void RegisterActions(AppContext& app) {
     ActionRegistry& a = app.actions;
+    RegisterDrawingActions(app);   // drawing.*, file.newDrawing (app/drawing)
     const auto hasDoc = [&app] { return app.Doc() != nullptr && !app.workspace.ShowsHome(); };
     const auto inSketch = [&app] { return app.Doc() && app.Doc()->mode == EditMode::Sketch; };
     const auto inModel = [&app] {
-        return app.Doc() && !app.workspace.ShowsHome() && app.Doc()->mode != EditMode::Sketch && !app.Doc()->assembly;
+        return app.Doc() && !app.workspace.ShowsHome() && app.Doc()->mode != EditMode::Sketch && !app.Doc()->assembly &&
+               !app.Doc()->drawing;
     };
-    // Part commands do nothing in an assembly.
-    const auto partDoc = [&app] { return app.Doc() != nullptr && !app.workspace.ShowsHome() && !app.Doc()->assembly; };
+    // Part commands do nothing in an assembly or a drawing.
+    const auto partDoc = [&app] {
+        return app.Doc() != nullptr && !app.workspace.ShowsHome() && !app.Doc()->assembly && !app.Doc()->drawing;
+    };
+    // A part or an assembly: what has a 3D model (exports, the 3D view).
+    const auto modelDoc = [&app] { return app.Doc() != nullptr && !app.workspace.ShowsHome() && !app.Doc()->drawing; };
     const auto asmDoc = [&app] { return InAssembly(app); };
 
     // --- file ---
@@ -110,15 +119,17 @@ void RegisterActions(AppContext& app) {
         a.Add({j.id, j.title, j.icon, 0, j.tip, asmDoc, [&app, type] { StartConstraint(app, type); }});
     }
     a.Add({"file.open", N_("Открыть…"), "ui-open", Ctrl(ImGuiKey_O), {}, {}, [&app] { OpenDocument(app); }});
+    a.Add({"file.import", N_("Импорт…"), "ui-import", Ctrl(ImGuiKey_I), N_("STEP (.step, .stp) — точная деталь, STL (.stl) — сетка"), {},
+           [&app] { StartImport(app); }});
     a.Add({"file.save", N_("Сохранить"), "ui-save", Ctrl(ImGuiKey_S), {}, hasDoc, [&app] { SaveDocument(app, false); }});
     a.Add({"file.saveAs", N_("Сохранить как…"), "ui-save", CtrlShift(ImGuiKey_S), {}, hasDoc, [&app] { SaveDocument(app, true); }});
     a.Add({"file.close", N_("Закрыть документ"), "ui-close", Ctrl(ImGuiKey_W), {}, hasDoc,
            [&app] { RequestClose(app, app.workspace.ActiveIndex()); }});
-    a.Add({"file.exportStep", N_("Экспорт в STEP"), "export", 0, N_("Для обмена с другими САПР (AP214)"), hasDoc,
+    a.Add({"file.exportStep", N_("Экспорт в STEP"), "export", 0, N_("Для обмена с другими САПР (AP214)"), modelDoc,
            [&app] { ExportDocument(app, ExportFormat::Step); }});
-    a.Add({"file.exportStl", N_("Экспорт в STL"), "export", 0, N_("Сетка для 3D-печати"), hasDoc,
+    a.Add({"file.exportStl", N_("Экспорт в STL"), "export", 0, N_("Сетка для 3D-печати"), modelDoc,
            [&app] { ExportDocument(app, ExportFormat::Stl); }});
-    a.Add({"file.export3mf", N_("Экспорт в 3MF"), "export", 0, N_("Современный формат для слайсеров"), hasDoc,
+    a.Add({"file.export3mf", N_("Экспорт в 3MF"), "export", 0, N_("Современный формат для слайсеров"), modelDoc,
            [&app] { ExportDocument(app, ExportFormat::ThreeMf); }});
     a.Add({"file.exportProject", N_("Экспорт проекта"), "export", 0, N_("Сборка со всеми деталями в одном файле .bzp — отправить или перенести"),
            [&app] { const Session* t = app.workspace.ActiveTab(); return t && t->assembly && !app.workspace.ShowsHome(); },
@@ -153,7 +164,10 @@ void RegisterActions(AppContext& app) {
            [&app] { app.shell.backgroundMenu = true; }});
     a.Add({"view.section", N_("Разрез вида"), "section", 0, N_("Разрезать вид плоскостью, чтобы заглянуть внутрь детали"),
            [&app] { return app.Doc() && !app.workspace.ShowsHome() && !app.Doc()->model.Bodies().empty(); },
-           [&app] { app.shell.section.on = !app.shell.section.on; }});
+           [&app] {
+               app.shell.section.on = !app.shell.section.on;
+               if (app.shell.section.on) FaceSectionToViewer(app.shell.section, app.viewport.Projection().direction);
+           }});
     a.Add({"tools.massProperties", N_("МЦХ"), "mass-properties", 0, N_("Масса, объём, площадь, центр масс и габариты детали"),
            [&app] { return app.Doc() && !app.workspace.ShowsHome() && !app.Doc()->model.Bodies().empty(); },
            [&app] { app.shell.showMassProperties = true; }});
@@ -195,11 +209,14 @@ void RegisterActions(AppContext& app) {
     a.Add({"edit.undo", N_("Отменить"), "ui-undo", Ctrl(ImGuiKey_Z), {}, [&app] { return CanUndo(app); }, [&app] { Undo(app); }});
     a.Add({"edit.redo", N_("Повторить"), "ui-redo", Ctrl(ImGuiKey_Y), {}, [&app] { return CanRedo(app); }, [&app] { Redo(app); }});
     a.Add({"edit.redoAlt", "", "", CtrlShift(ImGuiKey_Z), {}, [&app] { return CanRedo(app); }, [&app] { Redo(app); }});
-    a.Add({"edit.delete", N_("Удалить"), "ui-trash", ImGuiKey_Delete, {}, hasDoc, [&app] { DeletePressed(app); }});
+    a.Add({"edit.delete", N_("Удалить"), "ui-trash", ImGuiKey_Delete, {}, modelDoc, [&app] { DeletePressed(app); }});
     // The sketch clipboard (as in KOMPAS: a base point, then copies where the cursor is).
     a.Add({"edit.copy", N_("Копировать"), "ui-copy", Ctrl(ImGuiKey_C), {}, [&app, inSketch] { return inSketch() && app.sketch.HasSelection(); },
            [&app] {
                if (Session* s = app.Doc()) app.sketch.StartCopy(app, *s);
+           }});
+    a.Add({"edit.selectAll", N_("Выделить всё"), "", Ctrl(ImGuiKey_A), {}, inSketch, [&app] {
+               if (Session* s = app.Doc()) app.sketch.SelectAll(app, *s);
            }});
     a.Add({"edit.paste", N_("Вставить"), "ui-copy", Ctrl(ImGuiKey_V), {}, [&app, inSketch] { return inSketch() && app.sketch.HasClipboard(); },
            [&app] { app.sketch.StartPaste(app); }});
@@ -343,11 +360,14 @@ void RegisterActions(AppContext& app) {
            }});
 
     // --- view ---
-    a.Add({"view.home", N_("Домой (изометрия)"), "view-home", ImGuiKey_Home, {}, hasDoc, [&app] { HomeView(app); }});
-    a.Add({"view.fit", N_("Показать всё"), "view-fit", ImGuiKey_F, {}, hasDoc, [&app] { FitView(app); }});
-    a.Add({"view.front", N_("Вид спереди"), "tree-plane", 0, {}, hasDoc, [&app] { LookFrom(app, {0, -1, 0}, {0, 0, 1}); }});
-    a.Add({"view.top", N_("Вид сверху"), "tree-plane", 0, {}, hasDoc, [&app] { LookFrom(app, {0, 0, 1}, {0, 1, 0}); }});
-    a.Add({"view.right", N_("Вид справа"), "tree-plane", 0, {}, hasDoc, [&app] { LookFrom(app, {1, 0, 0}, {0, 0, 1}); }});
+    a.Add({"view.home", N_("Домой (изометрия)"), "view-home", ImGuiKey_Home, {}, modelDoc, [&app] { HomeView(app); }});
+    a.Add({"view.fit", N_("Показать всё"), "view-fit", ImGuiKey_F, {}, hasDoc, [&app] {
+               if (app.Doc()->drawing) FitDrawingSheet(*app.Doc());   // a drawing: the whole sheet
+               else FitView(app);
+           }});
+    a.Add({"view.front", N_("Вид спереди"), "tree-plane", 0, {}, modelDoc, [&app] { LookFrom(app, {0, -1, 0}, {0, 0, 1}); }});
+    a.Add({"view.top", N_("Вид сверху"), "tree-plane", 0, {}, modelDoc, [&app] { LookFrom(app, {0, 0, 1}, {0, 1, 0}); }});
+    a.Add({"view.right", N_("Вид справа"), "tree-plane", 0, {}, modelDoc, [&app] { LookFrom(app, {1, 0, 0}, {0, 0, 1}); }});
     const struct {
         render::DisplayStyle style;
         const char*          id;

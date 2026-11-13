@@ -8,6 +8,8 @@
 #include "core/Monitor.h"
 #include "document/BzcFile.h"
 #include "document/DocumentTypes.h"
+#include "drawing/DrawingFile.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +19,9 @@
 
 namespace bz::app {
 namespace {
+
+/// A rebuild expected to take longer than this goes to another thread.
+constexpr double kBackgroundAfterMs = 60.0;
 
 std::string NewAutosaveKey() {
     static std::atomic<int> counter{0};   // unique within this process
@@ -32,6 +37,7 @@ struct Session::Background {
     std::size_t                start = 0;
     std::atomic<std::size_t>   done{0}, total{0};
     std::atomic<bool>          finished{false};
+    std::atomic<bool>          cancel{false};   ///< asked to stop: after the operation under way
     std::thread                thread;
     std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
     double                     rebuildMs = 0, meshMs = 0;   ///< for the monitor
@@ -68,7 +74,9 @@ void Session::StartBackground(std::size_t limit) {
                         const kernel::Model::Progress p = b->model.RebuildProgress();
                         b->total = p.total;
                         b->done = p.done;
+                        if (b->cancel) return;   // one operation cannot be stopped; the rest is not begun
                     }
+                    if (b->cancel) return;
                     const auto rebuilt = std::chrono::steady_clock::now();
                     b->rebuildMs = std::chrono::duration<double, std::milli>(rebuilt - b->began).count();
                     render::Viewport::PrepareMeshes(b->model, quality);
@@ -81,6 +89,7 @@ void Session::StartBackground(std::size_t limit) {
             },
             &fault);
         if (!survived) log::Error("Background rebuild stopped by a crash ({}): what it built so far is shown", fault);
+        mon::WorkDone();
         b->finished = true;
     });
     myBackground = std::move(job);
@@ -129,12 +138,14 @@ void Session::Execute(std::unique_ptr<doc::Command> command) {
 }
 void Session::Undo() {
     mon::Action("undo", UndoLabel());
-    if (assembly) assembly->Undo();
+    if (drawing) drawing->Undo();
+    else if (assembly) assembly->Undo();
     else history.Undo(doc);
 }
 void Session::Redo() {
     mon::Action("redo", "");
-    if (assembly) assembly->Redo();
+    if (drawing) drawing->Redo();
+    else if (assembly) assembly->Redo();
     else history.Redo(doc);
 }
 
@@ -144,9 +155,17 @@ AssemblyState& Session::MakeAssembly() {
     return *assembly;
 }
 
-std::string_view Session::DocumentType() const { return assembly ? doc::kAssemblyType : doc::kPartType; }
+std::string_view Session::DocumentType() const {
+    return drawing ? doc::kDrawingType : assembly ? doc::kAssemblyType : doc::kPartType;
+}
+
+DrawingState& Session::MakeDrawing() {
+    drawing = std::make_unique<DrawingState>();
+    return *drawing;
+}
 
 std::uint64_t Session::ContentRevision() const {
+    if (drawing) return drawing->Revision();
     if (!assembly) return doc.Revision();
     // Its parts edited in it count too (they are saved with it).
     std::uint64_t parts = assembly->parts.size();
@@ -157,22 +176,36 @@ std::uint64_t Session::ContentRevision() const {
 
 Status Session::WriteFile(const std::filesystem::path& target, std::string_view generator,
                           std::span<const std::uint8_t> preview) const {
-    if (!assembly) return doc::SaveBzc(doc, target, generator, preview);
-    if (path == target) return assembly::SaveAssembly(assembly->assembly, target, generator, preview);
+    if (drawing) {
+        // Its models are relative to it: written elsewhere, a copy points at the same files.
+        drawing::Drawing copy = drawing->drawing;
+        DrawingState::RebasePaths(copy, drawing->savedAt, target);
+        return drawing::SaveDrawing(copy, target, generator, kernel::GeometryKernelVersion(), preview);
+    }
+    // The kernel goes into the manifest next to the generator (document/ does not know OCCT).
+    if (!assembly) return doc::SaveBzc(doc, target, generator, kernel::GeometryKernelVersion(), preview);
+    if (path == target) return assembly::SaveAssembly(assembly->assembly, target, generator, kernel::GeometryKernelVersion(), preview);
     Expected<assembly::Assembly> copy = assembly::AssemblyFromJson(assembly::AssemblyToJson(assembly->assembly));
     if (!copy) return copy.GetError();
     copy->look.pictures = assembly->assembly.look.pictures;   // not in the JSON
     assembly::RebasePaths(*copy, path, target);
-    return assembly::SaveAssembly(*copy, target, generator, preview);
+    return assembly::SaveAssembly(*copy, target, generator, kernel::GeometryKernelVersion(), preview);
 }
 
 bool Session::IsModified() const {
+    if (drawing) return drawing->IsModified();
     if (!assembly) return history.IsModified();
     return assembly->IsModified() || assembly->PartsModified();
 }
 
 void Session::MarkSaved() {
-    if (assembly) assembly->MarkSaved();
+    recoveredSinceSave = false;
+    if (drawing) {
+        // Saved to `path`: from now on its models are relative to it.
+        DrawingState::RebasePaths(drawing->drawing, drawing->savedAt, path);
+        drawing->savedAt = path;
+        drawing->MarkSaved();
+    } else if (assembly) assembly->MarkSaved();
     else history.MarkSaved();
 }
 
@@ -189,6 +222,64 @@ bool Session::RebuildIfNeeded() { return Rebuild(40.0); }
 
 bool Session::RebuildNow() { return Rebuild(-1.0); }
 
+void Session::AdoptBackground() {
+    if (FinishBackground()) {
+        myBuiltRevision = doc.Revision();
+        myBuiltFeatureCount = doc.FeatureCount();
+    }
+    myRebuilding = false;
+}
+
+bool Session::RebuildWaiting(const std::function<bool()>& alive) {
+    using Clock = std::chrono::steady_clock;
+    if (assembly || !alive) {
+        RebuildNow();
+        return true;
+    }
+    // A rebuild started for an older state of the document (a value dragged
+    // by hand a moment ago) is waited for and taken, then the rest gets a
+    // rebuild of its own: twice is enough, the third time is RebuildNow.
+    for (int round = 0; round < 2; ++round) {
+        if (!myBackground) {
+            const std::size_t limit = myRebuildLimit ? *myRebuildLimit : static_cast<std::size_t>(-1);
+            if (!myBackgroundAllowed || model.EstimateRebuildMs(doc, limit) <= kBackgroundAfterMs) break;
+            StartBackground(limit);
+            myRebuilding = true;
+        }
+        // The window is drawn while the other thread works: not at once (a
+        // rebuild of a tenth of a second needs no frame), then as often as
+        // a frame takes. `alive` may take the result itself (the frame's own
+        // RebuildIfNeeded): then there is nothing left to wait for.
+        const Clock::time_point began = Clock::now();
+        bool cancelled = false;
+        while (myBackground && !myBackground->finished) {
+            mon::Beat();
+            if (std::chrono::duration<double>(Clock::now() - began).count() < 0.1) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                continue;
+            }
+            const Clock::time_point frame = Clock::now();
+            if (!alive() && myBackground && !cancelled) {
+                cancelled = true;
+                myBackground->cancel = true;
+                log::Info("Rebuild: cancelled by the user while a command waited for it");
+            }
+            // A frame that was not drawn (the window is hidden) must not spin.
+            if (std::chrono::duration<double>(Clock::now() - frame).count() < 0.004)
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        }
+        if (cancelled && myBackground && myBackground->cancel) {
+            std::unique_ptr<Background> job = std::move(myBackground);
+            job->thread.join();
+            myRebuilding = false;
+            return false;   // the fork is dropped: the model shown was never touched
+        }
+        if (myBackground) AdoptBackground();
+    }
+    RebuildNow();
+    return true;
+}
+
 bool Session::Rebuild(double budgetMs) {
     if (assembly) {
         // Parts are rebuilt as they load; what is left is cheap (placing).
@@ -200,11 +291,7 @@ bool Session::Rebuild(double budgetMs) {
     bool adopted = false;
     if (myBackground) {
         if (budgetMs >= 0 && !myBackground->finished) return false;   // still at it; the window goes on
-        if (FinishBackground()) {
-            myBuiltRevision = doc.Revision();
-            myBuiltFeatureCount = doc.FeatureCount();
-        }
-        myRebuilding = false;
+        AdoptBackground();
         adopted = true;
     }
     // Something left over from a partial rebuild that is no longer limited.
@@ -227,7 +314,7 @@ bool Session::Rebuild(double budgetMs) {
         return false;
     // Long work (a heavy boolean, a part just opened) goes to another
     // thread: one operation alone can take seconds and cannot be sliced.
-    if (budgetMs >= 0 && myBackgroundAllowed && model.EstimateRebuildMs(doc, limit) > 60.0) {
+    if (budgetMs >= 0 && myBackgroundAllowed && model.EstimateRebuildMs(doc, limit) > kBackgroundAfterMs) {
         StartBackground(limit);
         myRebuilding = true;
         return adopted;

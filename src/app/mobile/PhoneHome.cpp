@@ -1,3 +1,4 @@
+#include "app/Import.h"
 #include "app/mobile/PhoneHome.h"
 
 #include "app/Operations.h"
@@ -189,6 +190,10 @@ void DrawHero(AppContext& app, ImVec2 pos, ImVec2 size) {
     if (WideButton(ui, "##home-new", "ui-plus", Tr("Создать…"), {tileW, bh})) app.Later([&app] { OpenNewDocumentDialog(app); });
     ImGui::SetCursorScreenPos({x + tileW + gap, y});
     if (WideButton(ui, "##home-open", "ui-open", Tr("Открыть…"), {tileW, bh})) app.Later([&app] { OpenDocument(app); });
+    // STEP and STL picked through the system's file picker (SAF): a new part.
+    y += bh + gap;
+    ImGui::SetCursorScreenPos({x, y});
+    if (WideButton(ui, "##home-import", "ui-import", Tr("Импорт STEP / STL…"), {tileW * 2 + gap, bh})) app.Later([&app] { StartImport(app); });
 
     // At the bottom: settings and the like, small.
     const float fy = pos.y + size.y - ui.S(38);

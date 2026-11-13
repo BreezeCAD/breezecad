@@ -79,6 +79,10 @@ Theme Theme::Light() {
     c.cubeStroke      = Color::Hex(0x9DA6B2);
     c.cubeInner       = Color::Hex(0x3C4655, 0.14f);
     c.cubeText        = Color::Hex(0x3A424E);
+    c.sheetDesk       = Color::Hex(0xE4E7EB);
+    c.sheetPaper      = Color::Hex(0xFFFFFF);
+    c.sheetInk        = Color::Hex(0x1A1A1A);
+    c.sheetShadow     = Color::Hex(0x000000, 0.18f);
     c.floatingButton  = Color::Hex(0xFFFFFF, 0.88f);
     c.floatingBorder  = Color::Hex(0xD5DAE0);
     c.floatingInk     = Color::Hex(0x3D4552);
@@ -162,6 +166,10 @@ Theme Theme::Dark() {
     c.cubeStroke      = Color::Hex(0x6A727E);
     c.cubeInner       = Color::Hex(0xFFFFFF, 0.10f);
     c.cubeText        = Color::Hex(0xDDE1E6);
+    c.sheetDesk       = Color::Hex(0x1E2126);
+    c.sheetPaper      = Color::Hex(0xF4F4F2);   // paper stays paper: what is printed
+    c.sheetInk        = Color::Hex(0x1A1A1A);
+    c.sheetShadow     = Color::Hex(0x000000, 0.5f);
     c.floatingButton  = Color::Hex(0x262A31, 0.90f);
     c.floatingBorder  = Color::Hex(0x3A404A);
     c.floatingInk     = Color::Hex(0xC4C9D1);

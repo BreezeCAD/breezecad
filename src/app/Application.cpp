@@ -6,6 +6,7 @@
 #include "platform/OpenFiles.h"
 #include "core/Monitor.h"
 #include "app/Operations.h"
+#include "app/testing/UiProbe.h"
 #include "app/shell/Shell.h"
 #include "app/shell/FilePreviews.h"
 #include "app/shell/Splash.h"
@@ -13,7 +14,9 @@
 #include "modules/ModuleHost.h"
 #include "modules/ModuleManager.h"
 #include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/scripting/Scripting.h"
+#include "app/drawing/DrawingViews.h"
 #include "core/Image.h"
 #include "app/viewport/ViewportPanel.h"
 #include "core/Log.h"
@@ -24,6 +27,7 @@
 #include "render/Viewport.h"
 #include "ui/ViewCube.h"
 #include "platform/Paths.h"
+#include "app/Import.h"
 #include "platform/ProcessInfo.h"
 #include "platform/SystemTheme.h"
 
@@ -279,6 +283,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
     myContext = std::make_unique<AppContext>(AppContext{*myUi, mySettings, myWorkspace, myActions, myNotes, *myAutosave,
                                                         myViewport, mySketch, myOps, myShell, myDeferred, 0.0, {}, {}, {}});
     myContext->recovery = &myRecovery;
+    myContext->keepAlive = [this] { return KeepAlive(); };
     myWorkspace.previewMaker = [this] { return DocumentPreview(myViewport); };
     RegisterActions(*myContext);
     LoadStandardPacks(*myContext);
@@ -291,6 +296,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
         const std::u8string ext = file.extension().u8string();
         if (ext == u8".bzmod" || ext == u8".BZMOD" || ext == u8".bzlib" || ext == u8".BZLIB" || ext == u8".bzp" || ext == u8".BZP")
             OpenDropped(*myContext, file);
+        else if (IsImportable(file)) myContext->Later([ctx = myContext.get(), file] { StartImport(*ctx, file); });   // STEP, STL: on the first frame
         else myWorkspace.Open(file, myNotes, mySettings);
     }
     // Nothing asked for: the last file, if the user wants it (and it is still there).
@@ -386,7 +392,8 @@ int Application::Run() {
             // A message on screen wakes the loop when it starts to fade out.
             const double wait = std::min(WaitsForBackground() ? 1.0 / 30.0 : 1.0,
                                          myNotes.SecondsToNextChange(platform::Window::Time()) + 0.001);
-            platform::Window::WaitEvents(wait);
+            // The test bench asks through files: look often while it is on.
+            platform::Window::WaitEvents(probe::Enabled() ? std::min(wait, 0.02) : wait);
         }
         const double now = platform::Window::Time();
 #if defined(BZ_MOBILE)
@@ -412,6 +419,12 @@ int Application::Run() {
             myFramesToDraw = std::max(myFramesToDraw, 3);
         }
         PollShotRequest();
+        if (probe::Enabled()) {
+            bool answered = false;
+            myRecovery.Remember(*myContext);
+            myRecovery.Run(*myContext, "команда стенда", [&] { answered = probe::Poll(*myContext); });
+            if (answered) myFramesToDraw = std::max(myFramesToDraw, 3);
+        }
         for (std::filesystem::path& f : platform::TakeOpenRequests()) myInput.dropped.push_back(std::move(f));
         if (!myInput.dropped.empty()) {   // a module package or documents dragged in
             const std::vector<std::filesystem::path> files = std::move(myInput.dropped);
@@ -575,11 +588,20 @@ bool Application::WaitsForBackground() const {
     // Only the document on screen: another one takes its result when shown.
     const Session* s = myWorkspace.Active();
     if (s && s->RebuildingInBackground()) return true;
+    if (s && s->drawing && s->drawing->views && s->drawing->views->Busy()) return true;   // a view of the drawing being computed
+    if (s && s->importing) return true;   // its progress card moves
     return FilePreviewsBusy();   // the home page's pictures, read on another thread
 }
 
 void Application::HandleCloseRequests() {
     if (!myShell.quitRequested || myShell.closeRequest) return;
+    // An operation still open is settled as Ctrl+S settles it: a good one is
+    // applied, a half-done one (with an error) dropped. Else «Сохранить» in
+    // the question below wrote the half-done one into the file.
+    if (Session* s = myWorkspace.Active()) {
+        myContext->ops.Commit(*myContext, *s);
+        EndEditing(*myContext);
+    }
     for (std::size_t i = 0; i < myWorkspace.sessions.size(); ++i) {
         if (myWorkspace.sessions[i]->IsModified()) {
             myWorkspace.Activate(static_cast<int>(i));
@@ -687,6 +709,48 @@ void Application::LeaveSwitchedDocument(AppContext& app) {
     myActiveSession = now;
 }
 
+bool Application::KeepAlive() {
+    if (myShell.waiting.locked) return true;   // a frame of ours asked again: one at a time
+    mon::Beat();
+    platform::Window::PollEvents();   // the system sees a window that answers
+    myShell.waiting.locked = true;
+    myShell.waiting.cancelAsked = false;
+    // What was pressed meanwhile is not kept for later: a shortcut typed
+    // into a locked window must not fire when the command ends.
+    myInput.chords.clear();
+    myInput.seen = false;
+    myContext->touch.clear();
+    if (myWindow.ShouldClose()) {   // asked again once the command is over
+        myWindow.SetShouldClose(false);
+        myShell.quitRequested = true;
+    }
+    if (myWindow.CanDraw()) {
+        const Recovery::Hold hold(myRecovery);   // "before the command" stays where it is
+        Frame();
+    }
+    myInput.chords.clear();
+    myShell.waiting.locked = false;
+    myFramesToDraw = std::max(myFramesToDraw, 3);   // the unlocked window, once the command is over
+    return !myShell.waiting.cancelAsked;
+}
+
+void Application::LockInput() {
+    ImGuiIO& io = ImGui::GetIO();
+    ShellState::Waiting& w = myShell.waiting;
+    const bool onCancel = w.cancelMax.x > w.cancelMin.x && io.MousePos.x >= w.cancelMin.x && io.MousePos.x <= w.cancelMax.x &&
+                          io.MousePos.y >= w.cancelMin.y && io.MousePos.y <= w.cancelMax.y;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || (onCancel && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) w.cancelAsked = true;
+    w.cancelMin = w.cancelMax = {};
+    // Nothing else of this frame's input is seen by the interface: the
+    // document is the command's until it ends.
+    io.ClearInputKeys();
+    io.ClearInputMouse();
+    for (int b = 0; b < ImGuiMouseButton_COUNT; ++b) {
+        io.MouseClicked[b] = io.MouseReleased[b] = io.MouseDoubleClicked[b] = false;
+        io.MouseClickedCount[b] = 0;
+    }
+}
+
 void Application::Frame() {
     // The phone or the desktop layout, by the window's size (ADR-0004).
     myShell.mobile.phone = mobile::WantsPhoneLayout(mySettings, myWindow);
@@ -713,6 +777,8 @@ void Application::Frame() {
     ImGui_ImplGlfw_NewFrame();
 #endif
     ImGui::NewFrame();
+    if (myShell.waiting.locked) LockInput();
+    probe::BeginFrame();
 
     AppContext& app = *myContext;
     app.now = now;
@@ -760,6 +826,7 @@ void Application::Frame() {
     myBusy = myNotes.Draw(*myUi, corner, now) || myBusy || myShell.animateUi;
 
     ImGui::Render();
+    probe::EndFrame();
     smooth(myStats.uiMs, msSince(uiStart));
     if (myWorkspace.Active() && !myWorkspace.ShowsHome() && myViewport.NeedsRender()) {
         const double sceneStart = platform::Window::Time();
@@ -819,6 +886,8 @@ void Application::Frame() {
         mySceneFramesThisSecond = 0;
         mySecondStart = now;
     }
+
+    TickImports(app);   // a finished import goes into its part
 
     // Work requested by panels during the frame, now that nobody iterates.
     std::vector<std::function<void()>> work;
@@ -943,8 +1012,13 @@ void Application::DrawRoot() {
         const float panel = mySettings.panelWidth > 0 ? std::clamp(static_cast<float>(mySettings.panelWidth), 220.0f, widest)
                                                        : std::min(usual, widest);
         const float leftWidth = myUi->S(m.railWidth + panel);
-        DrawLeftArea(app, *session, {0, y}, {leftWidth, bottom - y});
-        DrawViewport(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        if (session->drawing) {   // a drawing: its tree and the sheet instead of the 3D view (ADR-0012)
+            DrawDrawingTree(app, *session, {0, y}, {leftWidth, bottom - y});
+            DrawDrawingSheet(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        } else {
+            DrawLeftArea(app, *session, {0, y}, {leftWidth, bottom - y});
+            DrawViewport(app, *session, {leftWidth, y}, {width - leftWidth, bottom - y});
+        }
         DrawPanelEdge(leftWidth, y, bottom - y, panel, widest);
     }
     DrawProjectTabs(app, {0, bottom}, width);

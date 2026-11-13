@@ -56,6 +56,7 @@ bool MenuItem(Ui& ui, const char* label, const char* shortcut, std::string_view 
     ImGui::PushID(label);
     // The label is reserved as width only; the visible text is drawn below.
     const bool clicked = ImGui::Selectable("##item", false, enabled ? 0 : ImGuiSelectableFlags_Disabled, {width, 0});
+    if (probeName) probeName("menu", label);   // the test bench picks it by its text
     ImGui::PopID();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     DrawRow(ui, dl, {line.x, RowTop(ui, line.y)}, label, icon, checked, enabled);

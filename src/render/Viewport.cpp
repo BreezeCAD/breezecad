@@ -1,11 +1,14 @@
 #include "render/Viewport.h"
 
+#include "core/FaultGuard.h"
 #include "core/Log.h"
 #include "core/Profile.h"
+#include "kernel/occt/Import.h"
 #include "kernel/occt/EdgeMatch.h"
 #include "kernel/occt/FaceMatch.h"
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Section.h"
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
@@ -15,12 +18,14 @@
 #include <Graphic3d_Group.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <BRepLib.hxx>
+#include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopExp_Explorer.hxx>
 #include <map>
 #include <AIS_ColoredDrawer.hxx>
 #include <AIS_ColoredShape.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <AIS_Shape.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
@@ -40,6 +45,7 @@
 #include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <Graphic3d_Mat4d.hxx>
 #include <Graphic3d_Vec2.hxx>
+#include <NCollection_Vec4.hxx>
 #include <OpenGl_ArbFBO.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
@@ -294,7 +300,7 @@ public:
                 const double t = std::clamp((std::sqrt(u * u + v * v) - 0.35) / 0.6, 0.0, 1.0);
                 const double fade = 1 - t * t * (3 - 2 * t);
                 // The vertex colour stands for the material's, in sRGB like the background.
-                array->SetVertexColor(at, Graphic3d_Vec4ub(byte(sr), byte(sg), byte(sb), byte(fade)));
+                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), byte(fade)));
             }
         for (int j = 0; j < kCells; ++j)
             for (int i = 0; i < kCells; ++i) {
@@ -386,6 +392,95 @@ void SetMeshPrecision(const Handle(Prs3d_Drawer)& drawer, int quality) {
     drawer->UpdatePreviousDeviationCoefficient();
 }
 
+/// Meshes `shape` for display at `quality`, so drawing it never meshes. A
+/// fault or an exception inside BRepMesh (it happens on some spline faces:
+/// hundreds of them after a «Пружина» cut) is caught here, on the shape's
+/// own triangles: they are cleaned and the shape is meshed coarser.
+enum class Meshed { AsAsked, Coarser, Coarsest, Failed };
+
+/// The precision a presentation must ask for, so drawing finds the triangles
+/// MeshForDisplay made good enough and does not mesh again (unguarded).
+void SetMeshPrecisionFor(const Handle(Prs3d_Drawer)& drawer, int quality, Meshed meshed) {
+    if (meshed == Meshed::Coarser) {
+        SetMeshPrecision(drawer, 2);
+    } else if (meshed == Meshed::Coarsest) {
+        SetMeshPrecision(drawer, 2);
+        drawer->SetDeviationAngle(30.0 * kPi / 180.0);
+        drawer->SetDeviationCoefficient(0.01);
+        drawer->UpdatePreviousDeviationAngle();
+        drawer->UpdatePreviousDeviationCoefficient();
+    } else {
+        SetMeshPrecision(drawer, std::clamp(quality, 0, 2));
+    }
+}
+
+/// Failed: even the coarsest mesh did not work — the body is then shown as
+/// edges only (in AIS_Shaded OCCT would mesh it inside drawing, unguarded).
+Meshed MeshForDisplay(const TopoDS_Shape& shape, int quality) {
+    const auto attempt = [&](int level, double angleDeg, double coefficient) {
+        Handle(Prs3d_Drawer) drawer = new Prs3d_Drawer();
+        SetMeshPrecision(drawer, level);
+        if (angleDeg > 0) {
+            drawer->SetDeviationAngle(angleDeg * kPi / 180.0);
+            drawer->SetDeviationCoefficient(coefficient);
+        }
+        bool ok = false;
+        std::string fault;
+        const bool survived = guard::RunGuarded(
+            [&] {
+                try {
+                    StdPrs_ToolTriangulatedShape::Tessellate(shape, drawer);
+                    ok = true;
+                } catch (...) {   // Standard_Failure and anything else
+                }
+            },
+            &fault);
+        if (!survived) log::Error("Meshing for display faulted ({}) at quality {}", fault, level);
+        if (survived && ok) return true;
+        guard::RunGuarded([&] {
+            try {
+                BRepTools::Clean(shape);   // half-made triangles must not be drawn
+            } catch (...) {
+            }
+        });
+        return false;
+    };
+    const int level = std::clamp(quality, 0, 2);
+    if (attempt(level, 0, 0)) return Meshed::AsAsked;
+    if (level < 2 && attempt(2, 0, 0)) return Meshed::Coarser;
+    if (attempt(2, 30.0, 0.01)) return Meshed::Coarsest;
+    return Meshed::Failed;
+}
+
+} // namespace
+
+namespace {
+
+/// How wide a tile of the section hatching is on screen (it holds four
+/// lines): about the texture's own size, so a line stays a crisp line.
+constexpr double kHatchTilePixels = 48.0;
+
+/// Thin lines at 45 degrees on white: multiplied by the cut's colour, they
+/// are the usual hatching of cut material. The tile repeats without a seam.
+Handle(Graphic3d_Texture2D) MakeHatchTexture() {
+    constexpr int size = 64, period = 16;   // four lines a tile
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const int d = (x + y) % period;
+            const double off = std::min(d, period - d) / std::sqrt(2.0);   // texels from the line's middle
+            const double line = std::clamp(1.4 - off, 0.0, 1.0);           // about 2 px wide, soft edges
+            const auto v = static_cast<std::uint8_t>(std::lround(255.0 - line * 150.0));
+            std::uint8_t* p = &rgba[(static_cast<std::size_t>(y) * size + static_cast<std::size_t>(x)) * 4];
+            p[0] = p[1] = p[2] = v;
+            p[3] = 255;
+        }
+    return MakePictureTexture(size, size, rgba);
+}
+
+/// How long the cutting plane stands still before its cut is hatched.
+constexpr std::chrono::milliseconds kCapsDelay{150};
+
 } // namespace
 
 struct Viewport::Impl {
@@ -402,8 +497,33 @@ struct Viewport::Impl {
     struct Shown {
         ObjectId                 body;
         Handle(AIS_ColoredShape) shape;   ///< coloured face by face where the look says so
+        int                      depthBias = 0;   ///< see kDepthBiasClasses
     };
     std::vector<Shown> shown;
+
+    /// Faces of different bodies that lie in one plane (bodies touching,
+    /// overlapping, flush) have the same depth: the depth test picks between
+    /// them pixel by pixel by rounding, and the two colours or pictures break
+    /// into stripes and specks that shimmer as the view turns. Each body is
+    /// pushed back by its own few depth steps instead, so one of them always
+    /// wins, the same one everywhere. The push is tiny (tens of steps of the
+    /// 24-bit depth buffer: thousandths of a millimetre), so nothing that is
+    /// truly in front is hidden. A body keeps its class while it is shown;
+    /// bodies with the same class (one in kDepthBiasClasses) are rarely in
+    /// contact with each other.
+    static constexpr int   kDepthBiasClasses = 16;
+    static constexpr float kDepthBiasStep    = 4.0f;   ///< depth steps between two classes
+    int nextDepthBias = 0;
+    /// OCCT's own push of faces (factor 1, units 1: edges are drawn over
+    /// them) plus the body's class. `depthBias` past the classes: behind
+    /// every body (the faded surroundings).
+    static Graphic3d_PolygonOffset DepthBias(int depthBias) {
+        Graphic3d_PolygonOffset offset;
+        offset.Mode = Aspect_POM_Fill;
+        offset.Factor = 1.0f;
+        offset.Units = 1.0f + kDepthBiasStep * static_cast<float>(depthBias);
+        return offset;
+    }
     /// Bodies shown a moment ago, hidden but kept with their meshes: closing
     /// an operation without applying it brings the old shapes back at once.
     std::vector<Shown> spare;
@@ -463,6 +583,19 @@ struct Viewport::Impl {
     }
 
     Handle(Graphic3d_ClipPlane) section;        ///< null: no section
+    /// The cut of "Разрез вида" in hatching, as in Inventor: the faces where the
+    /// plane cuts the material, one set a body, built once the plane has
+    /// stood still a moment (while it moves, OCCT fills the cut plainly).
+    struct SectionCaps {
+        Handle(Graphic3d_Texture2D)                 hatch;
+        double                                      tile = 0.0;   ///< mm a tile of `hatch` now
+        std::vector<TopoDS_Shape>                   of;           ///< the bodies they were made for
+        std::vector<std::vector<TopoDS_Face>>       faces;        ///< a body's cut faces
+        std::vector<Quantity_Color>                 colors;       ///< a body's colour
+        std::vector<Handle(AIS_InteractiveObject)>  shown;
+        bool                                        stale = true;
+        std::chrono::steady_clock::time_point       askedAt{};
+    } caps;
     std::optional<Frame>        sectionFrame;   ///< as last set
     Handle(Graphic3d_Texture2D) backgroundPicture;   ///< as last set (Preview takes it away for a moment)
 
@@ -725,6 +858,8 @@ struct Viewport::Impl {
         const doc::Appearance* bodyLook = look.OfBody(s.body);
         ApplyStyle(s.shape, s.body == hovered, bodyLook);
         s.shape->ClearCustomAspects();
+        // Before the faces' own looks: they copy the body's aspect.
+        s.shape->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
         if (style == DisplayStyle::Wireframe || style == DisplayStyle::HiddenLines) return;
         const TopoDS_Shape& shape = s.shape->Shape();
 
@@ -745,6 +880,7 @@ struct Viewport::Impl {
             aspects->SetupOwnShadingAspect();
             aspects->ShadingAspect()->SetMaterial(MaterialOf(colour, a->finish));
             aspects->ShadingAspect()->SetColor(ToQuantity(colour));
+            aspects->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
             if (style != DisplayStyle::Transparent) aspects->ShadingAspect()->SetTransparency(1.0 - a->face.a);
         }
         if (bodyLook && bodyLook->HasPicture())
@@ -757,7 +893,8 @@ struct Viewport::Impl {
             if (texture.IsNull()) continue;   // picture missing: the body's colour stays
             for (const TopoDS_Face& face : faces) s.shape->CustomAspects(face)->SetHidden(true);
             const double transparency = style == DisplayStyle::Transparent ? 0.55 : 1.0 - a->face.a;
-            Handle(TexturedFaces) skin = new TexturedFaces(faces, texture, a->pictureSize, MaterialOf(Color::Hex(0xFFFFFF), a->finish), transparency);
+            Handle(TexturedFaces) skin = new TexturedFaces(faces, texture, a->pictureSize, MaterialOf(Color::Hex(0xFFFFFF), a->finish), transparency,
+                                                     DepthBias(s.depthBias));
             // Picked as the faces it covers (hidden on the body), unless the
             // original body before an operation is what is picked now.
             context->Display(skin, 0, original.active ? -1 : AIS_Shape::SelectionMode(TopAbs_FACE), false);
@@ -782,6 +919,83 @@ struct Viewport::Impl {
             context->Display(lines, AIS_WireFrame, -1, false);
             textured[s.shape.get()].push_back(lines);
         }
+    }
+
+    void ClearCaps() {
+        for (const auto& obj : caps.shown) context->Remove(obj, false);
+        caps.shown.clear();
+        caps.of.clear();
+        caps.faces.clear();
+        caps.colors.clear();
+        caps.stale = true;
+        caps.askedAt = std::chrono::steady_clock::now();
+        if (!section.IsNull()) section->SetCapping(true);   // the plain fill until the hatching is there
+    }
+
+    /// Shows the hatched cut once the plane has stood still; keeps the hatching's
+    /// density on screen when zooming. True when what is drawn changed.
+    bool UpdateCaps() {
+        if (section.IsNull() || height <= 0) return false;
+        // The bodies changed under the plane (an edit, another document): again.
+        bool same = caps.of.size() == shown.size();
+        for (std::size_t i = 0; same && i < shown.size(); ++i) same = caps.of[i].IsEqual(shown[i].shape->Shape());
+        if (!same && !caps.stale) ClearCaps();
+        if (!same) {
+            caps.of.clear();
+            for (const auto& s : shown) caps.of.push_back(s.shape->Shape());
+        }
+        const auto now = std::chrono::steady_clock::now();
+        bool changed = false;
+        if (caps.stale) {
+            if (now - caps.askedAt < kCapsDelay) return false;   // the plane is still moving
+            caps.stale = false;
+            caps.faces.clear();
+            caps.colors.clear();
+            bool failed = false;
+            for (const auto& s : shown) {
+                Bnd_Box box;
+                BRepBndLib::Add(s.shape->Shape(), box);
+                double deflection = 0.05;
+                if (!box.IsVoid()) deflection = std::clamp(std::sqrt(box.SquareExtent()) * 0.001, 0.005, 1.0);
+                const auto cut = kernel::occt::CutFaces(s.shape->Shape(), *sectionFrame, deflection);
+                if (!cut) {
+                    log::Warn("Section: the cut of a body is not built: {}", cut.GetError().message);
+                    failed = true;
+                    break;
+                }
+                Quantity_Color color;
+                s.shape->Color(color);
+                caps.faces.push_back(*cut);
+                caps.colors.push_back(color);
+            }
+            if (failed) {
+                caps.faces.clear();   // the plain fill stays: better than a cut half hatched
+                return false;
+            }
+            caps.tile = 0.0;   // shown below
+            changed = true;
+        }
+        if (caps.faces.empty()) return changed;
+        // A tile of `kHatchTilePixels` on screen, in steps of two so it does not swim when zooming.
+        const double mmPerPixel = view->Camera()->Scale() / height;
+        const double tile = std::pow(2.0, std::round(std::log2(std::max(mmPerPixel * kHatchTilePixels, 1e-9))));
+        if (std::abs(tile - caps.tile) < 1e-12 && !changed) return false;
+        caps.tile = tile;
+        for (const auto& obj : caps.shown) context->Remove(obj, false);
+        caps.shown.clear();
+        // Drawn on the cutting plane itself: the plane must not clip them away.
+        Handle(Graphic3d_SequenceOfHClipPlane) noPlanes = new Graphic3d_SequenceOfHClipPlane();
+        noPlanes->SetOverrideGlobal(true);
+        for (std::size_t i = 0; i < caps.faces.size(); ++i) {
+            if (caps.faces[i].empty()) continue;
+            Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
+            Handle(TexturedFaces) cut = new TexturedFaces(caps.faces[i], caps.hatch, tile, material, 0.0, Graphic3d_PolygonOffset{}, caps.colors[i]);
+            cut->SetClipPlanes(noPlanes);
+            context->Display(cut, 0, -1, false);   // never picked: the body under it is
+            caps.shown.push_back(cut);
+        }
+        section->SetCapping(caps.shown.empty());   // one fill, not two fighting
+        return true;
     }
 
     void ApplyStyleAll() {
@@ -931,9 +1145,7 @@ void Viewport::SetSize(double width, double height, double pixelScale) {
 }
 
 void Viewport::PrepareMeshes(const kernel::Model& model, int quality) {
-    Handle(Prs3d_Drawer) drawer = new Prs3d_Drawer();
-    SetMeshPrecision(drawer, std::clamp(quality, 0, 2));
-    for (const kernel::Body& body : model.GetImpl().bodies) StdPrs_ToolTriangulatedShape::Tessellate(body.shape, drawer);
+    for (const kernel::Body& body : model.GetImpl().bodies) MeshForDisplay(body.shape, quality);
 }
 
 void Viewport::Sync(const kernel::Model& model) {
@@ -975,10 +1187,16 @@ void Viewport::Sync(const kernel::Model& model) {
             m.spare.erase(kept);
             continue;
         }
+        const Meshed meshed = MeshForDisplay(body.shape, m.quality);
+        if (meshed == Meshed::Failed) log::Error("Body {} could not be meshed: shown as edges", body.name);
+        else if (meshed != Meshed::AsAsked) log::Warn("Body {} meshed coarser than asked: finer meshing failed", body.name);
         Handle(AIS_ColoredShape) ais = new BodyShape(body.shape);
-        m.ApplyLook({body.id, ais});
-        m.context->Display(ais, AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
-        m.shown.push_back({body.id, ais});
+        const Impl::Shown fresh{body.id, ais, m.nextDepthBias};
+        m.nextDepthBias = (m.nextDepthBias + 1) % Impl::kDepthBiasClasses;
+        m.ApplyLook(fresh);
+        if (meshed == Meshed::Coarser || meshed == Meshed::Coarsest) SetMeshPrecisionFor(ais->Attributes(), m.quality, meshed);
+        m.context->Display(ais, meshed == Meshed::Failed ? AIS_WireFrame : AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
+        m.shown.push_back(fresh);
     }
     for (const auto& s : previous) {
         if (s.shape.IsNull()) continue;
@@ -1024,6 +1242,32 @@ void Viewport::Sync(const kernel::Model& model) {
 
 void Viewport::ForgetSynced() {
     Impl& m = *myImpl;
+    // From scratch indeed: Sync keeps a presentation whose shape did not
+    // change, so after a crash in drawing or meshing the same (possibly
+    // broken) presentation and triangles were drawn again and crashed again —
+    // the recovery loop of BZ-HANG-766282 («Кубик монолит», 12.11.2026).
+    // Each step guarded on its own: the context may be what is broken.
+    const auto drop = [&](std::vector<Impl::Shown>& list) {
+        for (const Impl::Shown& s : list) {
+            if (s.shape.IsNull()) continue;
+            guard::RunGuarded([&] {
+                try {
+                    m.ClearTextured(s.shape.get());
+                    m.context->Remove(s.shape, false);
+                } catch (...) {
+                }
+            });
+            guard::RunGuarded([&] {
+                try {
+                    BRepTools::Clean(s.shape->Shape());   // its triangles too: meshed again
+                } catch (...) {
+                }
+            });
+        }
+        list.clear();
+    };
+    drop(m.shown);
+    drop(m.spare);
     m.syncedModel = nullptr;
     m.syncedRevision = static_cast<std::uint64_t>(-1);
     m.surroundings.model = nullptr;
@@ -1126,6 +1370,19 @@ bool Viewport::SameFace(ObjectId body, const doc::FaceReference& a, const doc::F
     return false;
 }
 
+std::optional<Frame> Viewport::PlaneOfFace(const SelectedFace& chosen) const {
+    for (const auto& s : myImpl->shown) {
+        if (s.body != chosen.body) continue;
+        const auto face = kernel::occt::ResolveAnyFace(s.shape->Shape(), chosen.face);
+        if (!face) return std::nullopt;
+        std::optional<Frame> frame = PlanarFaceFrame(*face);
+        // The side the face was chosen from (the same rule as a click in PickPlane).
+        if (frame && chosen.face.IsSet() && frame->normal.Dot(chosen.face.normal) < 0) frame->normal = -frame->normal;
+        return frame;
+    }
+    return std::nullopt;
+}
+
 void Viewport::SetBackgroundPicture(int width, int height, std::span<const std::uint8_t> rgba) {
     Impl& m = *myImpl;
     Handle(Graphic3d_Texture2D) texture;
@@ -1187,10 +1444,11 @@ void Viewport::Render() {
         m.view->View()->SetFBO(m.fbo);
         m.view->MustBeResized();
     }
+    const bool hatchChanged = m.UpdateCaps();
     m.ShowFloorForCamera();
     m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
-    m.dirty = false;
+    m.dirty = hatchChanged;   // the cut's look changes: OCCT shows it a frame later
 }
 
 std::string Viewport::HandBackToWindow() {
@@ -1226,7 +1484,10 @@ unsigned Viewport::TextureId() const {
     return m.fbo->ColorTexture()->TextureId();
 }
 
-bool Viewport::NeedsRender() const { return myImpl->dirty || myImpl->animating; }
+bool Viewport::NeedsRender() const {
+    // A cut waiting for its hatching: frames until it is built (kCapsDelay).
+    return myImpl->dirty || myImpl->animating || (!myImpl->section.IsNull() && myImpl->caps.stale);
+}
 
 ViewProjection Viewport::Projection() const {
     const Impl& m = *myImpl;
@@ -1724,7 +1985,9 @@ bool Viewport::MeasurePick(Vec2 pixel, int slot) {
     const auto s = static_cast<std::size_t>(std::clamp(slot, 0, 1));
     ClearMeasure(static_cast<int>(s));
 
-    const TopoDS_Shape entity = owner->Shape();
+    TopoDS_Shape entity = owner->Shape();
+    // A mesh (STL) is measured point by point: the picked point on its triangles.
+    if (entity.ShapeType() == TopAbs_FACE && kernel::occt::IsMesh(entity)) entity = BRepBuilderAPI_MakeVertex(selector->PickedPoint(1)).Vertex();
     const kernel::EntityInfo info = kernel::occt::Describe(entity, ToVec(selector->PickedPoint(1).XYZ()));
     ms.picked[s] = entity;
     (s == 0 ? ms.result.first : ms.result.second) = info;
@@ -1811,6 +2074,9 @@ void Viewport::SetContext(const kernel::Model* model) {
         drawer->SetFaceBoundaryUpperContinuity(GeomAbs_C1);
         drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(m.colors.edges), Aspect_TOL_SOLID, 0.8));
         ais->SetTransparency(0.7);
+        // Behind every body: where the edited part touches a faded one, the
+        // edited part's face is the one seen.
+        drawer->ShadingAspect()->Aspect()->SetPolygonOffset(Impl::DepthBias(Impl::kDepthBiasClasses + 1));
         // Displayed with its edges selectable, then switched off unless an
         // edge of it is being picked: shown with no selection mode (-1), it
         // is never loaded into the selector, and a later Activate is ignored
@@ -2018,18 +2284,23 @@ void Viewport::SetSection(const std::optional<Frame>& plane) {
     if (!plane) {
         if (!m.section.IsNull()) m.view->RemoveClipPlane(m.section);
         m.section.Nullify();
+        m.ClearCaps();
         m.UpdateFloor();
         m.dirty = true;
         return;
     }
     if (m.section.IsNull()) {
         m.section = new Graphic3d_ClipPlane();
-        // Filled cut faces in the body colour, a little darker, so the cut reads as solid material.
+        // Filled cut faces, so the cut reads as solid material: each body's cut
+        // in that body's own colour (an assembly shows which part is which) under
+        // the hatching of cut material, as in Inventor's section views.
         m.section->SetCapping(true);
         Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
         const Color body = m.colors.body;
         material.SetColor(Quantity_Color(body.r * 0.82, body.g * 0.82, body.b * 0.82, Quantity_TOC_sRGB));
         m.section->SetCappingMaterial(material);
+        m.section->SetUseObjectMaterial(true);
+        if (m.caps.hatch.IsNull()) m.caps.hatch = MakeHatchTexture();
         m.view->AddClipPlane(m.section);
         m.UpdateFloor();
     }
@@ -2037,6 +2308,7 @@ void Viewport::SetSection(const std::optional<Frame>& plane) {
     // what lies ahead of `normal` is cut away.
     const Vec3 n = -plane->normal;
     m.section->SetEquation(gp_Pln(gp_Pnt(plane->origin.x, plane->origin.y, plane->origin.z), gp_Dir(n.x, n.y, n.z)));
+    m.ClearCaps();
     m.dirty = true;
 }
 
@@ -2109,6 +2381,10 @@ void Viewport::BeginPickingOriginal(const kernel::Model& model, std::size_t feat
         if (target == PickTarget::EdgesAndFaces || target == PickTarget::All) m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_FACE));
         if (target == PickTarget::All || target == PickTarget::VerticesAndEdges)
             m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_VERTEX));
+        // A mesh (STL) has no vertices or edges to pick: any point on its
+        // triangles is one (a work plane through three points of a scan).
+        if (target != PickTarget::Faces && target != PickTarget::EdgesAndFaces && kernel::occt::IsMesh(body))
+            m.context->Activate(ais, AIS_Shape::SelectionMode(TopAbs_FACE));
         o.targets.push_back(ais);
     }
     o.active = true;
@@ -2216,6 +2492,8 @@ std::optional<Viewport::VertexPick> Viewport::PickVertex(Vec2 pixel) {
     selector->Pick(px, py, m.view);
     for (int i = 1; i <= selector->NbPicked(); ++i) {
         const Handle(StdSelect_BRepOwner) owner = Handle(StdSelect_BRepOwner)::DownCast(selector->Picked(i));
+        if (!owner.IsNull() && owner->Shape().ShapeType() == TopAbs_FACE && kernel::occt::IsMesh(owner->Shape()))
+            return VertexPick{ToVec(selector->PickedPoint(i).XYZ()), std::nullopt};   // a point on a mesh
         // With edges and faces pickable too, the nearest thing has to be the vertex.
         if ((m.original.target == PickTarget::All || m.original.target == PickTarget::VerticesAndEdges) && (owner.IsNull() || owner->Shape().ShapeType() != TopAbs_VERTEX)) return std::nullopt;
         if (owner.IsNull() || owner->Shape().ShapeType() != TopAbs_VERTEX) continue;

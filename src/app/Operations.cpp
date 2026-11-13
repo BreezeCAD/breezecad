@@ -4,6 +4,7 @@
 #include "app/features/SheetMetalEditors.h"
 
 #include "app/Format.h"
+#include "app/Import.h"
 #include "app/features/OperationEditors.h"
 #include "app/mobile/MobileLayout.h"
 #include "app/mobile/PhoneHome.h"
@@ -15,6 +16,7 @@
 #include "document/Commands.h"
 #include "document/Origin.h"
 #include "document/SketchFeature.h"
+#include "app/AssemblyState.h"
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/InPlace.h"
 #include "assembly/AssemblyFile.h"
@@ -111,6 +113,7 @@ void OpenDropped(AppContext& app, const std::filesystem::path& file) {
     if (ext == u8".bzmod" || ext == u8".zip") InstallModule(app, file);
     else if (ext == u8".bzp") OpenProject(app, file);
     else if (ext == u8".bzlib") InstallStandardPack(app, file);
+    else if (IsImportable(file)) StartImport(app, file);   // STEP and STL: a new part (never taken from the slicers' associations)
     else OpenDocument(app, file);
 }
 
@@ -126,12 +129,17 @@ void OpenDocument(AppContext& app, std::optional<std::filesystem::path> file) {
         }
         file = platform::ShowOpenDialog(Tr("Открыть документ"),
                                         {{Tr("Документ BreezeCAD"), doc::DocumentTypeRegistry::Default().OpenPatterns() + " *.bzp"},
-                                         {Tr("Проект BreezeCAD"), "*.bzp"}},
+                                         {Tr("Проект BreezeCAD"), "*.bzp"},
+                                         {Tr("STEP и STL (импорт)"), "*.step *.stp *.stl *.STEP *.STP *.STL"}},
                                         folder);
         if (!file) return;
     }
     if (std::u8string ext = file->extension().u8string(); ext == u8".bzp" || ext == u8".BZP") {
         OpenProject(app, *file);
+        return;
+    }
+    if (IsImportable(*file)) {
+        StartImport(app, *file);
         return;
     }
     EndEditing(app);
@@ -288,14 +296,24 @@ void RecoverDocument(AppContext& app, const RecoverableDocument& rec) {
     app.notes.Success(Trf("Восстановлено: {}. Сохраните документ.", rec.title));
 }
 
+namespace {
+/// A constraint being made in an assembly is a command of its own, like an
+/// operation's panel: its trial is already in the assembly, so an undo under
+/// it took the trial away behind the panel's back (Применить then kept
+/// nothing, Отмена undid the step before). As in Inventor: no undo while it is open.
+bool MakingConstraint(const Session& s) {
+    return s.assembly && s.assembly->creating.active;
+}
+}   // namespace
+
 bool CanUndo(AppContext& app) {
     Session* s = app.Doc();
-    return s && !app.ops.Active() && s->CanUndo();
+    return s && !app.ops.Active() && !MakingConstraint(*s) && s->CanUndo();
 }
 
 bool CanRedo(AppContext& app) {
     Session* s = app.Doc();
-    return s && !app.ops.Active() && s->CanRedo();
+    return s && !app.ops.Active() && !MakingConstraint(*s) && s->CanRedo();
 }
 
 void Undo(AppContext& app) {
@@ -322,6 +340,16 @@ void StartSketch(AppContext& app) {
     if (frame) {
         app.sketch.CreateAndEdit(app, *s, {s->selectedFeature, *frame, false, {}});
         return;
+    }
+    // One flat face chosen in the view: the sketch goes on it, as in Inventor
+    // (the face first, then "Начать эскиз"), without asking for the plane again.
+    if (s->mode == EditMode::Model && s->selectedFaces.size() == 1) {
+        const render::SelectedFace face = s->selectedFaces.front();
+        if (const std::optional<Frame> plane = app.viewport.PlaneOfFace(face)) {
+            s->selectedFaces.clear();
+            app.sketch.CreateAndEdit(app, *s, {face.body, *plane, true, {plane->normal, face.face.point}});
+            return;
+        }
     }
     s->mode = EditMode::PickPlane;
 }
@@ -357,7 +385,7 @@ bool CreateStandardPart(AppContext& app, const doc::parts::Request& request) {
     Session& s = app.workspace.NewPart();
     s.untitledName = made->doc.info.designation;
     s.doc = std::move(made->doc);
-    s.doc.units.length = static_cast<LengthUnit>(app.settings.newPartLength);
+    doc::parts::SetLengthUnit(s.doc, static_cast<LengthUnit>(app.settings.newPartLength));
     s.history.MarkUnsaved();
     app.shell.ribbonTab = RibbonTab::Model;
     return true;
@@ -595,7 +623,9 @@ void EscapePressed(AppContext& app) {
     }
     Session* s = app.Doc();
     if (!s) return;
-    if (OperationEditor* open = app.ops.Active()) {
+    if (s->importing && ImportsRunning(app)) {
+        CancelImport(*s);
+    } else if (OperationEditor* open = app.ops.Active()) {
         open->Cancel(app, *s);
     } else if (app.shell.measuring) {
         app.shell.measuring = false;

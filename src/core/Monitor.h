@@ -5,7 +5,9 @@
 // it everything here costs a branch, except Action(), which also writes one
 // debug line to the log (user actions are rare; the log is local).
 
+#include <cstddef>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -25,6 +27,13 @@ bool Enabled();
 void Action(std::string_view source, std::string_view name);
 /// The last action, for crash and hang reports ("" if none).
 std::string_view LastAction();
+/// The longest start of `text[0..size)` that ends on a whole UTF-8 letter:
+/// where a fixed-size copy of Russian text may be cut.
+std::size_t Utf8Prefix(const char* text, std::size_t size);
+/// What exactly that action was asked (a command's arguments): a line of
+/// its own in a hang report, not part of the action (and of the error code).
+void ActionDetail(std::string_view detail);
+std::string LastActionDetail();
 
 /// The window's loop is alive (called every loop turn and frame). Always
 /// kept, monitoring or not: the hang window (app/CrashGuard) watches it.
@@ -45,6 +54,25 @@ void LogLine(bool error, std::string_view message);
 void CrashNote(const char* text);
 /// Folder for crash dumps (next to the monitor file), empty if disabled.
 const std::filesystem::path& DumpDir();
+
+/// A known long piece of work (a rebuild, an export, opening a file): what
+/// it is, which step it is at and how many there are. Kept monitoring or
+/// not, from any thread: while its steps go on, the window's loop standing
+/// still is work, not a hang (app/CrashGuard), and a hang report names it.
+/// `what` and `step` are shown to the user as they are («Перестроение»,
+/// the operation's name); `total` 0 — the number of steps is unknown.
+void Work(std::string_view what, std::string_view step, std::size_t done, std::size_t total);
+/// That work is over.
+void WorkDone();
+struct WorkState {
+    bool        active = false;
+    std::string what, step;
+    std::size_t done = 0, total = 0;
+    double      secondsSinceStep = 0;   ///< since `step` or `done` last changed
+};
+WorkState CurrentWork();
+/// "Перестроение: «Вырез 14», операция 31 из 52" — or "" when nothing is under way.
+std::string DescribeWork(const WorkState& work);
 
 /// The loop blocks on purpose (a native file dialog): not a hang.
 class Waiting {

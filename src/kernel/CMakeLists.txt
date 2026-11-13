@@ -7,6 +7,7 @@ add_library(bz_kernel STATIC
     ComponentPattern.cpp
     Model.cpp
     ProjectionSources.cpp
+    drawing/HiddenLines.cpp
     occt/Coil.cpp
     occt/Section.cpp
     occt/EdgeMatch.cpp
@@ -18,6 +19,7 @@ add_library(bz_kernel STATIC
     occt/FaceMatch.cpp
     occt/Fillet.cpp
     occt/Hole.cpp
+    occt/Import.cpp
     occt/Loft.cpp
     occt/Measure.cpp
     occt/Points.cpp
@@ -32,6 +34,6 @@ add_library(bz_kernel STATIC
     occt/Topology.cpp)
 target_link_libraries(bz_kernel
     PUBLIC  bz::document bz::assembly bz::sheetmetal bz::occt_modeling
-    PRIVATE bz::occt_exchange bz::miniz TKService TKV3d)   # TKV3d: text outlines on OCCT 7.x
+    PRIVATE bz::occt_exchange bz::miniz TKService TKV3d TKHLR)   # TKV3d: text outlines on OCCT 7.x; TKHLR: drawing views
 bz_set_warnings(bz_kernel)
 add_library(bz::kernel ALIAS bz_kernel)

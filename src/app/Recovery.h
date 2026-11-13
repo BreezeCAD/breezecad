@@ -49,6 +49,20 @@ public:
     /// left open by the failure are closed again, so the frame can end.
     bool RunInterface(AppContext& app, const std::function<void()>& work);
 
+    /// While one lives, Remember keeps what it has: frames drawn in the
+    /// middle of a piece of work (a module's command waiting for a long
+    /// rebuild) must not move "as it was before" into the middle of it.
+    class Hold {
+    public:
+        explicit Hold(Recovery& recovery) : myRecovery(recovery) { ++myRecovery.myHeld; }
+        ~Hold() { --myRecovery.myHeld; }
+        Hold(const Hold&) = delete;
+        Hold& operator=(const Hold&) = delete;
+
+    private:
+        Recovery& myRecovery;
+    };
+
     /// Failures recovered from in this run.
     int Recovered() const { return myRecovered; }
 
@@ -72,8 +86,11 @@ private:
     State              myState;
     std::deque<double> myRecent;   ///< when the last failures (of the same stage) happened
     std::string        myLastStage;
+    std::string        myOrigin;      ///< the action before the failures (not a «recovery: …» one)
+    int                myRepeats = 0;   ///< failures since that action
     int                myRecovered = 0;
     bool               myRecovering = false;
+    int                myHeld = 0;   ///< Hold objects alive
 };
 
 namespace fault_test {

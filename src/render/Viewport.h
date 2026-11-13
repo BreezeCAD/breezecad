@@ -129,6 +129,10 @@ public:
     void SetHiddenBodies(std::vector<ObjectId> bodies);
     /// Both references point at the same face of the shown body `body`.
     bool SameFace(ObjectId body, const doc::FaceReference& a, const doc::FaceReference& b) const;
+    /// The sketch frame of a chosen face when it is flat (nullopt for a curved
+    /// one or a face no longer there): the same frame a click on that face in
+    /// "Начать эскиз" gives, its normal out of the body as the face was chosen.
+    std::optional<Frame> PlaneOfFace(const SelectedFace& chosen) const;
     /// Pictures on faces: the largest side a picture may keep on the graphics
     /// card, in pixels (a bigger one is made smaller first); 0 = as it is.
     /// The weaker the computer, the smaller: less memory, coarser texture.

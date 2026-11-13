@@ -17,6 +17,7 @@
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
 #include "ui/Widgets.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <format>
@@ -128,6 +129,8 @@ bool EditInPlace(AppContext& app, Session& as, ObjectId id, std::string* why) {
         st.geometry.UsePartInMemory(file, &edit->session->doc, &edit->session->model);
     }
     Session& part = *edit->session;
+    // As it all is now: if the part changes, coming back is one undo step.
+    st.inPlaceStart = {file, st.Snapshot(), doc::DocumentToJson(part.doc)};
     part.host = &as;
     part.inPlaceOf = id;
     part.SetMeshQuality(app.settings.graphics);
@@ -161,7 +164,16 @@ void ReturnToAssembly(AppContext& app) {
         as.assembly->selected = now.component->id;
     }
     part.inPlaceOf = {};
-    as.assembly->inPlace = {};
+    AssemblyState& st = *as.assembly;
+    st.inPlace = {};
+    // The edit is one step of the assembly: undo takes the part back and the
+    // positions with it (not the part's edit with the old positions).
+    if (!st.inPlaceStart.file.empty() && doc::DocumentToJson(part.doc) != st.inPlaceStart.part)
+        st.RecordPartEdit("Правка детали на месте", std::move(st.inPlaceStart.assembly), st.inPlaceStart.file,
+                          std::move(st.inPlaceStart.part));
+    st.inPlaceStart = {};
+    // Left on purpose: the sketches «Ручное редактирование» was going to open are not forced on.
+    st.manual = {};
     app.shell.ribbonTab = RibbonTab::Model;
     app.shell.leftTab = LeftTab::Tree;
     mon::Action("assembly", "возврат в сборку");
@@ -224,6 +236,52 @@ bool CreatingPart(AppContext& app) {
     return s && s->assembly && s->assembly->newPart.active;
 }
 
+namespace {
+
+/// The constraints that hold a part just made on `plane` where it is (see
+/// CreatePartAt). False when the plane is not square to the axes of the part
+/// it is on: nothing is added then.
+bool ConstrainNewPart(AssemblyState& st, ObjectId part, const assembly::GeometryRef& plane, const Placement& placed,
+                      const Placement& host) {
+    namespace o = doc::origin;
+    const ObjectId on = plane.component;
+    struct Pair {
+        assembly::GeometryRef first, second;
+        bool                  flush;
+    };
+    std::vector<Pair> pairs;
+    const auto partPlane = [&](ObjectId id) { return *assembly::OriginGeometry(part, id); };
+    pairs.push_back({plane, partPlane(o::kPlaneXY), true});
+    // The part's YZ and XZ: each with the plane of `on` square to the same axis.
+    for (const auto& [mine, axis] : {std::pair{o::kPlaneYZ, Vec3{1, 0, 0}}, std::pair{o::kPlaneXZ, Vec3{0, 1, 0}}}) {
+        const Vec3 normal = placed.Direction(axis);
+        bool found = false;
+        for (const auto& [theirs, theirAxis] :
+             {std::pair{o::kPlaneYZ, Vec3{1, 0, 0}}, std::pair{o::kPlaneXZ, Vec3{0, 1, 0}}, std::pair{o::kPlaneXY, Vec3{0, 0, 1}}}) {
+            const double along = normal.Dot(host.Direction(theirAxis));
+            if (std::abs(std::abs(along) - 1.0) > 1e-9) continue;
+            // The planes are one (the part's origin lies on that part's origin line).
+            if (std::abs((placed.translation - host.translation).Dot(normal)) > 1e-6) continue;
+            pairs.push_back({*assembly::OriginGeometry(on, theirs), partPlane(mine), along > 0});
+            found = true;
+            break;
+        }
+        if (!found) return false;
+    }
+    for (const Pair& p : pairs) {
+        assembly::Constraint c;
+        c.type = assembly::ConstraintType::Mate;
+        c.first = p.first;
+        c.second = p.second;
+        c.flipped = p.flush;   // Mate: flipped is flush (normals the same way)
+        c.value = 0.0;
+        st.assembly.AddConstraint(c);
+    }
+    return true;
+}
+
+} // namespace
+
 ObjectId CreatePartAt(AppContext& app, Session& session, const std::string& typed, const assembly::GeometryRef& plane,
                       bool startSketch) {
     if (!session.assembly) return {};
@@ -262,10 +320,13 @@ ObjectId CreatePartAt(AppContext& app, Session& session, const std::string& type
     st.Checkpoint(N_("Создание детали"));
     Component& c = st.assembly.AddComponent(assembly::RelativePartPath(session.path, file), name, placed);
     const ObjectId id = c.id;
-    // Fixed where it was made: it is drawn on and by the parts around it, and
-    // a constraint added later must move those, not it (a flush to its plane,
-    // as before, left it free to slide and turn — and drift with what it drew from).
-    c.grounded = true;
+    // Placed by constraints, as in Inventor, and fully: its XY flush with the
+    // face, its YZ and XZ flush with the planes of the part it is made on (its
+    // origin is that part's origin dropped onto the face, its X that part's X:
+    // the planes meet there). It goes with that part, and does not slide or
+    // turn (one flush alone left it free to — and drift with what it drew from).
+    // A face not square to that part's axes has no such planes: fixed then.
+    if (!ConstrainNewPart(st, id, plane, placed, at)) st.assembly.FindComponent(id)->grounded = true;
     st.parts.push_back({file, std::move(part), true});
     AssemblyState::PartEdit& edit = st.parts.back();
     edit.session->RebuildNow();
@@ -383,7 +444,7 @@ bool WriteCreatedParts(Session& as, const std::vector<std::vector<ObjectId>>& us
         std::error_code ec;
         std::filesystem::create_directories(e.file.parent_path(), ec);
         e.session->RebuildNow();
-        if (const Status s = doc::SaveBzc(e.session->doc, e.file, kGenerator); !s) {
+        if (const Status s = doc::SaveBzc(e.session->doc, e.file, kGenerator, kernel::GeometryKernelVersion()); !s) {
             error = std::format("Деталь «{}» не записана: {}", ToUtf8(e.file.filename()), s.GetError().message);
             return false;
         }
@@ -435,7 +496,7 @@ bool WriteEditedParts(Session& as, const std::vector<std::vector<ObjectId>>& use
         const bool moved = !(*now == e.file);
         if (e.created || moved || e.session->IsModified()) {
             e.session->RebuildNow();
-            if (const Status s = doc::SaveBzc(e.session->doc, *now, kGenerator); !s) {
+            if (const Status s = doc::SaveBzc(e.session->doc, *now, kGenerator, kernel::GeometryKernelVersion()); !s) {
                 error = std::format("Деталь «{}» не записана: {}", ToUtf8(now->filename()), s.GetError().message);
                 return false;
             }

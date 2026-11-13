@@ -16,7 +16,8 @@ namespace bz::app {
 class Notifications;
 struct Settings;
 
-enum class ExportFormat : unsigned char { Step, Stl, ThreeMf };
+/// Pdf — a drawing's sheets (drawing/DrawingPdf.h); the others — a model's bodies.
+enum class ExportFormat : unsigned char { Step, Stl, ThreeMf, Pdf };
 
 /// The open documents and the file operations on them.
 class Workspace {
@@ -47,6 +48,8 @@ public:
     Session& NewPart();
     /// New empty assembly, made active.
     Session& NewAssembly();
+    /// A new drawing: one A3 sheet with the ESKD frame (ADR-0012).
+    Session& NewDrawing();
 
     /// A session for a .bzc file of any kind this version opens (not added).
     static Expected<std::unique_ptr<Session>> LoadSession(const std::filesystem::path& file,

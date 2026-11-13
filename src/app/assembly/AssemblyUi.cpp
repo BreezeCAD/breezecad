@@ -23,6 +23,7 @@
 #include "platform/Paths.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <array>
@@ -282,6 +283,10 @@ kernel::AssemblyPick PickFor(assembly::ConstraintType type) {
         case assembly::ConstraintType::Insert:
         case assembly::ConstraintType::Rotational: return kernel::AssemblyPick::Circle;
         case assembly::ConstraintType::AxisMate:   return kernel::AssemblyPick::Line;
+        // Joints along an axis: a round edge (its centre) or a cylinder — never
+        // a flat face, whose "axis" through the click would stand off by the radius.
+        case assembly::ConstraintType::Cylindrical:
+        case assembly::ConstraintType::Slider:     return kernel::AssemblyPick::Axis;
         // Inventor's mate takes what is under the cursor: a vertex, an edge or the face.
         case assembly::ConstraintType::Mate:
         case assembly::ConstraintType::Angle:
@@ -726,7 +731,7 @@ std::optional<std::filesystem::path> StandardPartFile(AppContext& app, const Ses
             return std::nullopt;
         }
         std::filesystem::create_directories(folder, ec);
-        if (const Status saved = doc::SaveBzc(made->doc, file, "BreezeCAD"); !saved) {
+        if (const Status saved = doc::SaveBzc(made->doc, file, "BreezeCAD", kernel::GeometryKernelVersion()); !saved) {
             app.notes.Error(Trf("Не удалось сохранить деталь: {}", Tr(saved.GetError().message)));
             return std::nullopt;
         }
@@ -1091,6 +1096,8 @@ void DropPreview(AssemblyState& st) {
 /// Called again after each change of the options: the same trial, updated.
 void ShowPreview(AppContext& app, AssemblyState& st) {
     auto& creating = st.creating;
+    creating.conflict.clear();   // changed: to be judged again
+    creating.force = false;
     assembly::Constraint made = creating.constraint;
     if (assembly::IsJoint(made.type)) assembly::FitJoint(st.assembly, made);
     if (assembly::IsTransmission(made.type)) assembly::FitTransmission(st.assembly, made);
@@ -1147,6 +1154,28 @@ bool ApplyConstraint(AppContext& app, Session& session, bool close) {
     AssemblyState& st = *session.assembly;
     auto& creating = st.creating;
     if (!creating.active || !creating.preview) return false;
+    // As Inventor: a constraint that contradicts those already there (or
+    // repeats them) is not taken silently — its failure would spread to the
+    // others of the same parts. The panel says so; «Всё равно применить» keeps it.
+    if (!creating.force)
+        if (const assembly::Constraint* c = st.assembly.FindConstraint(creating.preview)) {
+            const bool failed = c->state == assembly::ConstraintState::Failed;
+            if (failed || c->state == assembly::ConstraintState::Redundant) {
+                std::string others;
+                int count = 0;
+                for (const assembly::Constraint& o : st.assembly.constraints) {
+                    if (o.id == c->id || o.Inactive() || assembly::IsTransmission(o.type)) continue;
+                    const auto on = [&o](ObjectId k) { return o.first.component == k || o.second.component == k; };
+                    if (!(on(c->first.component) || on(c->second.component))) continue;
+                    if (count++ < 3) others += (others.empty() ? "" : ", ") + o.name;
+                }
+                if (count > 3) others += ", …";
+                creating.conflict = failed ? (others.empty() ? Tr("Зависимость не выполняется: детали нельзя поставить так, как она требует")
+                                                             : Trf("Зависимость противоречит уже наложенным: {}", others))
+                                           : Tr("Зависимость лишняя: повторяет то, что уже задают другие");
+                return false;
+            }
+        }
     // Kept as it is now; the next one of the same kind is ready, as in Inventor.
     const assembly::Constraint keep = creating.constraint;
     const bool redefining = creating.redefine.IsValid();
@@ -1419,11 +1448,27 @@ void DrawConstraintPanel(AppContext& app, Session& session, float width) {
     // Применить keeps it and stays for the next; Готово keeps it and closes (Inventor's Apply / OK).
     const float half = (inner - ui.S(8)) / 2;
     const bool ready = creating.preview.IsValid();
-    if (ui::PrimaryButton(ui, "##con-apply", Tr("Применить"), "Enter", {half, ui.S(34)}, ready))
-        app.Later([&app, &session] { ApplyConstraint(app, session, false); });
-    ImGui::SameLine(0, ui.S(8));
-    if (ui::SecondaryButton(ui, "##con-done", Tr("Готово"), nullptr, {half, ui.S(34)}, ready))
-        app.Later([&app, &session] { ApplyConstraint(app, session, true); });
+    if (!creating.conflict.empty() && ready) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::ToU32(ui.C().danger));
+        ImGui::TextWrapped("%s", creating.conflict.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy({0, ui.S(4)});
+        // In place of Применить / Готово (they would only say it again): the
+        // panel stays as tall, Отмена stays in sight.
+        if (ui::PrimaryButton(ui, "##con-force", Tr("Всё равно применить"), nullptr, {inner, ui.S(34)}))
+            app.Later([&app, &session] {
+                session.assembly->creating.force = true;
+                ApplyConstraint(app, session, true);
+            });
+    } else {
+        if (ui::PrimaryButton(ui, "##con-apply", Tr("Применить"), "Enter", {half, ui.S(34)}, ready))
+            app.Later([&app, &session] { ApplyConstraint(app, session, false); });
+        ImGui::SameLine(0, ui.S(8));
+        if (ui::SecondaryButton(ui, "##con-done", Tr("Готово"), nullptr, {half, ui.S(34)}, ready))
+            app.Later([&app, &session] { ApplyConstraint(app, session, true); });
+    }
     ImGui::Dummy({0, ui.S(4)});
     if (ui::SecondaryButton(ui, "##con-cancel", Tr("Отмена"), "Esc", {inner, ui.S(32)})) app.Later([&session] { CancelConstraint(session); });
     ImGui::EndGroup();

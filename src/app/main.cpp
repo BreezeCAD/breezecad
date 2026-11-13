@@ -16,6 +16,7 @@
 #include "app/BetaTesting.h"
 #include "app/CrashGuard.h"
 #include "app/shell/CrashWindow.h"
+#include "app/testing/UiProbe.h"
 #include "core/Log.h"
 #include "core/Monitor.h"
 
@@ -246,6 +247,7 @@ int main(int argc, char** argv) {
         app.ScreenshotAndQuit(spec, frame);
     }
     if (const char* dir = std::getenv("BZ_SHOT_DIR")) app.EnableShotRequests(dir);
+    if (const char* dir = std::getenv("BZ_PROBE_DIR")) bz::app::probe::Enable(dir);   // tools/bench
     const int code = app.Run();
     bz::mon::Stop(code);
     bz::app::beta::EndSession(code);

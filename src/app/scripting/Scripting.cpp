@@ -8,6 +8,7 @@
 #include "app/scripting/Commands.h"
 #include "core/I18n.h"
 #include "core/Log.h"
+#include "core/Monitor.h"
 #include "document/Commands.h"
 #include "document/Feature.h"
 #include "document/Origin.h"
@@ -19,6 +20,10 @@
 namespace bz::app::scripting {
 
 namespace {
+
+/// The application the command under way was asked of (Rebuild keeps its
+/// window alive); null outside Run.
+AppContext* gRunning = nullptr;
 
 const Commands& Table() {
     static const Commands table = [] {
@@ -71,6 +76,13 @@ Json Reply(const Json& request, AppContext& app) {
         if (c.name != name) continue;
         if (c.changes)
             if (const std::string busy = EditInProgress(app); !busy.empty()) Fail(busy);
+        // What the program was doing, in words a person reads in a hang
+        // report: the command and what it was asked.
+        std::string asked = args.empty() ? std::string{} : args.dump(-1, ' ', false, Json::error_handler_t::replace);
+        if (asked.size() > 160) asked = asked.substr(0, 160) + "…";
+        mon::Action("module", name);
+        mon::ActionDetail(asked);
+        if (Session* s = app.Doc()) s->SetWaitingFor(name);
         return c.run(app, args);
     }
     Fail(std::format("Нет команды «{}» (список — commands.list)", name));
@@ -80,12 +92,29 @@ Json Reply(const Json& request, AppContext& app) {
 
 std::string Run(AppContext& app, std::string_view request) {
     Json reply;
+    // Where the document in front stood: a command cancelled half-way (the
+    // user stopped the rebuild it waited for) is taken back to here.
+    Session* const               front = app.Doc();
+    const doc::History::Mark     before = front ? front->history.GetMark() : doc::History::Mark{};
+    AppContext* const            outer = gRunning;
+    gRunning = &app;
     const auto run = [&] {
         try {
             const Json parsed = Json::parse(request);
             reply = {{"ok", true}, {"result", Reply(parsed, app)}};
         } catch (const Failure& f) {   // refused as asked: nothing was changed
             reply = {{"ok", false}, {"error", f.message}};
+        } catch (const Cancelled&) {
+            // One command is one undo step (two with a roll-back): undone,
+            // and the steps it made dropped from the history.
+            if (front && app.workspace.IsOpen(front) && !front->IsAssembly()) {
+                for (int i = 0; i < 4 && front->history.CanUndo() && front->history.GetMark().last != before.last; ++i)
+                    front->history.Undo(front->doc);
+                front->history.RollBack(before);
+            }
+            reply = {{"ok", false},
+                     {"error", "Пользователь отменил перестроение в BreezeCAD: команда отменена, документ возвращён к состоянию до неё"},
+                     {"cancelled", true}};
         } catch (const Json::exception& e) {
             reply = {{"ok", false}, {"error", std::format("Неправильный JSON: {}", e.what())}};
         }
@@ -104,6 +133,8 @@ std::string Run(AppContext& app, std::string_view request) {
             ok = false;
         }
     }
+    gRunning = outer;
+    if (front && app.workspace.IsOpen(front)) front->SetWaitingFor({});
     if (!ok) reply = {{"ok", false}, {"error", "Ошибка программы при выполнении команды: она отменена, документ возвращён к состоянию до неё"}};
     return reply.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
@@ -111,6 +142,11 @@ std::string Run(AppContext& app, std::string_view request) {
 // --- helpers ------------------------------------------------------------------
 
 void Fail(std::string message) { throw Failure{std::move(message)}; }
+
+void Rebuild(Session& part) {
+    static const std::function<bool()> kNone;
+    if (!part.RebuildWaiting(gRunning ? gRunning->keepAlive : kNone)) throw Cancelled{};
+}
 
 Json Schema(Json properties, std::vector<std::string> required) {
     Json s = {{"type", "object"}, {"properties", std::move(properties)}};
@@ -235,7 +271,7 @@ const kernel::Topology& TopologyOf(Session& part) {
     static const kernel::Model* model = nullptr;
     static std::uint64_t        revision = ~std::uint64_t{0};
     static kernel::Topology     topology;
-    part.RebuildNow();
+    Rebuild(part);
     if (model != &part.model || revision != part.model.Revision()) {
         topology = kernel::DescribeTopology(part.model);
         model    = &part.model;
@@ -308,7 +344,7 @@ Json Describe(const doc::Feature& f) {
 }
 
 Json AfterChange(Session& part, ObjectId feature) {
-    part.RebuildNow();
+    Rebuild(part);
     part.selectedFeature = feature;
     if (const doc::Feature* f = part.doc.Find(feature)) return Describe(*f);
     return Json::object();
@@ -319,7 +355,7 @@ void RollBackIfFailed(Session& part, ObjectId feature) {
     if (!f || f->status.state != doc::FeatureState::Error) return;
     const std::string why = f->status.message, name = f->name;
     part.Undo();
-    part.RebuildNow();
+    Rebuild(part);
     Fail(std::format("«{}» не построена, шаг отменён: {}", name, why));
 }
 

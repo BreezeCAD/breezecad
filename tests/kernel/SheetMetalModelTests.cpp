@@ -6,6 +6,9 @@
 
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -308,3 +311,5 @@ TEST_CASE("a flange that goes into another one is reported, the part is still bu
     m2.Rebuild(t.d);
     CHECK(tab.status.state == FeatureState::Warning);
 }
+
+TEST_SUITE_END();

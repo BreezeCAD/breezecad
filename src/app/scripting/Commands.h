@@ -41,6 +41,15 @@ struct Failure {
 };
 [[noreturn]] void Fail(std::string message);
 
+/// Thrown when the user cancels the rebuild a command waits for: the
+/// command's changes are taken back (Run), the caller is told so.
+struct Cancelled {};
+/// Brings `part`'s model up to date before the command reads it. A long
+/// rebuild runs on another thread while the window stays alive and shows
+/// its progress (Session::RebuildWaiting, AppContext::keepAlive); the
+/// command goes on when it is done. Throws Cancelled.
+void Rebuild(Session& part);
+
 struct Command {
     std::string name;          ///< "part.tree"
     std::string description;   ///< for the caller (an AI reads it): what it does, what it returns

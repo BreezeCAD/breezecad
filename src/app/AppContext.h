@@ -39,6 +39,7 @@ enum class RibbonTab : unsigned char { Model, Sketch, View };
 
 struct ChangeDialogState;   // app/assembly/ChangeDialog.cpp
 struct HandoffState;        // app/handoff/HandoffUi.cpp
+struct ImportState;         // app/Import.cpp
 
 /// UI state of the window chrome that outlives a frame.
 struct ShellState {
@@ -136,10 +137,20 @@ struct ShellState {
     bool measuring = false;   ///< "Измерить" is on
     int  measureSlot = 0;     ///< which of its two fields the next click fills
     bool interference = false;   ///< "Коллизии": overlaps of the bodies shown
+    /// A module's command waits for a long rebuild (AppContext::keepAlive):
+    /// the window is drawn, the input does not reach the document. The
+    /// status bar shows «Отменить» and says where it drew it.
+    struct Waiting {
+        bool   locked = false;
+        ImVec2 cancelMin{}, cancelMax{};   ///< «Отменить» in the status bar (last frame); empty when not drawn
+        bool   cancelAsked = false;
+    } waiting;
     /// «Обнаружено изменение, затрагивающее другие детали»: choices, preview.
     std::shared_ptr<ChangeDialogState> changeDialog;
     /// «Продолжить на устройстве»: the computer's window or the device's copy (HandoffUi.h).
     std::shared_ptr<HandoffState> handoff;
+    /// The question asked before an import (app/Import.h).
+    std::shared_ptr<ImportState> import;
 
     /// Choosing faces with the left button (see viewport/FaceSelection).
     struct FaceSelecting {
@@ -258,6 +269,11 @@ struct AppContext {
     modules::ModuleManager*    modules = nullptr; ///< set once the modules are loaded
     /// Puts the documents back when a piece of work fails (app/Recovery.h); null in tests.
     Recovery*                  recovery = nullptr;
+    /// Keeps the window alive while a command waits for a long rebuild on
+    /// another thread: events, a frame with the progress in the status bar,
+    /// nothing of the input reaching the document. False — the user asked
+    /// to cancel (Esc, «Отменить» in the status bar). Empty without a window.
+    std::function<bool()>      keepAlive;
 
     Session* Doc() { return workspace.Active(); }
 

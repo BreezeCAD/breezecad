@@ -20,6 +20,9 @@
 
 #include <chrono>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::CurveKind;
@@ -317,3 +320,68 @@ TEST_CASE("шов: скругление и выдавленный рядом с�
         CHECK(s.model.Volume() == doctest::Approx((40.0 * 20 - (4 - kPi) * 9) * 20).epsilon(1e-6));
     }
 }
+
+// Реальный эскиз — не точные числа: решатель оставляет точки на прямой с
+// невязкой, проекции из сборки приходят через перенос и поворот детали.
+// Грани «почти в одной плоскости» тоже должны слиться.
+TEST_CASE("шов: сторона из двух отрезков с невязкой решателя — грани сливаются") {
+    for (const double off : {1e-11, 1e-10, 1e-9, 1e-8}) {
+        CAPTURE(off);
+        doc::Document d;
+        auto& sk = AddSketch(d);
+        auto& s = sk.sketch;
+        IdGenerator& ids = d.Ids();
+        const ObjectId p0 = s.AddPoint(ids, {-60, -40}), pm = s.AddPoint(ids, {0, -40 + off});
+        const ObjectId p1 = s.AddPoint(ids, {60, -40}), p2 = s.AddPoint(ids, {60, 40});
+        const ObjectId p3 = s.AddPoint(ids, {-60, 40});
+        s.AddLine(ids, p0, pm);
+        s.AddLine(ids, pm, p1);
+        s.AddLine(ids, p1, p2);
+        s.AddLine(ids, p2, p3);
+        s.AddLine(ids, p3, p0);
+        auto& ex = AddExtrude(d, sk.id, "30");
+        auto& fillet = AddEdgeOp<doc::FilletFeature>(d, "2");
+        fillet.edges.front().middle = {-30, -40, 30};
+        kernel::Model model;
+        model.Rebuild(d);
+        REQUIRE(ex.status.state == FeatureState::Ok);
+        CHECK(fillet.status.state == FeatureState::Ok);
+    }
+}
+
+TEST_CASE("шов: присоединённый брусок почти вровень — грани сливаются") {
+    for (const double off : {1e-11, 1e-10, 1e-9, 1e-8}) {
+        CAPTURE(off);
+        doc::Document d;
+        auto& a = AddSketch(d);
+        AddRect(d, a, {-60, -40}, {0, 40});
+        AddExtrude(d, a.id, "30");
+        auto& b = AddSketch(d);
+        AddRect(d, b, {0, -40 + off}, {60, 40});
+        auto& join = AddExtrude(d, b.id, "30", doc::BooleanOp::Join);
+        auto& fillet = AddEdgeOp<doc::FilletFeature>(d, "2");
+        fillet.edges.front().middle = {-30, -40, 30};   // один отрезок ребра, как щелчком
+        kernel::Model model;
+        model.Rebuild(d);
+        REQUIRE(join.status.state == FeatureState::Ok);
+        CHECK(Count(model, TopAbs_FACE) == 6 + 1);
+        CHECK(fillet.status.state == FeatureState::Ok);
+    }
+}
+
+TEST_CASE("шов: заметное расхождение (1e-7 мм) не сливается и не ломает скругление") {
+    doc::Document d;
+    auto& a = AddSketch(d);
+    AddRect(d, a, {-60, -40}, {0, 40});
+    AddExtrude(d, a.id, "30");
+    auto& b = AddSketch(d);
+    AddRect(d, b, {0, -40 + 1e-7}, {60, 40});
+    AddExtrude(d, b.id, "30", doc::BooleanOp::Join);
+    auto& fillet = AddEdgeOp<doc::FilletFeature>(d, "2");
+    fillet.edges.front().middle = {-30, -40, 30};
+    kernel::Model model;
+    model.Rebuild(d);
+    CHECK(fillet.status.state == FeatureState::Ok);
+}
+
+TEST_SUITE_END();

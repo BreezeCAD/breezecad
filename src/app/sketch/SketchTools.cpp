@@ -1548,9 +1548,18 @@ bool SketchEditor::AddConstraint(AppContext& app, Session& session, sketch::Cons
     auto before = f->Clone();
     f->sketch = std::move(trial);
     session.doc.MarkChanged(static_cast<std::size_t>(session.doc.IndexOf(f->id)));
+    const bool dimension = sketch::IsDimensional(c.type) && !c.reference;
+    std::unique_ptr<doc::Feature> placedBefore = dimension ? before->Clone() : nullptr;
+    const doc::History::Mark placedAt = session.history.GetMark();
     session.CommitInPlaceEdit(std::move(before), label);
-    if (sketch::IsDimensional(c.type) && !c.reference)
-        if (const sketch::Constraint* added = Active(session)->sketch.FindConstraint(id)) StartInlineEdit(*added);
+    if (dimension)
+        if (const sketch::Constraint* added = Active(session)->sketch.FindConstraint(id)) {
+            StartInlineEdit(*added);
+            // Its value typed straight away joins this step (see HandleInlineEdit).
+            myPlacedBefore = std::move(placedBefore);
+            myPlacedAt = placedAt;
+            myPlacedMark = session.history.GetMark();
+        }
     return true;
 }
 

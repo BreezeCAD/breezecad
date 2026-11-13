@@ -8,6 +8,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 
@@ -88,3 +91,5 @@ TEST_CASE("a picture appearance travels inside the .bzc file") {
     REQUIRE(bad);
     CHECK_FALSE(bad->HasPicture());
 }
+
+TEST_SUITE_END();

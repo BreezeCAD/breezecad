@@ -20,8 +20,9 @@ std::string        AssemblyToJson(const Assembly& assembly);
 /// `warnings`: non-fatal problems (unknown constraint types are skipped).
 Expected<Assembly> AssemblyFromJson(std::string_view json, std::vector<std::string>* warnings = nullptr);
 
+/// `kernel`: as for doc::WriteBzcArchive — the caller's geometry kernel, for the manifest.
 Status             SaveAssembly(const Assembly& assembly, const std::filesystem::path& path, std::string_view generator,
-                                std::span<const std::uint8_t> preview = {});
+                                std::string_view kernel = {}, std::span<const std::uint8_t> preview = {});
 Expected<Assembly> LoadAssembly(const std::filesystem::path& path, std::vector<std::string>* warnings = nullptr);
 
 /// How a component refers to `part` from an assembly saved at `assemblyFile`:

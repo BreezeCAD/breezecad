@@ -90,6 +90,13 @@ if(BZ_BUILD_APP)
     target_include_directories(bz_imgui SYSTEM PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends ${IMGUI_DIR}/misc/cpp)
     target_compile_definitions(bz_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
     target_link_libraries(bz_imgui PUBLIC glfw OpenGL::GL)
+    # The test bench (tools/bench) asks the program what is on screen: Dear
+    # ImGui then reports every item it lays out. Off in the builds people get.
+    option(BZ_UI_PROBE "Dear ImGui item hooks for the test bench (tools/bench)" OFF)
+    if(BZ_UI_PROBE)
+        target_sources(bz_imgui PRIVATE ${PROJECT_SOURCE_DIR}/src/app/testing/ImGuiProbeHooks.cpp)
+        target_compile_definitions(bz_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
+    endif()
     add_library(bz::imgui ALIAS bz_imgui)
 
     # lunasvg — rasterizes the SVG icon set.

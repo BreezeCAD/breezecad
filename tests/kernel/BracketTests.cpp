@@ -22,6 +22,9 @@
 #include <cstdlib>
 #include <functional>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -154,3 +157,5 @@ TEST_CASE("bracket: plate, boss on its face, holes, pattern, fillets, chamfer") 
 
     if (const char* out = std::getenv("BZ_SAMPLE_OUT")) REQUIRE(doc::SaveBzc(d, PathFromUtf8(out), "tests").IsOk());
 }
+
+TEST_SUITE_END();

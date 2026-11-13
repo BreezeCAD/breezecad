@@ -82,6 +82,10 @@ struct ThemeColors {
     Color cubeStroke;
     Color cubeInner;         ///< bevel lines
     Color cubeText;
+    Color sheetDesk;         ///< around a drawing's sheet
+    Color sheetPaper;        ///< the sheet itself: paper, in either theme
+    Color sheetInk;          ///< lines and texts on the sheet
+    Color sheetShadow;       ///< the sheet's shadow on the desk
     Color floatingButton;    ///< buttons floating over the viewport
     Color floatingBorder;
     Color floatingInk;

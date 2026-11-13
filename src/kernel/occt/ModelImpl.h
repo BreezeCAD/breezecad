@@ -7,6 +7,8 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -16,6 +18,9 @@ struct Body {
     ObjectId     id;
     std::string  name;
     TopoDS_Shape shape;
+    /// A mesh (STL, occt/Import.h): shown, measured and projected, but left
+    /// out of booleans, fillets and every other operation on solids.
+    bool         mesh = false;
 };
 
 /// What an operation added to or cut from the body, kept so patterns and
@@ -65,6 +70,14 @@ struct Model::Impl {
         std::vector<TopoDS_Shape> sources, copies;
     };
     std::unordered_map<ObjectId, CopyPreview> copyPreviews;
+
+    /// Imported bodies decoded from their feature's data block, by feature
+    /// id: decoded again only when the block changes («Обновить из файла»).
+    struct Decoded {
+        std::shared_ptr<const std::string> data;
+        std::vector<TopoDS_Shape>          shapes;
+    };
+    std::unordered_map<ObjectId, Decoded> imported;
 
     /// Sheet metal: the part as it is right after each «Лист» or «Отбортовка», by feature id.
     std::unordered_map<ObjectId, SheetInfo> sheets;

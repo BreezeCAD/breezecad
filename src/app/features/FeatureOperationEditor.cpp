@@ -42,6 +42,7 @@ void FeatureOperationEditor::Changed(Session& session) const {
 void FeatureOperationEditor::Reset() {
     myFeature = {};
     myIsNew = false;
+    myNextAfterApply = false;
     myOriginal.reset();
 }
 
@@ -52,6 +53,7 @@ void FeatureOperationEditor::OpenNew(AppContext& app, Session& session, std::uni
     if (feature->name.empty()) feature->name = session.doc.UniqueFeatureName(Title());
     myFeature = feature->id;
     myIsNew = true;
+    myNextAfterApply = false;
     myOwner = &session;
     LoadTexts(*feature);
     myFocusFirstField = true;
@@ -67,6 +69,7 @@ void FeatureOperationEditor::EditExisting(AppContext& app, Session& session, Obj
     myFeature = feature;
     myOwner = &session;
     myIsNew = false;
+    myNextAfterApply = false;
     myOriginal = f->Clone();
     LoadTexts(*f);
     myFocusFirstField = true;
@@ -102,6 +105,7 @@ void FeatureOperationEditor::Apply(AppContext& app, Session& session) {
     if (!Commit(app, session)) return;
     Reset();
     StartNext(app, session, *previous);
+    myNextAfterApply = IsOpen() && myIsNew;
 }
 
 void FeatureOperationEditor::StartNext(AppContext& app, Session& session, const doc::Feature& previous) {
@@ -116,6 +120,15 @@ bool FeatureOperationEditor::ShowStatus(const doc::Feature& feature) const {
 }
 
 void FeatureOperationEditor::Done(AppContext& app, Session& session) {
+    // The next one after «Применить», still not buildable (nothing picked for
+    // it): «Готово» closes it — the applied one is already in the part.
+    if (myNextAfterApply && myIsNew) {
+        session.RebuildNow();
+        if (const doc::Feature* f = Edited(session); f && f->status.state == doc::FeatureState::Error) {
+            Cancel(app, session);
+            return;
+        }
+    }
     if (!Commit(app, session)) return;
     Reset();
     app.shell.keepModelInView = true;

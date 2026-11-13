@@ -15,6 +15,7 @@
 #include "sketch/Move.h"
 #include "sketch/Offset.h"
 #include "sketch/Shapes.h"
+#include "sketch/Solver.h"
 #include "sketch/Trim.h"
 
 #include <algorithm>
@@ -67,7 +68,16 @@ public:
         c.parameter.name       = "d" + std::to_string(myNextName++);
         c.parameter.quantity   = quantity;
         c.parameter.value      = value;
-        c.parameter.expression = std::format("{}", std::round(mySession.doc.units.ToDisplay(value, quantity) * 1e6) / 1e6);
+        // The expression is what the value is rebuilt from: rounded to 6
+        // digits it changed a diagonal 5.2201533 into 5.220153, the sketch no
+        // longer closed exactly and the solver spread the 1e-7 over every
+        // point — the whole part a hair skew, its faces meeting others
+        // «almost» (stabilization plan, stage 2; «Кубик монолит»). Round only
+        // when that changes nothing; otherwise every digit.
+        const double shown = mySession.doc.units.ToDisplay(value, quantity);
+        const double nice  = std::round(shown * 1e6) / 1e6;
+        c.parameter.expression = std::abs(nice - shown) <= 1e-12 * std::max(1.0, std::abs(shown)) ? std::format("{}", nice)
+                                                                                                 : std::format("{}", shown);
         c.labelOffset          = labelOffset;
         return Sk().AddConstraint(Ids(), c);
     }
@@ -119,15 +129,39 @@ Json AddItem(SketchEdit& e, const Json& item) {
         for (Vec2 p : pts) ids.push_back(e.PointAt(p));
         if (closed) ids.push_back(ids.front());
         Json lines = Json::array();
+        std::vector<ObjectId> made;
         for (std::size_t i = 0; i + 1 < ids.size(); ++i) {
             if (ids[i] == ids[i + 1]) Fail("Отрезок нулевой длины");
             // An осевая is not construction: it bounds profiles (a shaft drawn
             // as a half closes on its axis), as in the program's own tool.
             const ObjectId l = sk.AddLine(e.Ids(), ids[i], ids[i + 1], aux);
             if (type == "centerline") sk.FindLine(l)->centerline = true;
-            const Vec2 a = sk.PositionOf(ids[i]), b = sk.PositionOf(ids[i + 1]);
-            if (dims && type != "centerline") dim(e.Dimension(ConstraintType::Length, l, {}, (b - a).Length(), Outward(a, b)));
+            made.push_back(l);
             lines.push_back(l.value);
+        }
+        // Drawn exactly along an axis: held there, as the program's own line
+        // tool does (Inventor too). Without it a dimension that does not close
+        // exactly tilts the line by 1e-7 — enough for OCCT to see two faces
+        // that should be one plane as two (stabilization plan, stage 2).
+        // First the directions of all sides, then the dimensions — only those
+        // the sketch does not hold already (a rectangle: width and height, not
+        // a «лишний» size on every side that would drift apart when one changes).
+        for (std::size_t i = 0; i < made.size(); ++i) {
+            const Vec2 a = sk.PositionOf(ids[i]), b = sk.PositionOf(ids[i + 1]);
+            Constraint along;
+            along.refs = {made[i], {}, {}};
+            if (std::abs(a.y - b.y) <= kPositionGrid) along.type = ConstraintType::Horizontal;
+            else if (std::abs(a.x - b.x) <= kPositionGrid) along.type = ConstraintType::Vertical;
+            else continue;
+            if (!sketch::IsRedundant(sk, along)) sk.AddConstraint(e.Ids(), along);
+        }
+        for (std::size_t i = 0; i < made.size() && dims && type != "centerline"; ++i) {
+            const Vec2 a = sk.PositionOf(ids[i]), b = sk.PositionOf(ids[i + 1]);
+            Constraint length;
+            length.type = ConstraintType::Length;
+            length.refs = {made[i], {}, {}};
+            length.parameter.value = (b - a).Length();
+            if (!sketch::IsRedundant(sk, length)) dim(e.Dimension(ConstraintType::Length, made[i], {}, (b - a).Length(), Outward(a, b)));
         }
         out["lines"] = std::move(lines);
     } else if (type == "circle") {
@@ -494,6 +528,10 @@ Json Project(AppContext& app, const Json& args) {
         case kernel::ProjectedCurve::Kind::Ellipse:
             curve = sk.AddEllipse(edit.Ids(), point(pc->centre), point(pc->start), point(pc->end));
             break;
+        case kernel::ProjectedCurve::Kind::Spline:
+            curve = kernel::AddProjectedSpline(sk, edit.Ids(), *pc, point);
+            if (!curve.IsValid()) continue;
+            break;
         }
         edit.Feature().projections.push_back({edge.ref, curve, {}});
         curves.push_back({{"edge", edge.index}, {"curve", curve.value}});
@@ -505,7 +543,7 @@ Json Project(AppContext& app, const Json& args) {
 
 Json Get(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const doc::SketchFeature& f  = SketchOf(s, args);
     const sketch::Sketch&     sk = f.sketch;
     Json out = Describe(f);

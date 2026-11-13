@@ -45,6 +45,12 @@ struct State {
     std::condition_variable wake;
     bool                    stopping = false;
     char                    action[256] = {};   // copy for crash handlers
+    std::string             actionDetail;       // under `mutex`
+    std::mutex              workMutex;          // the known long work under way (Work)
+    bool                    working = false;
+    std::string             workWhat, workStep;
+    std::size_t             workDone = 0, workTotal = 0;
+    long long               workStepNs = 0;     // when its step last changed
     std::filesystem::path   dumpDir;
 };
 
@@ -162,13 +168,72 @@ void Action(std::string_view source, std::string_view name) {
         std::lock_guard lock(s.mutex);
         std::snprintf(s.action, sizeof s.action, "%.*s: %.*s", static_cast<int>(source.size()), source.data(),
                       static_cast<int>(name.size()), name.data());
+        // Cut short, it must not end halfway through a letter: a crash report
+        // showed «от�» (BETA-BUGS, «Кубик монолит», 12.11.2026).
+        s.action[Utf8Prefix(s.action, std::strlen(s.action))] = '\0';
+        s.actionDetail.clear();
     }
     if (Enabled()) Emit("act", std::format("\"src\":{},\"name\":{}", Quote(source), Quote(name)));
 }
 
 std::string_view LastAction() { return S().action; }
 
+std::size_t Utf8Prefix(const char* text, std::size_t size) {
+    // Back over the continuation bytes (10xxxxxx) at the end to the lead
+    // byte of the last letter; keep that letter only if all of it is there.
+    std::size_t lead = size;
+    while (lead > 0 && (static_cast<unsigned char>(text[lead - 1]) & 0xC0) == 0x80) --lead;
+    if (lead == 0) return 0;
+    const auto c = static_cast<unsigned char>(text[lead - 1]);
+    const std::size_t length = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+    return size - (lead - 1) >= length ? size : lead - 1;
+}
+
+void ActionDetail(std::string_view detail) {
+    State& s = S();
+    std::lock_guard lock(s.mutex);
+    s.actionDetail = detail;
+}
+
+std::string LastActionDetail() {
+    State& s = S();
+    std::lock_guard lock(s.mutex);
+    return s.actionDetail;
+}
+
 void Beat() { S().beatNs.store(Nanos(), std::memory_order_relaxed); }
+
+void Work(std::string_view what, std::string_view step, std::size_t done, std::size_t total) {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    if (!s.working || s.workDone != done || s.workStep != step || s.workWhat != what) s.workStepNs = Nanos();
+    s.working = true;
+    s.workWhat = what;
+    s.workStep = step;
+    s.workDone = done;
+    s.workTotal = total;
+}
+
+void WorkDone() {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    s.working = false;
+}
+
+WorkState CurrentWork() {
+    State& s = S();
+    std::lock_guard lock(s.workMutex);
+    if (!s.working) return {};
+    return {true, s.workWhat, s.workStep, s.workDone, s.workTotal, static_cast<double>(Nanos() - s.workStepNs) * 1e-9};
+}
+
+std::string DescribeWork(const WorkState& work) {
+    if (!work.active) return {};
+    std::string out = work.what;
+    if (!work.step.empty()) out += std::format(": «{}»", work.step);
+    if (work.total > 1) out += std::format(", операция {} из {}", std::min(work.done + 1, work.total), work.total);
+    return out;
+}
 
 double SecondsSinceBeat() {
     const State& s = S();

@@ -20,6 +20,7 @@
 
 #include <miniz.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -34,12 +35,13 @@ struct Triangle {
     std::array<Vec3, 3> v;
 };
 
-/// All bodies as one compound.
+/// All exact bodies as one compound (meshes have no surfaces to write).
 TopoDS_Compound Compound(const std::vector<Body>& bodies) {
     TopoDS_Compound compound;
     BRep_Builder builder;
     builder.MakeCompound(compound);
-    for (const Body& b : bodies) builder.Add(compound, b.shape);
+    for (const Body& b : bodies)
+        if (!b.mesh) builder.Add(compound, b.shape);
     return compound;
 }
 
@@ -48,7 +50,8 @@ std::vector<Triangle> Triangulate(const std::vector<Body>& bodies, MeshQuality q
     std::vector<Triangle> triangles;
     for (const Body& body : bodies) {
         // Not in parallel: a fault in OCCT's worker threads is not caught (see SetUpOcct).
-        BRepMesh_IncrementalMesh mesher(body.shape, quality.chordal, false, quality.angular, false);
+        // A mesh body already is triangles.
+        if (!body.mesh) BRepMesh_IncrementalMesh mesher(body.shape, quality.chordal, false, quality.angular, false);
         for (TopExp_Explorer it(body.shape, TopAbs_FACE); it.More(); it.Next()) {
             const TopoDS_Face face = TopoDS::Face(it.Current());
             TopLoc_Location location;
@@ -92,6 +95,8 @@ void AppendRaw(std::string& out, T value) {
 
 Status Model::ExportStep(const std::filesystem::path& path) const {
     if (myImpl->bodies.empty()) return Error{"Нет тел для экспорта"};
+    if (std::all_of(myImpl->bodies.begin(), myImpl->bodies.end(), [](const Body& b) { return b.mesh; }))
+        return Error{"В детали только сетка (STL): в STEP её не сохранить — экспортируйте в STL или 3MF"};
     try {
         STEPControl_Writer writer;
         Interface_Static::SetCVal("write.step.schema", "AP214IS");

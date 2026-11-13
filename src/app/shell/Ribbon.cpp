@@ -1,8 +1,10 @@
 // Mode tabs and the ribbon. Commands that are not built yet are shown
 // greyed out with a note, so the layout matches the approved mockup.
 
+#include "app/testing/UiProbe.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "core/I18n.h"
@@ -535,6 +537,10 @@ void ViewRibbonImpl(AppContext& app, RibbonSink& r) {
 } // namespace
 
 void FillRibbon(AppContext& app, Session& session, RibbonSink& sink, bool withFinish) {
+    if (session.drawing) {
+        FillDrawingRibbon(app, sink);
+        return;
+    }
     switch (app.shell.ribbonTab) {
         case RibbonTab::Model:
             if (session.assembly) {
@@ -566,11 +572,14 @@ void DrawModeBar(AppContext& app, ImVec2 pos, float width) {
         RibbonTab   tab;
     };
     const bool assemblyTabs = app.Doc() && app.Doc()->assembly && !app.workspace.ShowsHome();
+    const bool drawingTabs = app.Doc() && app.Doc()->drawing && !app.workspace.ShowsHome();
     const Tab partTabs[] = {{Tr("3D-модель"), RibbonTab::Model}, {Tr("Эскиз"), RibbonTab::Sketch}, {Tr("Вид"), RibbonTab::View}};
     const Tab asmTabs[] = {{Tr("Сборка"), RibbonTab::Model}, {Tr("Вид"), RibbonTab::View}};
+    // A drawing, as in КОМПАС-3D (ADR-0012): the three tabs reuse the three tab slots.
+    const Tab drawTabs[] = {{Tr("Виды"), RibbonTab::Model}, {Tr("Обозначения"), RibbonTab::Sketch}, {Tr("Оформление"), RibbonTab::View}};
     if (assemblyTabs && app.shell.ribbonTab == RibbonTab::Sketch) app.shell.ribbonTab = RibbonTab::Model;
     float x = pos.x + ui.S(12);
-    for (const Tab& t : assemblyTabs ? std::span<const Tab>(asmTabs) : std::span<const Tab>(partTabs)) {
+    for (const Tab& t : drawingTabs ? std::span<const Tab>(drawTabs) : assemblyTabs ? std::span<const Tab>(asmTabs) : std::span<const Tab>(partTabs)) {
         const bool on = app.shell.ribbonTab == t.tab;
         ImFont* font = on ? ui.fonts.strong : ui.fonts.medium;
         const ImVec2 ts = font->CalcTextSizeA(ui.S(13), FLT_MAX, 0, t.label);
@@ -578,6 +587,7 @@ void DrawModeBar(AppContext& app, ImVec2 pos, float width) {
         ImGui::SetCursorScreenPos({x, pos.y});
         ImGui::PushID(t.label);
         if (ImGui::InvisibleButton("##tab", {w, h})) app.shell.ribbonTab = t.tab;
+        probe::Name("tab", t.label);
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         if (on || hovered)
@@ -651,7 +661,7 @@ float DrawRibbon(AppContext& app, Session& session, ImVec2 pos, float width) {
     if (leftArrow) arrow(false);
     if (rightArrow) arrow(true);
 
-    const char* tabKey = session.assembly ? "asm" : app.shell.ribbonTab == RibbonTab::Sketch ? "sketch"
+    const char* tabKey = session.drawing ? "drawing" : session.assembly ? "asm" : app.shell.ribbonTab == RibbonTab::Sketch ? "sketch"
                        : app.shell.ribbonTab == RibbonTab::View ? "view" : "model";
     RibbonBuilder builder(app, {start - scroll, pos.y}, h, tabKey);
     ImGui::PushClipRect({start + (leftArrow ? aw : 0), pos.y}, {end - (rightArrow ? aw : 0), pos.y + h}, true);

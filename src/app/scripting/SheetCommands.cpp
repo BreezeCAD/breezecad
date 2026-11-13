@@ -41,7 +41,7 @@ ObjectId SheetArg(Session& s, const Json& args) {
 
 Json CreateSheet(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::SheetMetalFeature>();
     f->sketch = Id(args, "sketch");
     if (!s.doc.FindAs<doc::SketchFeature>(f->sketch)) Fail("Элемент «sketch» — не эскиз");
@@ -78,7 +78,7 @@ Json CreateSheet(AppContext& app, const Json& args) {
 
 Json Flange(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::FlangeFeature>();
     f->sheet = SheetArg(s, args);
     if (Has(args, "on_flange")) {
@@ -125,7 +125,7 @@ Json Flange(AppContext& app, const Json& args) {
 
 Json SheetCut(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::SheetCutFeature>();
     f->sheet = SheetArg(s, args);
     f->sketch = Id(args, "sketch");
@@ -148,7 +148,7 @@ Json SheetCut(AppContext& app, const Json& args) {
 
 Json FlatPattern(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const ObjectId base = SheetArg(s, args);
     const auto info = s.model.Sheet(s.doc, base);
     if (!info) Fail("Лист не построен: исправьте ошибки в дереве");
@@ -179,7 +179,7 @@ Json CheckJson(const dxf::Check& c) {
 Json DxfOpen(AppContext& app, const Json& args) {
     if (Flag(args, "flat_pattern", false)) {
         Session& s = ActivePart(app);
-        s.RebuildNow();
+        Rebuild(s);
         const auto info = s.model.Sheet(s.doc, SheetArg(s, args));
         if (!info) Fail("Лист не построен: исправьте ошибки в дереве");
         OpenDxfEditor(app, sheet::FlatPatternDrawing(sheet::Flatten(info->part, info->layout)), s.Title() + " развёртка");

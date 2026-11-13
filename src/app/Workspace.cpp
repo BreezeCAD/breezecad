@@ -1,7 +1,11 @@
 #include "app/Workspace.h"
 
+#include "drawing/DrawingFile.h"
+#include "drawing/DrawingPdf.h"
+
 #include "app/Notifications.h"
 #include "app/Settings.h"
+#include "app/drawing/DrawingViews.h"
 #include "app/assembly/InPlace.h"
 #include "core/I18n.h"
 #include "core/Log.h"
@@ -29,9 +33,42 @@ namespace {
 const std::string kGenerator = std::string("BreezeCAD ") + Version();
 
 /// Why there is nothing to export; empty when there is something.
-std::string NothingToExport(const Session& session) {
+std::string NothingToExport(const Session& session, ExportFormat format) {
+    if (format == ExportFormat::Pdf) return session.drawing ? std::string{} : N_("В PDF выводится только чертёж");
+    if (session.drawing) return N_("Чертёж выводится в PDF");
     if (!session.model.Bodies().empty()) return {};
     return session.assembly ? "В сборке ещё нет компонентов для экспорта" : "В детали ещё нет тел для экспорта";
+}
+
+/// The font of the PDF's texts: the interface's, with Cyrillic; read once.
+const Expected<drawing::TrueTypeFont>& PdfFont() {
+    static const Expected<drawing::TrueTypeFont> font =
+        drawing::TrueTypeFont::FromFile(platform::AssetsDir() / "fonts" / "IBMPlexSans-Regular.ttf");
+    return font;
+}
+
+bool ExportPdf(Workspace& ws, Session& session, const std::filesystem::path& target, Notifications& notes, std::string* error) {
+    const auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        notes.Error(Tr(message));
+        return false;
+    };
+    const Expected<drawing::TrueTypeFont>& font = PdfFont();
+    if (!font) return fail(font.GetError().message);
+    // The views' lines, all of them computed first (a PDF is not drawn half done).
+    DrawingState& d = *session.drawing;
+    DrawingViews& views = DrawingViews::Of(d);
+    views.Finish(ws, d);
+    const Status status = drawing::ExportDrawingPdf(d.drawing, target, *font, std::format("BreezeCAD {}", Version()), views.Content(ws, d));
+    if (!status) return fail(status.GetError().message);
+    if (!platform::FileWritten(target)) {
+        const std::string message = Trf("Не удалось записать «{}» в выбранную папку", ToUtf8(target.filename()));
+        if (error) *error = message;
+        notes.Error(message);
+        return false;
+    }
+    notes.Success(Trf("Экспортировано: {}", ToUtf8(target.filename())));
+    return true;
 }
 
 } // namespace
@@ -89,6 +126,15 @@ Session& Workspace::NewAssembly() {
     return *sessions.back();
 }
 
+Session& Workspace::NewDrawing() {
+    auto session = std::make_unique<Session>();
+    session->MakeDrawing();
+    session->untitledName = NextUntitledName("Чертёж");
+    sessions.push_back(std::move(session));
+    Activate(static_cast<int>(sessions.size()) - 1);
+    return *sessions.back();
+}
+
 Expected<std::unique_ptr<Session>> Workspace::LoadSession(const std::filesystem::path& file,
                                                           std::vector<std::string>* warnings) {
     Expected<std::string> type = doc::ReadDocumentType(file);
@@ -97,7 +143,14 @@ Expected<std::unique_ptr<Session>> Workspace::LoadSession(const std::filesystem:
     if (!info || !info->canOpen)
         return Error{std::format("документы вида «{}» эта версия не открывает", info ? info->title : *type)};
     auto session = std::make_unique<Session>();
-    if (*type == doc::kAssemblyType) {
+    if (*type == doc::kDrawingType) {
+        drawing::ReadReport report;
+        Expected<drawing::Drawing> loaded = drawing::LoadDrawing(file, &report);
+        if (!loaded) return loaded.GetError();
+        session->MakeDrawing().drawing = std::move(*loaded);
+        session->drawing->savedAt = file;
+        if (warnings) warnings->insert(warnings->end(), report.warnings.begin(), report.warnings.end());
+    } else if (*type == doc::kAssemblyType) {
         Expected<assembly::Assembly> loaded = assembly::LoadAssembly(file, warnings);
         if (!loaded) return loaded.GetError();
         session->MakeAssembly().assembly = std::move(*loaded);
@@ -274,7 +327,8 @@ bool Workspace::SaveTo(Session& session, const std::filesystem::path& requested,
     }
     // The picture for the file manager, while the document is on the screen.
     std::vector<std::uint8_t> preview;
-    if (previewMaker && ActiveTab() == &session) preview = previewMaker();
+    // The picture of the 3D view; a drawing has none yet (its sheet comes later).
+    if (previewMaker && ActiveTab() == &session && !session.drawing) preview = previewMaker();
     const Status status = session.WriteFile(target, kGenerator, preview);
     if (!status) {
         if (session.assembly) {
@@ -318,8 +372,9 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
     };
     const Info info = format == ExportFormat::Step ? Info{"STEP AP214", "*.step", ".step"}
                     : format == ExportFormat::Stl  ? Info{"STL", "*.stl", ".stl"}
+                    : format == ExportFormat::Pdf  ? Info{"PDF", "*.pdf", ".pdf"}
                                                    : Info{Tr("3MF для 3D-печати"), "*.3mf", ".3mf"};
-    if (const std::string empty = NothingToExport(session); !empty.empty()) {
+    if (const std::string empty = NothingToExport(session, format); !empty.empty()) {
         notes.Info(Tr(empty));
         return false;
     }
@@ -329,18 +384,19 @@ bool Workspace::Export(Session& session, ExportFormat format, Notifications& not
     }
     const std::filesystem::path folder = session.path.empty() ? platform::DocumentsDir() : session.path.parent_path();
     const auto chosen = platform::ShowSaveDialog(Trf("Экспорт в {}", info.name),
-                                                 folder / (session.Title() + info.ext), {{info.name, info.pattern}}, info.ext);
+                                                 folder / PathFromUtf8(session.Title() + info.ext), {{info.name, info.pattern}}, info.ext);
     if (!chosen) return false;
     return ExportTo(session, format, *chosen, notes);
 }
 
 bool Workspace::ExportTo(Session& session, ExportFormat format, const std::filesystem::path& target, Notifications& notes,
                          std::string* error) {
-    if (const std::string empty = NothingToExport(session); !empty.empty()) {
+    if (const std::string empty = NothingToExport(session, format); !empty.empty()) {
         if (error) *error = empty;
         notes.Info(Tr(empty));
         return false;
     }
+    if (format == ExportFormat::Pdf) return ExportPdf(*this, session, target, notes, error);
     // A long export (a threaded part as STEP on a phone) is work, not a hang: no hang
     // report, and on Android the watchdog does not offer to close the app meanwhile.
     const mon::Waiting waiting;

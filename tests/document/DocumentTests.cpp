@@ -21,6 +21,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::doc;
 
@@ -439,3 +442,5 @@ TEST_CASE("switching the document units keeps the part the same size, undo resto
         CHECK(ex->distance.value == doctest::Approx(depth));
     }
 }
+
+TEST_SUITE_END();

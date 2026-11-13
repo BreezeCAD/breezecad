@@ -23,6 +23,9 @@
 #include <cmath>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -179,3 +182,5 @@ TEST_CASE("a join that adds nothing is a warning, not ok") {
     CHECK(join.status.state == FeatureState::Warning);
     CHECK(join.status.message.find("ничего не изменило") != std::string::npos);
 }
+
+TEST_SUITE_END();

@@ -17,6 +17,9 @@
 #include <filesystem>
 #include <format>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::assembly;
 using doctest::Approx;
@@ -321,3 +324,5 @@ TEST_CASE("фикстура UI-сценария окна изменений") {
     b.AddTab();
     REQUIRE(doc::SaveBzc(b.plate.doc, dir / "Основание-выступ.bzc", "tests"));
 }
+
+TEST_SUITE_END();

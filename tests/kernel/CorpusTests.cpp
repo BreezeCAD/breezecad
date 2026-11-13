@@ -35,6 +35,9 @@
 #include <string>
 #include <vector>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using nlohmann::json;
 
@@ -165,3 +168,4 @@ TEST_CASE("corpus: every reference part builds as it did when its expectation wa
     }
 }
 
+TEST_SUITE_END();

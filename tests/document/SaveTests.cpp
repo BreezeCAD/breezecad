@@ -13,6 +13,9 @@
 #include <fstream>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 
 namespace {
@@ -141,3 +144,5 @@ TEST_CASE("the picture for the file manager is kept in the file and survives a s
     CHECK_FALSE(doc::ReadBzcPreview(dir / "missing.bzc"));
     std::filesystem::remove_all(dir);
 }
+
+TEST_SUITE_END();

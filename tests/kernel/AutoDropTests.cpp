@@ -7,6 +7,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::assembly;
 using doctest::Approx;
@@ -159,3 +162,5 @@ TEST_CASE("AutoDrop: without a nut the screw just goes through the stack") {
     auto unknown = kernel::PlanAutoDrop(s.model, s.a, s.TopRim(), {"nope", "", ""});
     CHECK_FALSE(unknown);
 }
+
+TEST_SUITE_END();

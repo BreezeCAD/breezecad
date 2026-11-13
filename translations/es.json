@@ -2475,6 +2475,8 @@
     "← Предыдущая": "",
     "← тяни вдоль края →": "",
     "Предпросмотр результата": "Vista previa del resultado",
-    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Fantasma azul: lo que se añadirá; rojo: lo que se quitará. Desmarque la casilla para ver el cuerpo antes de la operación"
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Fantasma azul: lo que se añadirá; rojo: lo que se quitará. Desmarque la casilla para ver el cuerpo antes de la operación",
+    "Чёткие грани": "Aristas nítidas",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Aristas de la pieza como línea oscura sobre la vista viva: las sombras y el volumen se mantienen."
   }
 }

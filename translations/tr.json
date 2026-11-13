@@ -2475,6 +2475,8 @@
     "← Предыдущая": "",
     "← тяни вдоль края →": "",
     "Предпросмотр результата": "Sonucu önizle",
-    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Mavi hayalet eklenecek, kırmızı kaldırılacak malzemedir. İşlemden önceki gövdeyi görmek için kutunun işaretini kaldırın"
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Mavi hayalet eklenecek, kırmızı kaldırılacak malzemedir. İşlemden önceki gövdeyi görmek için kutunun işaretini kaldırın",
+    "Чёткие грани": "Belirgin kenarlar",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Parça kenarları canlı görünümün üzerinde koyu çizgiyle: gölgeler ve derinlik kalır."
   }
 }

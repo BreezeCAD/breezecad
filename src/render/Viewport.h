@@ -120,6 +120,9 @@ public:
     /// on weak computers and phones by default (Settings::liveView).
     void SetLive(bool on);
     bool IsLive() const;
+    /// «Чёткие грани»: in the live view the edges of the bodies are thicker,
+    /// and the plain shaded style draws them too (Settings::crispEdges).
+    void SetCrispEdges(bool on);
     void SetHoveredBody(ObjectId body);
     /// Bodies not drawn (and not picked): those of operations the user hid.
     /// The model keeps them; only the view leaves them out.

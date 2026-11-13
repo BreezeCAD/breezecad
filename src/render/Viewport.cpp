@@ -636,6 +636,7 @@ struct Viewport::Impl {
     /// "Живой вид" (SetLive): the key light casts shadows, bodies get a
     /// silhouette outline and stand on a floor that takes their shadow.
     bool                         live = false;
+    bool                         crispEdges = true;   ///< SetCrispEdges
     Handle(V3d_DirectionalLight) keyLight;
     Handle(AIS_InteractiveObject) floor;
     bool                         floorShown = false;
@@ -770,7 +771,10 @@ struct Viewport::Impl {
         ais->SetMaterial(MaterialOf(body, appearance ? appearance->finish : doc::Finish::Matte));
         const Color edgeColour = appearance ? appearance->edges : colors.edges;
 
-        const bool edges = style == DisplayStyle::ShadedWithEdges || style == DisplayStyle::Transparent;
+        // «Чёткие грани»: in the live view the plain shaded style draws its
+        // edges too (otherwise only the outline shows there).
+        const bool edges = style == DisplayStyle::ShadedWithEdges || style == DisplayStyle::Transparent ||
+                           (live && crispEdges && style == DisplayStyle::Shaded);
         drawer->SetFaceBoundaryDraw(edges);
         // Sharp edges and the tangent edges where a fillet starts and ends
         // (they show its size); not the seam along a cylinder, which is
@@ -779,7 +783,8 @@ struct Viewport::Impl {
         // Finer tessellation than OCCT's default (20°): round faces look
         // round; coarser on the lower quality levels.
         SetMeshPrecision(drawer, quality);
-        drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(edgeColour), Aspect_TOL_SOLID, 1.0));
+        // «Чёткие грани» in the live view: thicker, so they hold against shadows.
+        drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(edgeColour), Aspect_TOL_SOLID, live && crispEdges ? 1.6 : 1.0));
         // "Живой вид": the outline of the body, thicker than the edges inside.
         if (!drawer->HasOwnShadingAspect()) drawer->SetupOwnShadingAspect();
         const Handle(Graphic3d_AspectFillArea3d)& fill = drawer->ShadingAspect()->Aspect();
@@ -1329,6 +1334,14 @@ void Viewport::SetLive(bool on) {
 }
 
 bool Viewport::IsLive() const { return myImpl->live; }
+
+void Viewport::SetCrispEdges(bool on) {
+    Impl& m = *myImpl;
+    if (m.crispEdges == on) return;
+    m.crispEdges = on;
+    m.ApplyStyleAll();
+    m.dirty = true;
+}
 
 void Viewport::SetQuality(int level) {
     Impl& m = *myImpl;

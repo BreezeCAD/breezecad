@@ -2475,6 +2475,8 @@
     "← Предыдущая": "",
     "← тяни вдоль края →": "",
     "Предпросмотр результата": "Podgląd wyniku",
-    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Niebieski duch — co zostanie dodane, czerwony — co zostanie usunięte. Odznacz pole, aby zobaczyć bryłę przed operacją"
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Niebieski duch — co zostanie dodane, czerwony — co zostanie usunięte. Odznacz pole, aby zobaczyć bryłę przed operacją",
+    "Чёткие грани": "Wyraźne krawędzie",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Krawędzie części ciemną linią na widoku żywym: cienie i głębia zostają."
   }
 }

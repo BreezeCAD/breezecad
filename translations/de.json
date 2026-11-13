@@ -2475,6 +2475,8 @@
     "← Предыдущая": "← Zurück",
     "← тяни вдоль края →": "← am Rand entlang ziehen →",
     "Предпросмотр результата": "Ergebnisvorschau",
-    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Blauer Geist — was hinzukommt, roter — was entfernt wird. Häkchen entfernen, um den Körper vor der Operation zu sehen"
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Blauer Geist — was hinzukommt, roter — was entfernt wird. Häkchen entfernen, um den Körper vor der Operation zu sehen",
+    "Чёткие грани": "Klare Kanten",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Bauteilkanten als dunkle Linie über der Live-Ansicht: Schatten und Tiefe bleiben."
   }
 }

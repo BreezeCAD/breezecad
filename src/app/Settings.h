@@ -121,6 +121,8 @@ struct Settings {
     bool        liveView       = true;
 #endif
     bool        LiveView() const { return liveView && graphics < 2; }
+    /// «Чёткие грани»: the live view draws the edges of the bodies too.
+    bool        crispEdges     = true;
     /// An operation's panel: the model shows its result under the tool's
     /// ghost; off — the body as it was before the operation.
     bool        previewResult  = true;

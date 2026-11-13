@@ -2834,6 +2834,8 @@
     "Эскизы": "Sketches",
     "к/с": "fps",
     "рендер картинка фото скриншот png визуализация": "render picture photo screenshot png visualization",
-    "тень пол красиво реалистично освещение": "shadow floor beautiful realistic lighting"
+    "тень пол красиво реалистично освещение": "shadow floor beautiful realistic lighting",
+    "Чёткие грани": "Crisp edges",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Part edges as a dark line over the live view: shadows and depth stay."
   }
 }

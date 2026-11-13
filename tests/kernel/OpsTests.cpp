@@ -5,7 +5,12 @@
 
 #include <doctest.h>
 
-#include <BRepAlgoAPI_Cut.hxx>   // the measurements below compare with a bare boolean (tests are not src/)
+#include <BRepAlgoAPI_Common.hxx>   // the OCCT cases below compare with a bare boolean (tests are not src/)
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -17,6 +22,8 @@
 #include <gp_Pln.hxx>
 
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <cmath>
 
 using namespace bz;
@@ -155,4 +162,62 @@ TEST_CASE("measure: touching tolerance against a thin web" * doctest::test_suite
                            << (r.Usable() ? Volume(r.shape) - expected : 0.0) << " mm3, " << ms << " ms");
         }
     }
+}
+
+// --- Cases of OCCT itself (docs/dev/OCCT-ISSUES.md) -------------------------
+// Each is a minimal .brep in tests/data/occt/ and a test that shows what
+// OCCT does with it bare and what the pipeline makes of it. When OCCT is
+// updated (BreezeCAD/occt), a bare check that starts failing means OCCT
+// changed there: look again whether the workaround is still needed.
+
+namespace {
+
+std::filesystem::path OcctData(const char* name) { return std::filesystem::path(BZ_SOURCE_DIR) / "tests/data/occt" / name; }
+
+/// The shapes of a compound written by the tests below: target first, then tools.
+std::vector<TopoDS_Shape> ReadCase(const char* name) {
+    TopoDS_Shape all;
+    BRep_Builder builder;
+    REQUIRE(BRepTools::Read(all, OcctData(name).string().c_str(), builder));
+    std::vector<TopoDS_Shape> out;
+    for (TopoDS_Iterator it(all); it.More(); it.Next()) out.push_back(it.Value());
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("occt: a glued intersection with a half-space gives a wrong body" * doctest::test_suite("fast")) {
+    // OCCT-ISSUES №1. A box 10³ and the half-space z < 4.
+    const std::vector<TopoDS_Shape> shapes = ReadCase("glue-halfspace-common.brep");
+    REQUIRE(shapes.size() == 2);
+    BRepAlgoAPI_Common glued;
+    NCollection_List<TopoDS_Shape> a, b;
+    a.Append(shapes[0]);
+    b.Append(shapes[1]);
+    glued.SetArguments(a);
+    glued.SetTools(b);
+    glued.SetGlue(BOPAlgo_GlueShift);
+    glued.Build();
+    REQUIRE(glued.IsDone());
+    CHECK(Volume(glued.Shape()) != doctest::Approx(400));   // OCCT 8.0.1: 200 000
+    // The pipeline tries the exact one first, and checks what any attempt gives.
+    const ops::Result r = ops::Boolean(ops::Kind::Common, shapes[0], shapes[1]);
+    REQUIRE(r.Usable());
+    CHECK(Volume(r.shape) == doctest::Approx(400));
+}
+
+// Writes the .brep files above from the shapes the tests build:
+// BZ_OCCT_WRITE=1 bz_tests -ts=write-occt
+TEST_CASE("write the OCCT cases" * doctest::test_suite("write-occt")) {
+    if (!std::getenv("BZ_OCCT_WRITE")) return;
+    std::filesystem::create_directories(OcctData(""));
+    const auto write = [](const char* name, std::initializer_list<TopoDS_Shape> shapes) {
+        TopoDS_Compound all;
+        BRep_Builder builder;
+        builder.MakeCompound(all);
+        for (const TopoDS_Shape& s : shapes) builder.Add(all, s);
+        REQUIRE(BRepTools::Write(all, OcctData(name).string().c_str()));
+    };
+    const TopoDS_Face plane = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 4), gp_Dir(0, 0, 1))).Face();
+    write("glue-halfspace-common.brep", {Box(0, 0, 0, 10, 10, 10), BRepPrimAPI_MakeHalfSpace(plane, gp_Pnt(0, 0, 0)).Solid()});
 }

@@ -45,6 +45,7 @@
 #include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <Graphic3d_Mat4d.hxx>
 #include <Graphic3d_Vec2.hxx>
+#include <NCollection_Vec4.hxx>
 #include <OpenGl_ArbFBO.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
@@ -299,7 +300,7 @@ public:
                 const double t = std::clamp((std::sqrt(u * u + v * v) - 0.35) / 0.6, 0.0, 1.0);
                 const double fade = 1 - t * t * (3 - 2 * t);
                 // The vertex colour stands for the material's, in sRGB like the background.
-                array->SetVertexColor(at, Graphic3d_Vec4ub(byte(sr), byte(sg), byte(sb), byte(fade)));
+                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), byte(fade)));
             }
         for (int j = 0; j < kCells; ++j)
             for (int i = 0; i < kCells; ++i) {

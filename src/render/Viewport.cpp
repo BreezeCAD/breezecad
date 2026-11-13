@@ -9,6 +9,7 @@
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
 #include "kernel/occt/Section.h"
+#include "render/FloorShadow.h"
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
@@ -276,48 +277,62 @@ public:
     DEFINE_STANDARD_RTTI_INLINE(BodyShape, AIS_ColoredShape)
 };
 
-/// «Живой вид»: the floor under the bodies — a square whose see-through
-/// texture fades to nothing toward its edge, so no border shows against the
-/// background; lit (it takes the shadows), never picked.
+/// «Живой вид»: the floor under the bodies. Only the shadow on it shows: a
+/// grid whose points carry the shadow's colour, as opaque as the shadow is
+/// dark there (FloorShadow), clear everywhere else — no plane, no border
+/// against the background. Unlit, so the camera's lights neither tint it
+/// nor cast their own (hard) shadow on it; never picked.
 class FloorShape : public AIS_InteractiveObject {
 public:
-    FloorShape(const gp_Pnt& centre, double half, const Quantity_Color& colour, const Quantity_Color& ambient)
-        : myCentre(centre), myHalf(half), myColour(colour), myAmbient(ambient) {}
+    FloorShape(const render::FloorShadowSpec& spec, render::FloorShadowMap map, const bz::Color& shade)
+        : mySpec(spec), myMap(std::move(map)), myShade(shade) {}
 
     void Compute(const Handle(PrsMgr_PresentationManager)&, const Handle(Prs3d_Presentation)& presentation, const Standard_Integer) override {
-        // A grid of quads: each vertex carries how opaque the floor is there,
-        // full in the middle (where the shadow falls), clear at the rim.
-        constexpr int kCells = 24;
-        Handle(Graphic3d_ArrayOfTriangles) array = new Graphic3d_ArrayOfTriangles(
-            (kCells + 1) * (kCells + 1), kCells * kCells * 6, Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexColor);
+        const int n = myMap.size;
+        if (n < 2) return;
         const auto byte = [](double v) { return static_cast<std::uint8_t>(std::clamp(std::lround(v * 255), 0L, 255L)); };
-        double sr = 1, sg = 1, sb = 1;
-        myColour.Values(sr, sg, sb, Quantity_TOC_sRGB);
-        for (int j = 0; j <= kCells; ++j)
-            for (int i = 0; i <= kCells; ++i) {
-                const double u = 2.0 * i / kCells - 1, v = 2.0 * j / kCells - 1;
-                const int at = array->AddVertex(gp_Pnt(myCentre.X() + u * myHalf, myCentre.Y() + v * myHalf, myCentre.Z()), gp_Dir(0, 0, 1));
-                const double t = std::clamp((std::sqrt(u * u + v * v) - 0.35) / 0.6, 0.0, 1.0);
-                const double fade = 1 - t * t * (3 - 2 * t);
-                // The vertex colour stands for the material's, in sRGB like the background.
-                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), byte(fade)));
+        // How opaque each point is: the shadow, faded out toward the floor's rim.
+        std::vector<std::uint8_t> alpha(myMap.value.size());
+        int i0 = n, i1 = -1, j0 = n, j1 = -1;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double u = 2.0 * i / (n - 1) - 1, v = 2.0 * j / (n - 1) - 1;
+                const double t = std::clamp((std::sqrt(u * u + v * v) - 0.7) / 0.3, 0.0, 1.0);
+                const std::uint8_t a = byte(myMap.At(i, j) * myShade.a * (1 - t * t * (3 - 2 * t)));
+                alpha[static_cast<std::size_t>(j * n + i)] = a;
+                if (a == 0) continue;
+                i0 = std::min(i0, i), i1 = std::max(i1, i), j0 = std::min(j0, j), j1 = std::max(j1, j);
             }
-        for (int j = 0; j < kCells; ++j)
-            for (int i = 0; i < kCells; ++i) {
-                const int a = j * (kCells + 1) + i + 1, b = a + 1, c = a + kCells + 1, d = c + 1;
+        if (i1 < 0) return;   // nothing in shadow
+        // Only the part with a shadow, a point wider: its rim fades to clear.
+        i0 = std::max(0, i0 - 1), j0 = std::max(0, j0 - 1), i1 = std::min(n - 1, i1 + 1), j1 = std::min(n - 1, j1 + 1);
+        const int w = i1 - i0 + 1, h = j1 - j0 + 1;
+        Handle(Graphic3d_ArrayOfTriangles) array =
+            new Graphic3d_ArrayOfTriangles(w * h, (w - 1) * (h - 1) * 6, Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexColor);
+        double sr = 0, sg = 0, sb = 0;
+        ToQuantity(myShade).Values(sr, sg, sb, Quantity_TOC_sRGB);
+        const double step = 2.0 * mySpec.half / (n - 1);
+        for (int j = j0; j <= j1; ++j)
+            for (int i = i0; i <= i1; ++i) {
+                const int at = array->AddVertex(gp_Pnt(mySpec.centre.x - mySpec.half + i * step, mySpec.centre.y - mySpec.half + j * step, mySpec.z),
+                                                gp_Dir(0, 0, 1));
+                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), alpha[static_cast<std::size_t>(j * n + i)]));
+            }
+        for (int j = 0; j + 1 < h; ++j)
+            for (int i = 0; i + 1 < w; ++i) {
+                const int a = j * w + i + 1, b = a + 1, c = a + w, d = c + 1;
                 array->AddEdges(a, b, d);
                 array->AddEdges(a, d, c);
             }
         Handle(Graphic3d_AspectFillArea3d) aspect = new Graphic3d_AspectFillArea3d();
         aspect->SetInteriorStyle(Aspect_IS_SOLID);
+        aspect->SetShadingModel(Graphic3d_TypeOfShadingModel_Unlit);
         Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
-        material.SetColor(myColour);
-        material.SetAmbientColor(myAmbient);
-        material.SetSpecularColor(Quantity_Color(0, 0, 0, Quantity_TOC_RGB));
+        material.SetColor(ToQuantity(myShade));
         material.SetTransparency(0.02f);   // into the see-through pass, where the vertices' alpha blends
         aspect->SetFrontMaterial(material);
         aspect->SetBackMaterial(material);
-        aspect->SetInteriorColor(myColour);
+        aspect->SetInteriorColor(ToQuantity(myShade));
         aspect->SetAlphaMode(Graphic3d_AlphaMode_Blend, 0.0f);
         aspect->SetDistinguishOff();
         Handle(Graphic3d_Group) group = presentation->NewGroup();
@@ -328,9 +343,9 @@ public:
     DEFINE_STANDARD_RTTI_INLINE(FloorShape, AIS_InteractiveObject)
 
 private:
-    gp_Pnt         myCentre;
-    double         myHalf;
-    Quantity_Color myColour, myAmbient;
+    render::FloorShadowSpec mySpec;
+    render::FloorShadowMap  myMap;
+    bz::Color               myShade;
 };
 
 /// The same for a plain AIS_Shape (the bodies picked "as they were").
@@ -643,9 +658,12 @@ struct Viewport::Impl {
     bool                         noFloor = false;   ///< for a moment: thumbnails
     std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
 
-    /// The floor under the bodies: a square well beyond them, a hair below
-    /// the lowest point, in the background's lower colour and mostly see-
-    /// through — what reads is the shadow on it. Left out of "fit all".
+    std::vector<const void*>      floorShapes;   ///< the bodies it was made for (their TShapes)
+
+    /// The floor under the bodies: a square around them, a hair below the
+    /// lowest point, carrying their soft shadow (FloorShadow). Counted again
+    /// when the bodies or their place change, not when the view turns.
+    /// Left out of "fit all".
     void UpdateFloor() {
         // Not with a section (the floor would be cut too), nor around a part
         // edited in its assembly (the faded parts below would sink under it),
@@ -657,20 +675,59 @@ struct Viewport::Impl {
             floor.Nullify();
             floorShown = false;
             floorFor.reset();
+            floorShapes.clear();
             return;
         }
-        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max;
+        std::vector<const void*> shapes;
+        for (const auto& s : shown) shapes.push_back(s.shape->Shape().TShape().get());
+        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max && shapes == floorShapes;
         if (same && !floor.IsNull()) return;
         if (!floor.IsNull()) context->Remove(floor, false);
-        const Vec3 c = (bounds->min + bounds->max) * 0.5;
-        // Big enough for the shadow, small enough that the shadow map stays sharp.
-        const double r = std::max(1.0, (bounds->max - bounds->min).Length()) * 1.6;
-        const double z = bounds->min.z - std::max(0.01, (bounds->max - bounds->min).Length() * 1e-4);
-        // Lit by the camera's lights, the floor comes out about the background's colour.
-        const Color b = colors.backgroundBottom;
-        floor = new FloorShape(gp_Pnt(c.x, c.y, z), r, ToQuantity(b), Quantity_Color(b.r * 0.8, b.g * 0.8, b.b * 0.8, Quantity_TOC_RGB));
-        floorFor = bounds;
+        floor.Nullify();
         floorShown = false;
+
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<std::array<Vec3, 3>> triangles;
+        for (const auto& s : shown) {
+            const gp_Trsf place = s.shape->LocalTransformation();
+            for (TopExp_Explorer e(s.shape->Shape(), TopAbs_FACE); e.More(); e.Next()) {
+                TopLoc_Location loc;
+                const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(TopoDS::Face(e.Current()), loc);
+                if (mesh.IsNull()) continue;
+                const gp_Trsf t = place * loc.Transformation();
+                for (int k = 1; k <= mesh->NbTriangles(); ++k) {
+                    int n[3];
+                    mesh->Triangle(k).Get(n[0], n[1], n[2]);
+                    std::array<Vec3, 3> tri;
+                    for (int c = 0; c < 3; ++c) {
+                        const gp_Pnt p = mesh->Node(n[c]).Transformed(t);
+                        tri[static_cast<std::size_t>(c)] = {p.X(), p.Y(), p.Z()};
+                    }
+                    triangles.push_back(tri);
+                }
+            }
+        }
+        const Vec3 size = bounds->max - bounds->min;
+        render::FloorShadowSpec spec;
+        spec.centre = {(bounds->min.x + bounds->max.x) / 2, (bounds->min.y + bounds->max.y) / 2};
+        // Wide enough for a shadow cast aside by a tall body, with its soft rim.
+        spec.half = std::max(1.0, size.Length()) * 1.0;
+        spec.z = bounds->min.z - std::max(0.01, size.Length() * 1e-4);
+        // A lamp behind-left of the usual view (from the front, right,
+        // above): the shadow falls to the right and toward the viewer, as on
+        // the mock-up; standing still, it never swims as the view turns.
+        // Plus the sky: a faint shade all around the foot.
+        spec.light = Vec3{1.3, -0.5, -1};
+        spec.spread = 0.2;
+        spec.sky = 0.55;
+        spec.skySpread = 1.0;
+        spec.samples = render::FloorShadowSamples(triangles.size());
+        render::FloorShadowMap map = render::ComputeFloorShadow(triangles, spec);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        log::Debug("Viewport: floor shadow {} triangles × {} directions, {:.1f} ms", triangles.size(), spec.samples, ms);
+        floor = new FloorShape(spec, std::move(map), colors.floorShadow);
+        floorFor = bounds;
+        floorShapes = std::move(shapes);
         ShowFloorForCamera();
     }
 
@@ -1322,12 +1379,8 @@ void Viewport::SetLive(bool on) {
     Impl& m = *myImpl;
     if (m.live == on) return;
     m.live = on;
-    // Shadows need per-pixel lighting: Phong, the viewer's default (checked at Init).
-    Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
-    params.ShadowMapResolution = 2048;
-    params.ShadowMapBias = 0.004f;
-    if (!m.keyLight.IsNull()) m.keyLight->SetCastShadows(on);
-    m.viewer->UpdateLights();
+    // No shadow map: OCCT's has a hard edge at any resolution (see
+    // FloorShadow.h). The floor carries a soft shadow of its own.
     m.ApplyStyleAll();
     m.UpdateFloor();
     m.dirty = true;

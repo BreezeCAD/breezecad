@@ -172,7 +172,26 @@ public:
         bool floor = true;      ///< the floor with the bodies' shadow (not on a transparent background)
         bool edges = true;
     };
+    /// The whole picture at once (view.render for modules and MCP; the
+    /// window waits).
     std::optional<Image> Photo(const PhotoOptions& options);
+
+    /// The same in parts, for the «Кадр» panel: each Render() draws a few
+    /// tiles of the picture (~12 ms), so the window keeps answering. The
+    /// picture has a view of its own: its camera and background are not the
+    /// window's, which can be turned meanwhile. false: cannot start (no
+    /// OpenGL context yet, size too small).
+    bool BeginPhoto(const PhotoOptions& options);
+    enum class PhotoState : unsigned char { None, Running, Done, Failed };
+    PhotoState PhotoStatus() const;
+    double     PhotoProgress() const;   ///< 0..1 while Running
+    /// The finished picture, once (then None); nullopt unless Done.
+    std::optional<Image> TakePhoto();
+    void CancelPhoto();   ///< Esc: the work is dropped, the view put back
+
+private:
+    void FinishPhoto();
+public:
     /// The part of the window a picture of `aspect` (width / height) holds,
     /// in window pixels from the top-left corner: x, y, width, height.
     std::array<double, 4> PhotoFrame(double aspect) const;

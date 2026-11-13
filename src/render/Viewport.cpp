@@ -727,6 +727,31 @@ struct Viewport::Impl {
     bool                         noFloor = false;   ///< for a moment: thumbnails
     std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
 
+    Aspect_RenderingContext renderingContext = nullptr;   ///< the window's OpenGL context (for the picture's view)
+    struct PhotoJob;
+    std::unique_ptr<PhotoJob> photo;   ///< «Кадр» being made (BeginPhoto)
+    PhotoState                photoState = PhotoState::None;   ///< once it is no more
+    std::optional<Image>      photoDone;
+    bool                      photoEndLive = false;
+    void EndPhoto();
+    void StepPhoto(double budgetMs);
+
+    static constexpr double kSilhouetteWidth = 2.0;
+    /// OCCT sizes the outline by the drawn area's shorter side: a tile of a
+    /// picture would get a thicker one (by the picture's side over the
+    /// tile's). Each tile sets the width it needs, then puts it back.
+    void SetSilhouetteWidth(double width) {
+        const auto set = [&](const Handle(Prs3d_Drawer)& d) {
+            if (!d.IsNull() && d->HasOwnShadingAspect()) d->ShadingAspect()->Aspect()->SetEdgeWidth(width);
+        };
+        for (const auto& s : shown) {
+            set(s.shape->Attributes());
+            for (NCollection_DataMap<TopoDS_Shape, Handle(AIS_ColoredDrawer), TopTools_ShapeMapHasher>::Iterator it(s.shape->CustomAspectsMap()); it.More(); it.Next())
+                set(it.Value());
+            s.shape->SynchronizeAspects();
+        }
+    }
+
     /// See-through bodies in the live view are sorted (blended OIT): the
     /// inner walls of plastic read in the right order. It costs float
     /// buffers and a pass over the see-through things, so only while one is
@@ -986,7 +1011,7 @@ struct Viewport::Impl {
         fill->SetDrawSilhouette(live && style != DisplayStyle::Transparent);
         fill->SetShaderProgram(GlassFor(appearance));
         fill->SetEdgeColor(ToQuantity(edgeColour));
-        fill->SetEdgeWidth(2.0);
+        fill->SetEdgeWidth(kSilhouetteWidth);
         // Wireframe and hidden-line styles draw edges in the edge colour (not
         // the body colour SetColor gave them) and no isolines.
         const Quantity_Color ink = ToQuantity(edgeColour);
@@ -1232,9 +1257,30 @@ double AnimationClock() {
 }
 } // namespace
 
+// «Кадр» in tiles. The picture is drawn by a view of its own on the same
+// scene (camera, background, smoothing are a view's), into an off-screen
+// buffer tile by tile, a few tiles per frame. What a view does not own — the
+// bodies' style and «Живой вид» — is set for the whole picture and shows in
+// the window too while it is made, and is put back after.
+struct Viewport::Impl::PhotoJob {
+    PhotoOptions                    options;
+    Handle(V3d_View)                view;
+    Handle(Aspect_NeutralWindow)    window;
+    Handle(Standard_Transient)      fbo;
+    Image_AlienPixMap               pictures[2];   ///< over black and over white for the transparent background
+    int                             passes = 1, pass = 0;
+    int                             tile = 0, tilesX = 1, tilesY = 1, tileSize = 512;
+    PhotoState                      state = PhotoState::Running;
+    std::optional<Image>            result;
+    // Put back afterwards.
+    DisplayStyle                    style = DisplayStyle::ShadedWithEdges;
+    bool                            live = false;
+};
+
 Viewport::Viewport() : myImpl(std::make_unique<Impl>()) {}
 
 Viewport::~Viewport() {
+    if (myImpl->photo) myImpl->EndPhoto();
     Impl& m = *myImpl;
     if (!m.fbo.IsNull() && !m.driver.IsNull()) m.fbo->Release(m.GlContext().get());
 }
@@ -1320,6 +1366,7 @@ bool Viewport::Init(const NativeGlSurface& surface) {
         return false;
     }
     m.view->SetWindow(m.occtWindow, glContext);
+    m.renderingContext = glContext;
     SetColors(m.colors);
     SetCamera({});
     log::Info("Viewport: OpenGL ready");
@@ -1640,9 +1687,17 @@ void Viewport::Render() {
     }
     const bool hatchChanged = m.UpdateCaps();
     m.ShowFloorForCamera();
-    m.view->Redraw();
+    // While a picture is made, frames come for it: the window's own view is
+    // drawn only when something changed in it.
+    if (m.dirty || !m.photo || m.animating || hatchChanged) m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
     m.dirty = hatchChanged;   // the cut's look changes: OCCT shows it a frame later
+    if (m.photo) {
+        m.StepPhoto(12.0);
+        if (m.photo->state != PhotoState::Running) FinishPhoto();
+        m.fbo->BindBuffer(ctx);   // the picture's buffer was the last bound
+        m.fbo->UnbindBuffer(ctx);
+    }
 }
 
 std::string Viewport::HandBackToWindow() {
@@ -1680,7 +1735,7 @@ unsigned Viewport::TextureId() const {
 
 bool Viewport::NeedsRender() const {
     // A cut waiting for its hatching: frames until it is built (kCapsDelay).
-    return myImpl->dirty || myImpl->animating || (!myImpl->section.IsNull() && myImpl->caps.stale);
+    return myImpl->dirty || myImpl->animating || myImpl->photo || (!myImpl->section.IsNull() && myImpl->caps.stale);
 }
 
 ViewProjection Viewport::Projection() const {
@@ -1791,86 +1846,151 @@ std::optional<Image> ToImage(const Image_AlienPixMap& pixels) {
 }
 } // namespace
 
-std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
+namespace {
+constexpr int kPhotoTile = 512;   ///< a tile's side: a few milliseconds each on a weak laptop
+}
+
+bool Viewport::BeginPhoto(const PhotoOptions& o) {
     Impl& m = *myImpl;
+    CancelPhoto();
     if (m.GlContext().IsNull()) m.view->Redraw();
-    if (m.GlContext().IsNull() || o.width < 16 || o.height < 16) return std::nullopt;
+    if (m.GlContext().IsNull() || o.width < 16 || o.height < 16) return false;
     using Bg = PhotoOptions::Background;
-    const bool transparent = o.background == Bg::Transparent;
+    auto job = std::make_unique<Impl::PhotoJob>();
+    job->options = o;
+    job->style = m.style;
+    job->live = m.live;
+    job->passes = o.background == Bg::Transparent ? 2 : 1;
+    job->tileSize = kPhotoTile;
+    job->tilesX = (o.width + kPhotoTile - 1) / kPhotoTile;
+    job->tilesY = (o.height + kPhotoTile - 1) / kPhotoTile;
 
-    // What is changed for the picture, to put back.
-    const CameraState camera = Camera();
-    const ViewportColors colors = m.colors;
-    const DisplayStyle style = m.style;
-    const bool live = m.live;
-    const Graphic3d_RenderingParams params = m.view->RenderingParams();
-
-    // The camera: what the frame outlines fills the picture (OCCT keeps the
-    // shorter side's extent: the scale is that side in millimetres).
-    {
-        const double aspect = static_cast<double>(o.width) / o.height;
-        const auto frame = PhotoFrame(aspect);
-        const double mmPerPixel = camera.scale / (m.width >= m.height ? m.height : m.width);
-        CameraState shot = camera;
-        shot.scale = (aspect >= 1.0 ? frame[3] : frame[2]) * mmPerPixel;
-        SetCamera(shot);
+    // The picture's own view: the window's camera, scaled so the picture
+    // holds what the frame outlines (OCCT keeps the shorter side's extent:
+    // the scale is that side in millimetres).
+    job->window = new Aspect_NeutralWindow();
+    job->window->SetVirtual(true);
+    job->window->SetSize(std::min(o.width, kPhotoTile), std::min(o.height, kPhotoTile));
+    job->window->SetNativeHandle(m.occtWindow->NativeHandle());
+    job->view = m.viewer->CreateView();
+    job->view->SetImmediateUpdate(false);
+    job->view->SetWindow(job->window, m.renderingContext);
+    job->view->Camera()->Copy(m.view->Camera());
+    const double aspect = static_cast<double>(o.width) / o.height;
+    const auto frame = PhotoFrame(aspect);
+    const double mmPerPixel = m.view->Camera()->Scale() / (m.width >= m.height ? m.height : m.width);
+    job->view->Camera()->SetScale(std::max(1e-3, (aspect >= 1.0 ? frame[3] : frame[2]) * mmPerPixel));
+    job->view->Camera()->SetAspect(aspect);
+    // As the window draws it, with smoother edges: a picture is looked at closely.
+    Graphic3d_RenderingParams& params = job->view->ChangeRenderingParams();
+    params = m.view->RenderingParams();
+    params.NbMsaaSamples = 8;
+    for (int i = 0; i < 2; ++i) {
+        job->pictures[i].SetTopDown(true);
+        job->pictures[i].InitZero(Image_Format_RGBA, static_cast<std::size_t>(o.width), static_cast<std::size_t>(o.height));
     }
-    m.noFloor = false;
-    // Shaded, with or without the edges (a see-through style stays so).
-    const DisplayStyle shotStyle = style == DisplayStyle::Transparent ? style
-                                   : o.edges                          ? DisplayStyle::ShadedWithEdges
-                                                                      : DisplayStyle::Shaded;
-    if (shotStyle != style) {
-        m.style = shotStyle;
+    // The bodies: shaded, with or without the edges (a see-through style
+    // stays so), in «Живой вид» whatever the window's setting.
+    const DisplayStyle shot = m.style == DisplayStyle::Transparent ? m.style : o.edges ? DisplayStyle::ShadedWithEdges : DisplayStyle::Shaded;
+    if (shot != m.style) {
+        m.style = shot;
         m.ApplyStyleAll();
     }
-    // The light and the floor of «Живой вид», whatever the window's setting.
-    const auto background = [&](Color top, Color bottom) {
-        m.colors.backgroundTop = top;
-        m.colors.backgroundBottom = bottom;
-        m.view->SetBgGradientColors(ToQuantity(top), ToQuantity(bottom), Aspect_GradientFillMethod_Vertical, false);
-    };
-    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(Handle(Graphic3d_Texture2D)(), Aspect_FM_STRETCH, false);
-    if (o.background == Bg::Dark) background(Color::Hex(0x3A3F47), Color::Hex(0x15171B));
-    else background(Color::Hex(0xF8F9FB), Color::Hex(0xD3DBE5));
-    SetLive(true);
+    m.photo = std::move(job);
+    SetLive(true);   // after: UpdateTransparency sees the photo's view too
     m.floorFor.reset();
     m.UpdateFloor();
-    if (!o.floor || transparent) {
-        if (!m.floor.IsNull()) m.context->Remove(m.floor, false);
-        m.floor.Nullify();
-        m.floorShown = false;
-    }
-    m.ShowFloorForCamera();
-    // Smoother edges than the window's: a picture is looked at closely.
-    m.view->ChangeRenderingParams().NbMsaaSamples = 8;
+    m.dirty = true;
+    return true;
+}
 
-    const auto dump = [&]() -> std::optional<Image> {
-        Image_AlienPixMap pixels;
-        V3d_ImageDumpOptions options;
-        options.Width = o.width;
-        options.Height = o.height;
-        options.BufferType = Graphic3d_BT_RGBA;
-        bool done = false;
-        try {
-            done = m.view->ToPixMap(pixels, options);
-        } catch (const Standard_Failure& e) {
-            log::Error("Viewport: photo failed: {}", e.GetMessageString());
+void Viewport::Impl::EndPhoto() {
+    if (!photo) return;
+    std::unique_ptr<PhotoJob> job = std::move(photo);
+    if (!job->fbo.IsNull()) job->view->View()->FBORelease(job->fbo);
+    job->view->Remove();
+    if (job->style != style) {
+        style = job->style;
+        ApplyStyleAll();
+    }
+    photoEndLive = job->live;
+    photoDone = std::move(job->result);
+    photoState = job->state;
+    dirty = true;
+}
+
+void Viewport::Impl::StepPhoto(double budgetMs) {
+    PhotoJob& job = *photo;
+    const auto started = std::chrono::steady_clock::now();
+    using Bg = PhotoOptions::Background;
+    const PhotoOptions& o = job.options;
+    const Handle(Graphic3d_CView)& cview = job.view->View();
+    if (job.fbo.IsNull()) {
+        job.fbo = cview->FBOCreate(std::min(o.width, job.tileSize), std::min(o.height, job.tileSize));
+        if (job.fbo.IsNull()) {
+            job.state = PhotoState::Failed;
+            return;
         }
-        return done ? ToImage(pixels) : std::nullopt;
+        cview->SetFBO(job.fbo);
+    }
+    // See-through bodies sorted as in the window (it may have just turned live).
+    job.view->ChangeRenderingParams().TransparencyMethod = view->RenderingParams().TransparencyMethod;
+    // The floor: in the picture when asked and the background is not clear.
+    if (!floor.IsNull()) context->SetViewAffinity(floor, job.view, o.floor && o.background != Bg::Transparent);
+    const auto background = [&](Color top, Color bottom) {
+        job.view->SetBgGradientColors(ToQuantity(top), ToQuantity(bottom), Aspect_GradientFillMethod_Vertical, false);
     };
-    std::optional<Image> out;
-    if (!transparent) {
-        out = dump();
-    } else {
-        // Over black and over white: what changes is the background, by how
-        // much tells how see-through a pixel is (exact at smoothed edges too).
-        background(Color::Hex(0x000000), Color::Hex(0x000000));
-        std::optional<Image> black = dump();
-        background(Color::Hex(0xFFFFFF), Color::Hex(0xFFFFFF));
-        std::optional<Image> white = black ? dump() : std::nullopt;
-        if (black && white && black->rgba.size() == white->rgba.size()) {
-            out = std::move(*black);
+    const int tiles = job.tilesX * job.tilesY;
+    try {
+        do {
+            // Over black, then over white: what changes is the background,
+            // by how much tells how see-through a pixel is (exact at smoothed
+            // edges too).
+            if (o.background == Bg::Transparent) background(job.pass == 0 ? Color::Hex(0x000000) : Color::Hex(0xFFFFFF), job.pass == 0 ? Color::Hex(0x000000) : Color::Hex(0xFFFFFF));
+            else if (o.background == Bg::Dark) background(Color::Hex(0x3A3F47), Color::Hex(0x15171B));
+            else background(Color::Hex(0xF8F9FB), Color::Hex(0xD3DBE5));
+
+            const int tx = job.tile % job.tilesX, ty = job.tile / job.tilesX;
+            Graphic3d_CameraTile tile;
+            tile.TotalSize = Graphic3d_Vec2i(o.width, o.height);
+            tile.TileSize = Graphic3d_Vec2i(job.tileSize, job.tileSize);
+            tile.Offset = Graphic3d_Vec2i(tx * job.tileSize, ty * job.tileSize);
+            const Graphic3d_CameraTile cropped = tile.Cropped();
+            Image_AlienPixMap& picture = job.pictures[job.pass];
+            Image_PixMap part;
+            part.SetTopDown(picture.IsTopDown());
+            const int bottom = picture.IsTopDown() ? o.height - (cropped.Offset.y() + cropped.TileSize.y()) : cropped.Offset.y();
+            part.InitWrapper(picture.Format(),
+                             picture.ChangeData() + picture.SizeRowBytes() * static_cast<std::size_t>(bottom) +
+                                 picture.SizePixelBytes() * static_cast<std::size_t>(cropped.Offset.x()),
+                             static_cast<std::size_t>(cropped.TileSize.x()), static_cast<std::size_t>(cropped.TileSize.y()), picture.SizeRowBytes());
+            job.view->Camera()->SetTile(cropped);
+            cview->FBOChangeViewport(job.fbo, cropped.TileSize.x(), cropped.TileSize.y());
+            SetSilhouetteWidth(kSilhouetteWidth * std::min(cropped.TileSize.x(), cropped.TileSize.y()) / std::min(o.width, o.height));
+            job.view->Redraw();
+            SetSilhouetteWidth(kSilhouetteWidth);
+            if (!cview->BufferDump(part, Graphic3d_BT_RGBA)) {
+                job.state = PhotoState::Failed;
+                return;
+            }
+            if (++job.tile == tiles) {
+                job.tile = 0;
+                if (++job.pass == job.passes) break;
+            }
+        } while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() < budgetMs);
+    } catch (const Standard_Failure& e) {
+        log::Error("Viewport: photo failed: {}", e.GetMessageString());
+        SetSilhouetteWidth(kSilhouetteWidth);
+        job.state = PhotoState::Failed;
+        return;
+    }
+    if (job.pass < job.passes) return;
+
+    std::optional<Image> out = ToImage(job.pictures[0]);
+    if (out && o.background == Bg::Transparent) {
+        const std::optional<Image> white = ToImage(job.pictures[1]);
+        if (!white || white->rgba.size() != out->rgba.size()) out.reset();
+        else
             for (std::size_t i = 0; i < out->rgba.size(); i += 4) {
                 const int diff = (white->rgba[i] - out->rgba[i] + white->rgba[i + 1] - out->rgba[i + 1] + white->rgba[i + 2] - out->rgba[i + 2]) / 3;
                 const int alpha = std::clamp(255 - diff, 0, 255);
@@ -1878,26 +1998,54 @@ std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
                     out->rgba[i + k] = alpha > 0 ? static_cast<std::uint8_t>(std::min(255, out->rgba[i + k] * 255 / alpha)) : 0;
                 out->rgba[i + 3] = static_cast<std::uint8_t>(alpha);
             }
-        }
     }
+    job.result = std::move(out);
+    job.state = job.result ? PhotoState::Done : PhotoState::Failed;
+}
 
-    // Back as it was.
-    m.view->ChangeRenderingParams() = params;
-    m.colors = colors;
-    m.view->SetBgGradientColors(ToQuantity(colors.backgroundTop), ToQuantity(colors.backgroundBottom),
-                                colors.radialBackground ? Aspect_GradientFillMethod_Elliptical : Aspect_GradientFillMethod_Vertical, false);
-    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(m.backgroundPicture, Aspect_FM_STRETCH, false);
-    if (shotStyle != style) {
-        m.style = style;
-        m.ApplyStyleAll();
+Viewport::PhotoState Viewport::PhotoStatus() const {
+    return myImpl->photo ? PhotoState::Running : myImpl->photoState;
+}
+
+double Viewport::PhotoProgress() const {
+    const auto& job = myImpl->photo;
+    if (!job) return myImpl->photoState == PhotoState::Done ? 1.0 : 0.0;
+    const double tiles = job->tilesX * job->tilesY;
+    return std::clamp((job->pass * tiles + job->tile) / (job->passes * tiles), 0.0, 1.0);
+}
+
+std::optional<Image> Viewport::TakePhoto() {
+    Impl& m = *myImpl;
+    if (m.photo || m.photoState != PhotoState::Done) return std::nullopt;
+    m.photoState = PhotoState::None;
+    return std::exchange(m.photoDone, std::nullopt);
+}
+
+void Viewport::CancelPhoto() {
+    Impl& m = *myImpl;
+    if (m.photo) {
+        m.photo->state = PhotoState::None;
+        m.photo->result.reset();
+        FinishPhoto();
     }
-    m.live = !live;   // SetLive acts on a change only
-    SetLive(live);
+    m.photoState = PhotoState::None;
+    m.photoDone.reset();
+}
+
+void Viewport::FinishPhoto() {
+    Impl& m = *myImpl;
+    m.EndPhoto();
+    SetLive(m.photoEndLive);
     m.floorFor.reset();
     m.UpdateFloor();
-    SetCamera(camera);
-    m.dirty = true;
-    return out;
+}
+
+std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
+    Impl& m = *myImpl;
+    if (!BeginPhoto(o)) return std::nullopt;
+    while (m.photo && m.photo->state == PhotoState::Running) m.StepPhoto(1e9);
+    FinishPhoto();
+    return TakePhoto();
 }
 
 std::optional<Image> Viewport::Preview(Vec3 direction, Vec3 up, int size) {

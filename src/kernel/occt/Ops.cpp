@@ -322,7 +322,18 @@ Verdict Verify(ops::Kind kind, const TopTools_IndexedMapOfShape& inputFaces, dou
             v.why = "a solid of the result is inside out";
             return v;
         }
-    if (!ChangedFacesValid(v.shape, NewFaces(v.shape, inputFaces), v.why)) return v;
+    if (!ChangedFacesValid(v.shape, NewFaces(v.shape, inputFaces), v.why)) {
+        // An odd count of faces at an edge is no proof of a hole: tools that
+        // only touch each other (a pattern of holes typed closer and closer)
+        // meet that way in a body BRepCheck finds valid — and so did the
+        // pipeline before STAB-3. The full check decides then.
+        if (v.why.starts_with("an edge") && BRepCheck_Analyzer(v.shape).IsValid()) {
+            log::Info("ops: {}; the whole body is valid, taken", v.why);
+            v.why.clear();
+        } else {
+            return v;
+        }
+    }
     // The volume changed the way the operation means.
     v.after = VolumeOf(v.shape);
     const double noise = std::max(1e-6, before * 1e-9);
@@ -451,7 +462,7 @@ Result Boolean(Kind kind, const TopoDS_Shape& target, const NCollection_List<Top
     const Clock::time_point end = started + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(o.seconds));
     const auto finish = [&](Result r, const char* how) {
         r.ms = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-        if (r.code != Code::Ok || r.ms > 1000)
+        if ((r.code != Code::Ok && !(r.code == Code::Empty && !o.verify)) || r.ms > 1000)
             log::Info("ops: {} code={} fuzzy={:g} glued={} healed={} {:.0f} ms ({})", NameOf(kind), static_cast<int>(r.code), r.fuzzy,
                       r.glued, r.healed, r.ms, how);
         return r;

@@ -1,4 +1,5 @@
 #include "kernel/occt/Fillet.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepAdaptor_Curve.hxx>
@@ -108,7 +109,11 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
     try {
         Builder builder(body);
         for (const TopoDS_Edge& e : edges) add(builder, e);
-        builder.Build();
+        Handle(Deadline) deadline = new Deadline(ops::kBooleanSeconds);
+        builder.Build(Message_ProgressRange(deadline->Start()));
+        if (deadline->Passed())
+            return Error{std::format("«{}» не уложилось в {:.0f} с — выберите меньше рёбер за раз или уменьшите размер", what,
+                                     ops::kBooleanSeconds)};
         if (!builder.IsDone() || builder.Shape().IsNull()) {
             // Where it gave up, when OCCT says: the user sees which corner.
             if constexpr (requires { builder.NbFaultyVertices(); }) {
@@ -136,7 +141,7 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
                 scale += std::abs(v);
             }
         Handle(ShapeFix_Shape) fix = new ShapeFix_Shape(result);
-        fix->Perform();
+        fix->Perform(Message_ProgressRange(deadline->Start()));
         const TopoDS_Shape healed = fix->Shape();
         if (healed.IsNull() || !BRepCheck_Analyzer(healed).IsValid()) return Error{tooBig};
         const double gained = VolumeOf(healed) - VolumeOf(body);
@@ -151,7 +156,7 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
         // OCCT gave up inside, typically where the chosen edge stops against
         // another face: the whole outline of the pocket often builds when
         // one edge of it does not.
-        log::Warn("{}: OCCT failed inside ({})", what, failure.GetMessageString());
+        log::Warn("{}: OCCT failed inside ({})", what, ops::TextOf(failure));
         return Error{std::format("{} Похоже, ребро обрывается у вершины, где OCCT не может закрыть конец: выберите вместе с ним соседние "
                                  "рёбра того же контура (например, весь край паза) или уменьшите размер",
                                  tooBig)};

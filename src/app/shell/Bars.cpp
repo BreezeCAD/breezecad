@@ -178,7 +178,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     const ObjectId editing = operation ? operation->EditedFeature() : ObjectId{};
     int errors = 0;
     for (const auto& f : s->doc.Features()) errors += f->status.state == doc::FeatureState::Error && f->id != editing ? 1 : 0;
-    if (const std::optional<double> importing = ImportProgressOf(*s)) {
+    if (app.ops.photo.Rendering()) {
+        // «Кадр» made over a few frames: how far, and how to stop it.
+        rightText(Tr("Отмена — Esc"), c.textSecondary);
+        rightText(Trf("Кадр — {}%", static_cast<int>(app.ops.photo.Progress(app) * 100)), c.accent);
+    } else if (const std::optional<double> importing = ImportProgressOf(*s)) {
         // «Импорт» on another thread: how far, and how to stop it.
         rightText(Tr("Отмена — Esc"), c.textSecondary);
         rightText(Trf("Импорт — {}%", static_cast<int>(*importing * 100)), c.accent);

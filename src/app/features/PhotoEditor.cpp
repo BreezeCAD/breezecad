@@ -49,9 +49,27 @@ void PhotoEditor::Start(AppContext& app, Session& session) {
 }
 
 void PhotoEditor::Cancel(AppContext& app, Session& session) {
-    (void)app;
     (void)session;
+    Drop(app);
+}
+
+void PhotoEditor::Drop(AppContext& app) {
+    if (myRendering) app.viewport.CancelPhoto();
+    myRendering = false;
     myOpen = false;
+}
+
+bool PhotoEditor::StepBack(AppContext& app, Session& session) {
+    (void)session;
+    if (!myRendering) return false;
+    app.viewport.CancelPhoto();
+    myRendering = false;
+    app.notes.Info(Tr("Кадр отменён"));
+    return true;
+}
+
+double PhotoEditor::Progress(const AppContext& app) const {
+    return myRendering ? app.viewport.PhotoProgress() : 0.0;
 }
 
 double PhotoEditor::Aspect() const {
@@ -64,6 +82,20 @@ std::string PhotoEditor::Hint() const {
 }
 
 void PhotoEditor::Save(AppContext& app, Session& session) {
+    if (myRendering) return;
+    std::error_code ec;
+    std::filesystem::path folder = myFolder;
+    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) folder = app.settings.lastSaveFolder;
+    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) folder = platform::DocumentsDir();
+    // Where first, then the picture: it is made over a few frames and
+    // written as soon as it is ready. Test runs (Xvfb, no file window):
+    // BZ_PHOTO_FILE names the file.
+    const char* testFile = std::getenv("BZ_PHOTO_FILE");
+    const auto file = testFile ? std::optional<std::filesystem::path>(PathFromUtf8(testFile))
+                               : platform::ShowSaveDialog(Tr("Сохранить кадр"), folder / PathFromUtf8(session.Title() + ".png"),
+                                                          {{Tr("Картинка PNG"), "*.png"}}, ".png");
+    if (!file) return;
+
     const Size& size = kSizes[static_cast<std::size_t>(mySize)];
     render::Viewport::PhotoOptions o;
     o.background = static_cast<render::Viewport::PhotoOptions::Background>(myBackground);
@@ -71,9 +103,26 @@ void PhotoEditor::Save(AppContext& app, Session& session) {
     o.height = size.height;
     o.floor = myFloor;
     o.edges = myEdges;
-    const std::optional<Image> image = app.viewport.Photo(o);
-    if (!image) {
+    if (!app.viewport.BeginPhoto(o)) {
         app.notes.Error(Tr("Не удалось сделать кадр: видеокарта не отдала изображение"));
+        return;
+    }
+    myTarget = *file;
+    myRendering = true;
+}
+
+void PhotoEditor::Poll(AppContext& app) {
+    if (!myRendering) return;
+    using State = render::Viewport::PhotoState;
+    const State state = app.viewport.PhotoStatus();
+    if (state == State::Running) {
+        app.shell.animateUi = true;   // frames keep coming: each draws a few tiles
+        return;
+    }
+    myRendering = false;
+    const std::optional<Image> image = state == State::Done ? app.viewport.TakePhoto() : std::nullopt;
+    if (!image) {
+        if (state != State::None) app.notes.Error(Tr("Не удалось сделать кадр: видеокарта не отдала изображение"));
         return;
     }
     std::size_t bytes = 0;
@@ -82,31 +131,19 @@ void PhotoEditor::Save(AppContext& app, Session& session) {
         app.notes.Error(Tr("Не удалось сжать кадр в PNG"));
         return;
     }
-    std::error_code ec;
-    std::filesystem::path folder = myFolder;
-    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) folder = app.settings.lastSaveFolder;
-    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) folder = platform::DocumentsDir();
-    // Test runs (Xvfb, no file window): BZ_PHOTO_FILE names the file.
-    const char* testFile = std::getenv("BZ_PHOTO_FILE");
-    const auto file = testFile ? std::optional<std::filesystem::path>(PathFromUtf8(testFile)) : platform::ShowSaveDialog(Tr("Сохранить кадр"), folder / PathFromUtf8(session.Title() + ".png"), {{Tr("Картинка PNG"), "*.png"}},
-                                               ".png");
-    if (!file) {
-        mz_free(png);
-        return;
-    }
     bool written = false;
     {
-        std::ofstream out(*file, std::ios::binary);
+        std::ofstream out(myTarget, std::ios::binary);
         out.write(static_cast<const char*>(png), static_cast<std::streamsize>(bytes));
         written = static_cast<bool>(out);
     }
     mz_free(png);
-    if (!written || !platform::FileWritten(*file)) {
-        app.notes.Error(Trf("Не удалось записать {}", ToUtf8(file->filename())));
+    if (!written || !platform::FileWritten(myTarget)) {
+        app.notes.Error(Trf("Не удалось записать {}", ToUtf8(myTarget.filename())));
         return;
     }
-    myFolder = file->parent_path();
-    app.notes.Info(Trf("Кадр сохранён: {}", ToUtf8(file->filename())));
+    myFolder = myTarget.parent_path();
+    app.notes.Info(Trf("Кадр сохранён: {}", ToUtf8(myTarget.filename())));
 }
 
 void PhotoEditor::DrawInViewport(AppContext& app, Session& session, const ViewportFrame& vf) {
@@ -130,6 +167,7 @@ void PhotoEditor::DrawInViewport(AppContext& app, Session& session, const Viewpo
 }
 
 void PhotoEditor::DrawPanel(AppContext& app, Session& session) {
+    Poll(app);
     ui::Ui& ui = app.ui;
     const ui::ThemeColors& c = ui.C();
     const float width = ImGui::GetContentRegionAvail().x;
@@ -182,7 +220,8 @@ void PhotoEditor::DrawPanel(AppContext& app, Session& session) {
     ImGui::SetCursorScreenPos({fp.x + ui.S(14), fp.y + ui.S(12)});
     if (ui::SecondaryButton(ui, "##photo-close", Tr("Закрыть"), nullptr, {bw, bh})) app.Later([&app, &session, this] { Cancel(app, session); });
     ImGui::SameLine(0, gap);
-    if (ui::PrimaryButton(ui, "##photo-save", Tr("Сохранить PNG…"), nullptr, {bw, bh})) app.Later([&app, &session, this] { Save(app, session); });
+    if (ui::PrimaryButton(ui, "##photo-save", Tr("Сохранить PNG…"), nullptr, {bw, bh}, !myRendering))
+        app.Later([&app, &session, this] { Save(app, session); });
 }
 
 } // namespace bz::app

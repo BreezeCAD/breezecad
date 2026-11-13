@@ -625,6 +625,8 @@ void EscapePressed(AppContext& app) {
     if (!s) return;
     if (s->importing && ImportsRunning(app)) {
         CancelImport(*s);
+    } else if (app.ops.photo.Rendering() && app.ops.photo.StepBack(app, *s)) {
+        // «Кадр» under way: Esc stops the picture, the panel stays.
     } else if (OperationEditor* open = app.ops.Active()) {
         open->Cancel(app, *s);
     } else if (app.shell.measuring) {

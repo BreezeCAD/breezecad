@@ -23,7 +23,9 @@ public:
     bool        HasApply() const override { return false; }
     void        Done(AppContext& app, Session& session) override { Cancel(app, session); }
     void        Cancel(AppContext& app, Session& session) override;
-    void        Drop(AppContext& app) override { (void)app; myOpen = false; }
+    void        Drop(AppContext& app) override;
+    /// Esc while the picture is being made: stops it, the panel stays.
+    bool        StepBack(AppContext& app, Session& session) override;
     void        DrawPanel(AppContext& app, Session& session) override;
     void        DrawInViewport(AppContext& app, Session& session, const ViewportFrame& vf) override;
     const char* Title() const override { return Tr("Кадр"); }
@@ -33,8 +35,14 @@ public:
     /// The picture's width / height for the size chosen.
     double Aspect() const;
 
+    /// A picture under way (the status bar shows how far).
+    bool   Rendering() const { return myRendering; }
+    double Progress(const AppContext& app) const;
+
 private:
     void Save(AppContext& app, Session& session);
+    /// Each frame while rendering: the picture done → written to the file.
+    void Poll(AppContext& app);
 
     bool myOpen = false;
     int  myBackground = 0;   ///< PhotoOptions::Background
@@ -42,6 +50,8 @@ private:
     bool myEdges = true;
     int  mySize = 1;         ///< kSizes
     std::filesystem::path myFolder;   ///< where the last picture went
+    bool                  myRendering = false;
+    std::filesystem::path myTarget;   ///< where the picture being made goes
 };
 
 } // namespace bz::app

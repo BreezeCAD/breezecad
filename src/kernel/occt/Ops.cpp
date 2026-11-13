@@ -865,6 +865,48 @@ std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape
     return std::nullopt;
 }
 
+namespace {
+
+/// Edges that bound only one face: holes in the skin of a body. A seam
+/// (one edge used twice by the same face) and a degenerate edge (the pole
+/// of a cone) are not holes.
+int OpenEdges(const TopoDS_Shape& shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    int open = 0;
+    for (int i = 1; i <= edgeFaces.Extent(); ++i) {
+        const TopoDS_Edge& edge = TopoDS::Edge(edgeFaces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge) || edgeFaces(i).Extent() != 1) continue;
+        if (BRep_Tool::IsClosed(edge, TopoDS::Face(edgeFaces(i).First()))) continue;   // a seam
+        ++open;
+    }
+    return open;
+}
+
+int SolidCount(const TopoDS_Shape& shape) {
+    int n = 0;
+    for (TopExp_Explorer e(shape, TopAbs_SOLID); e.More(); e.Next()) ++n;
+    return n;
+}
+
+/// Why merging faces made `after` worse than `before`, or nullptr when it
+/// did not. Merging only removes lines between pieces of one surface, so the
+/// bodies, their volume and their closed skin must stay as they were
+/// (FreeCAD's refine is checked the same way: a result that stopped being
+/// closed is thrown away). Seen on OCCT: a solid turned inside out.
+const char* CleanBrokeShape(const TopoDS_Shape& before, const TopoDS_Shape& after) {
+    if (after.IsNull()) return "gave nothing";
+    if (SolidCount(after) != SolidCount(before)) return "changed the number of bodies";
+    const double v0 = VolumeOf(before), v1 = VolumeOf(after);
+    // Same geometry, other faces: the volume integrals differ only by
+    // rounding — far below 1e-5 of the body.
+    if (std::abs(v1 - v0) > 1e-5 * std::max(std::abs(v0), 1.0)) return "changed the volume";
+    if (OpenEdges(after) > OpenEdges(before)) return "opened the skin";
+    return nullptr;
+}
+
+} // namespace
+
 TopoDS_Shape Clean(const TopoDS_Shape& input) {
     // One cylinder made twice (a fillet and the extruded arc projected from
     // it) is given one surface first: with two frames of opposite hands
@@ -921,6 +963,17 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
         return input;
     }
     delete unify;
+    // The check itself must not cost the operation: if it cannot be made,
+    // the merged shape goes on, as before the check existed.
+    const char* why = nullptr;
+    try {
+        why = CleanBrokeShape(shape, result);
+    } catch (const Standard_Failure&) {
+    }
+    if (why) {
+        log::Warn("Clean: merging faces {}; the shape is left as it is", why);
+        return input;
+    }
     return result;
 }
 

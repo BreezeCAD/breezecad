@@ -159,6 +159,7 @@ void CombineSolid(ObjectId id, doc::BooleanOp op, const TopoDS_Shape& tool, Mode
                   doc::FeatureStatus& status) {
     // A new body copied by a pattern joins the body it started.
     if (op != doc::BooleanOp::Intersect) impl.tools[id] = {tool, op == doc::BooleanOp::Cut ? doc::BooleanOp::Cut : doc::BooleanOp::Join, {}};
+    else impl.intersections[id] = tool;   // the panel's preview ghost
 
     if (op == doc::BooleanOp::NewBody || bodies.empty()) {
         if (op == doc::BooleanOp::Cut || op == doc::BooleanOp::Intersect) {
@@ -1362,6 +1363,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
         doc::Feature& f = *doc.Features()[i];
         impl.cachedOrder[i] = f.id;
         impl.tools.erase(f.id);   // set again below if the operation succeeds
+        impl.intersections.erase(f.id);
         impl.decorations.erase(f.id);
         impl.sheets.erase(f.id);
 
@@ -1671,6 +1673,7 @@ void Model::Adopt(Model&& fork, std::size_t start) {
             else to.erase(id);
         };
         take(a.tools, b.tools);
+        take(a.intersections, b.intersections);
         take(a.sketches, b.sketches);
         take(a.copyPreviews, b.copyPreviews);
         take(a.decorations, b.decorations);

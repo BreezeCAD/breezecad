@@ -18,6 +18,14 @@ Box2 Extent(ViewDirection direction, const Box3& m) {
     return box;
 }
 
+Box2 Extent(const View& view, const Box3& m) {
+    Box2 box;
+    for (double x : {m.min.x, m.max.x})
+        for (double y : {m.min.y, m.max.y})
+            for (double z : {m.min.z, m.max.z}) box.Include(ProjectPoint(view, {x, y, z}));
+    return box;
+}
+
 bool Room::Fits(const Box2& b) const {
     if (b.min.x < area.min.x || b.max.x > area.max.x || b.min.y < area.min.y || b.max.y > area.max.y) return false;
     return std::none_of(taken.begin(), taken.end(), [&](const Box2& t) { return Overlaps(t, b); });

@@ -231,7 +231,7 @@ Item* FindAnnotation(Sheet& sheet, ObjectId id) {
     return nullptr;
 }
 
-Vec2 SheetPointOf(const View& view, Vec3 model) { return view.at + ProjectPoint(view.direction, model) * view.scale.Value(); }
+Vec2 SheetPointOf(const View& view, Vec3 model) { return view.at + ProjectPoint(view, model) * view.scale.Value(); }
 Vec2 ViewPointOf(const View& view, Vec2 sheet) { return (sheet - view.at) / view.scale.Value(); }
 Vec2 DimensionAnchor(const View& view, const Dimension& dim) { return view.at + dim.at * view.scale.Value(); }
 
@@ -244,7 +244,7 @@ std::optional<Measure> MeasureOf(const View& view, const Dimension& dim, const s
     if (edges.size() != dim.edges.size() || edges.empty()) return fail("Нет рёбер размера");
     for (const auto& e : edges)
         if (!e) return fail("Ребро размера пропало из модели");
-    const ViewBasis basis = BasisOf(view.direction);
+    const ViewBasis basis = BasisOf(view);
     const Vec3 eye = basis.eye.Normalized();
     const double s = view.scale.Value();
     const auto on = [&](Vec3 p) { return SheetPointOf(view, p); };

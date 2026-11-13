@@ -103,7 +103,18 @@ struct ViewLines {
     };
     std::vector<Mark> marks;
     std::vector<Axis> axes;
+    /// A section view: the faces on the cutting plane, each as its loops — hatched.
+    std::vector<std::vector<std::vector<Vec2>>> sections;
 };
+
+/// ГОСТ 2.306 hatching of a cut face (metal: thin lines at 45°): `loops`
+/// on the sheet, even-odd (holes stay clear); `step` — between lines, mm.
+std::vector<Polyline> Hatch(const std::vector<std::vector<Vec2>>& loops, double step, double angleDeg = 45);
+/// The cutting line of `section` on its parent view (ГОСТ 2.305, 2.303):
+/// thick strokes at its ends, arrows of the sight, the letters.
+void AddCuttingLine(SheetLayout& out, const View& parent, const View& section);
+/// The «А–А» over a section view whose box on the sheet is `box`.
+void AddSectionLabel(SheetLayout& out, const View& section, const Box2& box);
 
 /// The view's lines on the sheet: scaled, moved to `view.at`, styled.
 void AddView(SheetLayout& out, const View& view, const ViewLines& lines);

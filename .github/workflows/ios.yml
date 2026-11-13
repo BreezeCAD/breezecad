@@ -12,7 +12,7 @@
 #
 # A push or manual run refreshes the pre-release "ios-build" with the .ipa.
 #
-# FreeType and OCCT for iOS come from scripts/ios/build-deps.sh (about an
+# FreeType and OCCT for iOS come from scripts/deps/build-occt.sh (about an
 # hour per SDK the first time) and stay in the Actions cache.
 #
 # Separate from build.yml and android.yml on purpose: it never holds up or
@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.BZ_IOS_DEPS }}
-          key: ios-deps-${{ matrix.sdk }}-${{ env.XCODE }}-${{ hashFiles('scripts/ios/build-deps.sh') }}
+          key: ios-deps-${{ matrix.sdk }}-${{ env.XCODE }}-${{ hashFiles('scripts/deps/build-occt.sh', 'scripts/ios/build-deps.sh') }}
       - name: Build FreeType and OCCT (first run, about an hour)
         if: steps.deps.outputs.cache-hit != 'true'
         run: |
@@ -64,6 +64,7 @@ jobs:
           bash scripts/ios/build-deps.sh ${{ matrix.sdk }} "$BZ_IOS_DEPS" > deps.log 2>&1
           status=$?
           tail -20 deps.log
+          [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' deps.log | head -80
           exit $status
       # Saved before BreezeCAD builds: a failing BreezeCAD build must not
       # cost the hour of OCCT again.
@@ -73,6 +74,11 @@ jobs:
         with:
           path: ${{ env.BZ_IOS_DEPS }}
           key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Versions
+        run: |
+          occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' "$BZ_IOS_DEPS/include/opencascade/Standard_Version.hxx")
+          echo "::notice title=OCCT (${{ matrix.sdk }})::OCCT $occt (cache: ${{ steps.deps.outputs.cache-hit == 'true' && 'hit' || 'built' }})"
+          cat "$BZ_IOS_DEPS/occt-build.txt" 2>/dev/null || true
       - name: Configure
         run: |
           set +e

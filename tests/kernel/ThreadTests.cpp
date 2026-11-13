@@ -7,6 +7,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -183,3 +186,5 @@ TEST_CASE("an internal thread in a hole under a counterbore builds (made on an i
     // The same on every system: Linux 8.0.1 / 7.6.3, macOS and Windows 7.9.3.
     CHECK(model.Volume() == doctest::Approx(14789.1).epsilon(1e-4));
 }
+
+TEST_SUITE_END();

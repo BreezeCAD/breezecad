@@ -9,6 +9,9 @@
 #include <fstream>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::doc::parts;
 
@@ -172,3 +175,5 @@ TEST_CASE("the shipped packs read and pass their checks") {
     CHECK(Designation({"gost30245.rect", "200x100x5.5", 1500}) == "Профиль 200\xC3\x97" "100\xC3\x97" "5,5 ГОСТ 30245-2003, L=1500");
     ClearPacks();
 }
+
+TEST_SUITE_END();

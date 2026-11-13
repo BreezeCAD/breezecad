@@ -149,7 +149,7 @@ Expected<TopoDS_Shape> ShellBySlabs(const TopoDS_Shape& body, const std::vector<
 
     const BRepOffset_Analyse analyse(body, 1.0 * 3.14159265358979 / 180);
     const auto concave = [&](const TopoDS_Shape& edge) {
-        const BRepOffset_ListOfInterval& types = analyse.Type(TopoDS::Edge(edge));
+        const auto& types = analyse.Type(TopoDS::Edge(edge));   // NCollection_List<BRepOffset_Interval> (OCCT 8)
         return !types.IsEmpty() && types.First().Type() == ChFiDS_Concave;
     };
     // The faces around a corner, or nothing if one of them is removed: the

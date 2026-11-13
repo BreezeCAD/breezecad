@@ -9,6 +9,9 @@
 #include <cmath>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::CurveKind;
@@ -296,3 +299,4 @@ TEST_CASE("скругление: одно ребро с большим ради�
     MESSAGE(fillet->status.message);
     CHECK(fillet->status.message.find("строится радиус до") != std::string::npos);
 }
+TEST_SUITE_END();

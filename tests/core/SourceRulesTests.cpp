@@ -8,6 +8,9 @@
 #include <regex>
 #include <string>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 namespace {
 
 /// Lines of our sources (comments and strings stripped roughly) matching `pattern`.
@@ -35,3 +38,5 @@ TEST_CASE("no identifiers that windows.h turns into macros") {
     // Win32 API names that are macros (…A / …W): a function of ours by that name breaks.
     CHECK(Offenders(std::regex(R"(\b(LoadImage|DrawText|CreateWindow|GetObject|SendMessage|CreateFont)\s*\()")) == "");
 }
+
+TEST_SUITE_END();

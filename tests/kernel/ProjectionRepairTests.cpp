@@ -13,6 +13,9 @@
 #include <TopoDS.hxx>
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -172,3 +175,5 @@ TEST_CASE("сломанная проекция: эскиз без проекци
     CHECK_FALSE(sk.RestoreBeforeBreak(d.Ids()));
     CHECK(sk.sketch.lines.size() == 4);
 }
+
+TEST_SUITE_END();

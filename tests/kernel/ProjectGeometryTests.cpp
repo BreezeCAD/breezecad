@@ -25,6 +25,9 @@
 #include <doctest.h>
 #include <nlohmann/json.hpp>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -732,3 +735,4 @@ TEST_CASE("испытание проекций: все рёбра детали �
         CHECK(r.broken == 0);
     }
 }
+TEST_SUITE_END();

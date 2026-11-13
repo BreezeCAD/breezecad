@@ -26,6 +26,16 @@ on:
   pull_request:
     paths-ignore: ['docs/**', 'translations/**', '**/*.md']
   workflow_dispatch:
+  # The full test set every night (on the default branch); pull requests run
+  # only the fast set (STAB-0, step 4).
+  schedule:
+    - cron: '17 1 * * *'
+
+# Which tests: pull requests — the fast set (doctest suite "fast": kernel,
+# document, reference parts, SourceRules; bz_tests -ts=fast), everything else
+# (pushes to next/main before a release, the nightly run, manual runs) — all.
+env:
+  BZ_TEST_FILTER: ${{ github.event_name == 'pull_request' && '-ts=fast' || '' }}
 
 concurrency:
   group: build-${{ github.ref }}
@@ -34,6 +44,8 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     permissions:
       contents: write   # the installer's pictures go to the pr-assets branch
     defaults:
@@ -41,6 +53,23 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+      # Private reference parts (authors' and testers' real parts) from the
+      # closed BreezeCAD/bz-test-corpus, read-only token BZ_CORPUS_TOKEN. Pull
+      # requests from forks have no secrets: the step is skipped, the open
+      # parts in tests/data/corpus still run.
+      - name: Private reference parts
+        if: env.BZ_CORPUS_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: BreezeCAD/bz-test-corpus
+          token: ${{ env.BZ_CORPUS_TOKEN }}
+          path: .corpus
+      - name: Private reference parts — where
+        if: env.BZ_CORPUS_TOKEN != ''
+        shell: bash
+        run: |
+          echo "BZ_CORPUS_DIR=${{ github.workspace }}/.corpus" >> "$GITHUB_ENV"
+          echo "::notice title=Reference parts::private: $(find .corpus -name '*.bzc' | wc -l) parts"
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -114,8 +143,15 @@ jobs:
           export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"
           # A time limit: a test that hangs fails with its name instead of
           # holding the job for hours.
-          ctest --preset windows-mingw --output-on-failure --timeout 1200 2>&1 | tee test.log
-          status=${PIPESTATUS[0]}
+          if [ -n "$BZ_TEST_FILTER" ]; then
+            start=$(date +%s)
+            timeout 1200 "$(find build/windows-mingw -name bz_tests.exe | head -1)" $BZ_TEST_FILTER 2>&1 | grep -vE " INFO | WARN " | tee test.log
+            status=${PIPESTATUS[0]}
+            echo "::notice title=Tests::fast set ($BZ_TEST_FILTER): $(grep 'test cases' test.log | tail -1), $(( $(date +%s) - start )) s"
+          else
+            ctest --preset windows-mingw --output-on-failure --timeout 1200 2>&1 | tee test.log
+            status=${PIPESTATUS[0]}
+          fi
           # A crash prints no failed check: run again, naming each finished test case.
           if [ $status -ne 0 ]; then
             exe=$(find build/windows-mingw -name bz_tests.exe | head -1)
@@ -281,6 +317,8 @@ jobs:
     # same compiler): the package runs on distributions from 2019 on; the
     # system's own packages would tie it to the build machine's glibc.
     runs-on: ubuntu-24.04
+    env:
+      BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     permissions:
       contents: write   # the OCCT archive for Claude's sandbox goes to the release dev-deps
     defaults:
@@ -288,6 +326,23 @@ jobs:
         shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
+      # Private reference parts (authors' and testers' real parts) from the
+      # closed BreezeCAD/bz-test-corpus, read-only token BZ_CORPUS_TOKEN. Pull
+      # requests from forks have no secrets: the step is skipped, the open
+      # parts in tests/data/corpus still run.
+      - name: Private reference parts
+        if: env.BZ_CORPUS_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: BreezeCAD/bz-test-corpus
+          token: ${{ env.BZ_CORPUS_TOKEN }}
+          path: .corpus
+      - name: Private reference parts — where
+        if: env.BZ_CORPUS_TOKEN != ''
+        shell: bash
+        run: |
+          echo "BZ_CORPUS_DIR=${{ github.workspace }}/.corpus" >> "$GITHUB_ENV"
+          echo "::notice title=Reference parts::private: $(find .corpus -name '*.bzc' | wc -l) parts"
       - name: System packages (OpenGL, X11, Xvfb for the start check)
         shell: bash
         run: |
@@ -383,9 +438,15 @@ jobs:
       - name: Test
         run: |
           set +e
-          ctest --preset linux-release --output-on-failure > test.log 2>&1
+          start=$(date +%s)
+          if [ -n "$BZ_TEST_FILTER" ]; then
+            ./build/linux-release/bin/bz_tests $BZ_TEST_FILTER > test.log 2>&1
+          else
+            ctest --preset linux-release --output-on-failure > test.log 2>&1
+          fi
           status=$?
           tail -5 test.log
+          echo "::notice title=Tests::${BZ_TEST_FILTER:-full set}: $(grep -h 'test cases' test.log build/linux-release/Testing/Temporary/LastTest.log 2>/dev/null | tail -1), $(( $(date +%s) - start )) s"
           exit $status
       - name: Report failures
         if: failure()
@@ -543,8 +604,27 @@ jobs:
     # Apple Silicon only (arm64); Homebrew's bottles here are built for
     # macOS 15, which is the oldest system the app supports (macos-14 retired 2.11.2026).
     runs-on: macos-15
+    env:
+      BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      # Private reference parts (authors' and testers' real parts) from the
+      # closed BreezeCAD/bz-test-corpus, read-only token BZ_CORPUS_TOKEN. Pull
+      # requests from forks have no secrets: the step is skipped, the open
+      # parts in tests/data/corpus still run.
+      - name: Private reference parts
+        if: env.BZ_CORPUS_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: BreezeCAD/bz-test-corpus
+          token: ${{ env.BZ_CORPUS_TOKEN }}
+          path: .corpus
+      - name: Private reference parts — where
+        if: env.BZ_CORPUS_TOKEN != ''
+        shell: bash
+        run: |
+          echo "BZ_CORPUS_DIR=${{ github.workspace }}/.corpus" >> "$GITHUB_ENV"
+          echo "::notice title=Reference parts::private: $(find .corpus -name '*.bzc' | wc -l) parts"
       - name: Dependencies
         run: brew install ninja glfw freetype dylibbundler
       # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
@@ -591,7 +671,11 @@ jobs:
         id: build
         run: cmake --build --preset macos 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Test
-        run: ctest --preset macos --output-on-failure 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+        run: |
+          if [ -n "$BZ_TEST_FILTER" ]; then
+            ./build/macos/bin/bz_tests $BZ_TEST_FILTER 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+          fi
+          ctest --preset macos --output-on-failure 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
       - name: Report failures
         if: failure()
         run: bash scripts/ci-annotate.sh build.log test.log

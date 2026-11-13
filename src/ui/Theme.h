@@ -53,6 +53,8 @@ struct ThemeColors {
     Color bodyEdges;
     Color hoverHighlight;
     Color selection;
+    Color previewAdd;        ///< operation preview ghost: material added (or kept by an intersection)
+    Color previewCut;        ///< operation preview ghost: material removed
 
     // sketch overlay
     Color sketchFree;        ///< under-defined geometry

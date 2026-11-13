@@ -79,6 +79,7 @@ Settings FromJson(const nlohmann::json& j) {
     s.panelWidth      = std::clamp(j.value("panelWidth", s.panelWidth), 0.0, 1200.0);
     s.graphics        = std::clamp(j.value("graphics", s.graphics), 0, 2);
     s.liveView        = j.value("liveView", s.liveView);
+    s.previewResult   = j.value("previewResult", s.previewResult);
     s.textureQuality  = std::clamp(j.value("textureQuality", s.textureQuality), 0, 2);
     s.showAllConstraints = j.value("showAllConstraints", s.showAllConstraints);
     s.sketchRegionFill = j.value("sketchRegionFill", s.sketchRegionFill);
@@ -248,6 +249,7 @@ nlohmann::json Settings::ToJson() const {
         {"panelWidth", panelWidth},
         {"graphics", graphics},
         {"liveView", liveView},
+        {"previewResult", previewResult},
         {"textureQuality", textureQuality},
         {"backgroundRebuild", backgroundRebuild},
         {"showAllConstraints", showAllConstraints},

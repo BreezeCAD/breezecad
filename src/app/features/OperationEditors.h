@@ -59,6 +59,13 @@ struct OperationEditors {
         return nullptr;
     }
 
+    /// Operations that show their tool body as a ghost while the panel is
+    /// open (Viewport::ShowToolPreview): those that add, cut or intersect.
+    bool ShowsToolGhost(const OperationEditor* e) const {
+        return e && (e == &extrude || e == &revolve || e == &hole || e == &pattern || e == &mirror || e == &loft ||
+                     e == &sweep || e == &coil || e == &thread);
+    }
+
     /// The editor for features like `f`, or nullptr (sketches have their own editor).
     OperationEditor* EditorFor(const doc::Feature& f) {
         for (OperationEditor* e : All())

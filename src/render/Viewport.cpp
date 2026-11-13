@@ -37,6 +37,7 @@
 #include <Image_AlienPixMap.hxx>
 #include <V3d_ImageDumpOptions.hxx>
 #include <Graphic3d_ClipPlane.hxx>
+#include <Graphic3d_SequenceOfHClipPlane.hxx>
 #include <Graphic3d_Mat4d.hxx>
 #include <Graphic3d_Vec2.hxx>
 #include <OpenGl_ArbFBO.hxx>
@@ -487,6 +488,13 @@ struct Viewport::Impl {
     std::vector<Handle(AIS_Shape)> copyShapes;              ///< pattern/mirror preview shown
     std::uint64_t                  copyRevision = 0;
     ObjectId                       copyFeature;
+    /// The open operation's tool ghost (ShowToolPreview): each shape twice,
+    /// depth-tested and, fainter, over everything.
+    std::vector<Handle(AIS_Shape)> ghostShapes;
+    std::uint64_t                  ghostRevision = 0;
+    ObjectId                       ghostFeature;
+    Color                          ghostAdd, ghostCut;   ///< the colours they were drawn in
+    std::optional<std::size_t>     bodiesBefore;   ///< ShowBodiesBefore
     std::uint64_t      syncedRevision = static_cast<std::uint64_t>(-1);
     const kernel::Model* syncedModel = nullptr;
     std::optional<Vec2>  hoverPixel;
@@ -934,7 +942,15 @@ void Viewport::Sync(const kernel::Model& model) {
     // sketch, a later operation) leave most bodies as they were.
     std::vector<Impl::Shown> previous = std::move(m.shown);
     m.shown.clear();
-    for (const kernel::Body& body : model.GetImpl().bodies) {
+    // While an operation's ghost shows over the body as it was (the panel's
+    // «Предпросмотр результата» off): the bodies before it, from the cache.
+    static const std::vector<kernel::Body> none;
+    const auto& after = model.GetImpl().bodiesAfter;
+    const std::vector<kernel::Body>& source = !m.bodiesBefore                          ? model.GetImpl().bodies
+                                              : *m.bodiesBefore == 0                   ? none
+                                              : *m.bodiesBefore <= after.size()        ? after[*m.bodiesBefore - 1]
+                                                                                       : model.GetImpl().bodies;
+    for (const kernel::Body& body : source) {
         if (std::find(m.hiddenBodies.begin(), m.hiddenBodies.end(), body.id) != m.hiddenBodies.end()) continue;
         const auto same = std::find_if(previous.begin(), previous.end(), [&](const Impl::Shown& s) {
             return !s.shape.IsNull() && s.body == body.id && s.shape->Shape().IsEqual(body.shape);
@@ -1907,8 +1923,76 @@ void Viewport::ShowCopyPreview(const kernel::Model* model, ObjectId feature) {
         m.context->Display(ais, AIS_WireFrame, -1, false);
         m.copyShapes.push_back(ais);
     };
+    // The copies themselves show as the operation's ghost (ShowToolPreview).
     for (const TopoDS_Shape& s : it->second.sources) show(s, m.colors.selection, 2.5);
-    for (const TopoDS_Shape& s : it->second.copies) show(s, m.colors.hover, 1.6);
+}
+
+void Viewport::ShowBodiesBefore(std::optional<std::size_t> featureIndex) {
+    Impl& m = *myImpl;
+    if (featureIndex == m.bodiesBefore) return;
+    m.bodiesBefore = featureIndex;
+    m.syncedRevision = static_cast<std::uint64_t>(-1);   // the next Sync shows the other bodies
+}
+
+void Viewport::ShowToolPreview(const kernel::Model* model, ObjectId feature) {
+    Impl& m = *myImpl;
+    const std::uint64_t revision = model ? model->Revision() + 1 : 0;
+    if (revision == m.ghostRevision && feature == m.ghostFeature && m.ghostAdd == m.colors.previewAdd && m.ghostCut == m.colors.previewCut)
+        return;
+    m.ghostRevision = revision;
+    m.ghostFeature = feature;
+    m.ghostAdd = m.colors.previewAdd;
+    m.ghostCut = m.colors.previewCut;
+    for (const auto& s : m.ghostShapes) m.context->Remove(s, false);
+    m.ghostShapes.clear();
+    m.dirty = true;
+    if (!model) return;
+
+    // A cut ghost is cut short a little beyond the bodies (clip planes, not a
+    // boolean): «Насквозь» makes tools far longer than the part.
+    Handle(Graphic3d_SequenceOfHClipPlane) cutClip;
+    if (const std::optional<kernel::Bounds> box = model->BoundingBox()) {
+        const Vec3 lo = box->min, hi = box->max;
+        const double pad = (hi - lo).Length() * 0.08 + 1.0;
+        cutClip = new Graphic3d_SequenceOfHClipPlane();
+        // OCCT keeps the side each plane's equation is positive on.
+        const auto keep = [&](double a, double b, double c, double d) { cutClip->Append(new Graphic3d_ClipPlane(gp_Pln(a, b, c, d))); };
+        keep(1, 0, 0, -(lo.x - pad));
+        keep(-1, 0, 0, hi.x + pad);
+        keep(0, 1, 0, -(lo.y - pad));
+        keep(0, -1, 0, hi.y + pad);
+        keep(0, 0, 1, -(lo.z - pad));
+        keep(0, 0, -1, hi.z + pad);
+    }
+    const auto show = [&](const TopoDS_Shape& shape, bool cut) {
+        if (shape.IsNull()) return;
+        const Color& color = cut ? m.colors.previewCut : m.colors.previewAdd;
+        // Seen: in front of the bodies, a little ahead of faces it shares
+        // with them (a join's ghost lies on the new material). Hidden:
+        // the same shape over everything, fainter. Never picked.
+        for (const bool hidden : {false, true}) {
+            Handle(AIS_Shape) ais = new AIS_Shape(shape);
+            Handle(Prs3d_Drawer) drawer = ais->Attributes();
+            SetMeshPrecision(drawer, m.quality);
+            ais->SetColor(ToQuantity(color));
+            ais->SetMaterial(Impl::MaterialOf(color, doc::Finish::Matte));
+            ais->SetTransparency(hidden ? 0.85 : 0.55);
+            drawer->SetFaceBoundaryDraw(!hidden);
+            drawer->SetFaceBoundaryUpperContinuity(GeomAbs_C1);
+            drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(ToQuantity(color), Aspect_TOL_SOLID, 1.2));
+            if (cut && !cutClip.IsNull()) ais->SetClipPlanes(cutClip);
+            if (hidden) ais->SetZLayer(Graphic3d_ZLayerId_Topmost);
+            else ais->SetPolygonOffsets(Aspect_POM_Fill, -1.0f, -2.0f);
+            m.context->Display(ais, AIS_Shaded, -1, false);
+            m.ghostShapes.push_back(ais);
+        }
+    };
+    const auto& impl = model->GetImpl();
+    if (const auto it = impl.tools.find(feature); it != impl.tools.end()) {
+        show(it->second.shape, it->second.op == doc::BooleanOp::Cut);
+        show(it->second.cuts, true);
+    }
+    if (const auto it = impl.intersections.find(feature); it != impl.intersections.end()) show(it->second, false);
 }
 
 void Viewport::SetSection(const std::optional<Frame>& plane) {

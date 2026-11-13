@@ -46,6 +46,8 @@ struct ViewportColors {
     Color hover            = Color::Hex(0x38A9E8);
     Color selection        = Color::Hex(0x1D4ED8);
     Color interference     = Color::Hex(0xE5484D);
+    Color previewAdd       = Color::Hex(0x3B82F6);   ///< operation ghost: added or kept material
+    Color previewCut       = Color::Hex(0xE5484D);   ///< operation ghost: removed material
     bool  radialBackground = false;   ///< backgroundTop in the middle, backgroundBottom at the edges
 };
 
@@ -243,10 +245,21 @@ public:
     /// context face (the edited part's own face is nearer, or nothing).
     std::vector<ContextEdge> PickContextFaceEdges(Vec2 pixel);
 
-    /// Outlines of a pattern's or mirror's sources (selection colour) and
-    /// copies (hover colour) over the model while its panel is open;
+    /// Outlines of a pattern's or mirror's sources (selection colour) over
+    /// the model while its panel is open (the copies are its ghost);
     /// nullptr hides them. Cheap when unchanged.
     void ShowCopyPreview(const kernel::Model* model, ObjectId feature);
+    /// The tool body of the operation whose panel is open, as a translucent
+    /// ghost: previewAdd — material it adds (or keeps, for «Пересечь»),
+    /// previewCut — material it cuts away. The part hidden inside the bodies
+    /// shows fainter (a second copy drawn over everything). Only the tool the
+    /// rebuild already made: no boolean of its own. nullptr hides it; cheap
+    /// when unchanged.
+    void ShowToolPreview(const kernel::Model* model, ObjectId feature);
+    /// Shows the bodies as they were before feature number `featureIndex`
+    /// (from the rebuild's cache) instead of the result; nullopt — the
+    /// result. Takes effect at the next Sync.
+    void ShowBodiesBefore(std::optional<std::size_t> featureIndex);
 
     // --- measuring ---------------------------------------------------------
     /// While on, vertices, edges and faces of the shown bodies are hovered

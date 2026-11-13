@@ -121,6 +121,9 @@ struct Settings {
     bool        liveView       = true;
 #endif
     bool        LiveView() const { return liveView && graphics < 2; }
+    /// An operation's panel: the model shows its result under the tool's
+    /// ghost; off — the body as it was before the operation.
+    bool        previewResult  = true;
     int         textureQuality = 0;   ///< pictures on faces: 0 high, 1 medium, 2 low (TextureLimit)
     bool        backgroundRebuild = true;   ///< long rebuilds on another thread (the window stays responsive)
     bool        showAllConstraints = false;   ///< sketch: every constraint glyph, or only those of the selection (F8 / F9)

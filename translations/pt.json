@@ -2476,6 +2476,8 @@
     "шаг — объект с одним ключом: sketch, extrude или revolve": "",
     "шестигранник под ключ": "",
     "← Предыдущая": "",
-    "← тяни вдоль края →": ""
+    "← тяни вдоль края →": "",
+    "Предпросмотр результата": "Pré-visualizar resultado",
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Fantasma azul: o que será adicionado; vermelho: o que será removido. Desmarque a caixa para ver o corpo antes da operação"
   }
 }

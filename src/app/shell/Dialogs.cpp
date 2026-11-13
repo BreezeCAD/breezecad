@@ -765,6 +765,12 @@ void DrawOptimizationSettings(AppContext& app, float width, bool performance) {
     caption(app.settings.graphics >= 2 ? Tr("На «Слабом компьютере» модель всегда в простом виде.")
                                        : Tr("Живой: тень на полу, мягкий свет и контур детали — для видеокарты это ещё один проход. "
                                             "Простой — как раньше, быстрее на старых ноутбуках."));
+    if (app.settings.LiveView()) {
+        ImGui::Indent(ui.S(14));
+        ImGui::Checkbox(std::format("{}##crisp-edges", Tr("Чёткие грани")).c_str(), &app.settings.crispEdges);
+        caption(Tr("Рёбра детали тёмной линией поверх живого вида: тени и объём остаются."));
+        ImGui::Unindent(ui.S(14));
+    }
 
     ui::FieldLabel(ui, Tr("Качество текстур"));
     static constexpr std::array<const char*, 3> textures{N_("Высокое"), N_("Среднее"), N_("Низкое")};

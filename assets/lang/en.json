@@ -2589,6 +2589,8 @@
     "шаг — объект с одним ключом: sketch, extrude или revolve": "a step is an object with one key: sketch, extrude or revolve",
     "шестигранник под ключ": "hex socket",
     "← Предыдущая": "← Previous",
-    "← тяни вдоль края →": "← drag along the edge →"
+    "← тяни вдоль края →": "← drag along the edge →",
+    "Чёткие грани": "Crisp edges",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Part edges as a dark line over the live view: shadows and depth stay."
   }
 }

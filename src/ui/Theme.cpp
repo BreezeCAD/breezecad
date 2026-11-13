@@ -40,6 +40,7 @@ Theme Theme::Light() {
     c.success         = Color::Hex(0x2E7D4F);
     c.warning         = Color::Hex(0xB45309);
     c.danger          = Color::Hex(0xE5484D);
+    c.opIntersect     = Color::Hex(0x7C4DDB);
 
     c.viewportTop     = Color::Hex(0xFAFBFC);
     c.viewportBottom  = Color::Hex(0xE4E8ED);
@@ -118,6 +119,7 @@ Theme Theme::Dark() {
     c.success         = Color::Hex(0x4CBB7F);
     c.warning         = Color::Hex(0xF5A524);
     c.danger          = Color::Hex(0xF06A6E);
+    c.opIntersect     = Color::Hex(0x9B7BEA);
 
     c.viewportTop     = Color::Hex(0x2A2E35);
     c.viewportBottom  = Color::Hex(0x17191D);

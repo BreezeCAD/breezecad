@@ -44,6 +44,7 @@ struct ThemeColors {
     Color success;
     Color warning;
     Color danger;
+    Color opIntersect;       ///< badge of an intersecting operation in the tree
 
     // viewport
     Color viewportTop;

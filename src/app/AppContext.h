@@ -167,6 +167,8 @@ struct ShellState {
     bool        renameFocus = false;
     ObjectId    hoveredTreeItem;       ///< for highlighting origin planes in the viewport
     std::string treeFilter;
+    /// Which rows the part tree lists: all (as a tree) or one kind (flat).
+    enum class TreeKind : unsigned char { All, Operations, Sketches, WorkGeometry, Problems } treeKind = TreeKind::All;
     std::unordered_set<ObjectId> expanded;   ///< tree rows opened by the user
     /// Assembly tree: the components (or kAssemblyOrigin) whose origin and
     /// work geometry are shown.

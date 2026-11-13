@@ -51,6 +51,8 @@ struct RowStyle {
     bool        selected = false;
     bool        muted = false;
     const char* icon = "";
+    /// A small mark on the icon: what the operation does to the body.
+    enum class Badge : unsigned char { None, Cut, Intersect, NewBody } badge = Badge::None;
     std::string meta;
     const char* statusIcon = nullptr;
     std::optional<Color> statusColor;   ///< for a one-colour icon (a lock); none: as drawn
@@ -58,6 +60,65 @@ struct RowStyle {
     bool        hideable = false;   ///< has an eye at the right: hide or show it
     bool        hidden = false;
 };
+
+/// The operation's mark at the corner of a tree icon: a token-coloured dot
+/// with a white sign, ringed in the row's colour so it reads over the icon.
+void DrawBadge(ui::Ui& ui, ImDrawList* dl, ImVec2 centre, RowStyle::Badge badge, bool muted, bool selected) {
+    const ui::ThemeColors& c = ui.C();
+    Color fill = badge == RowStyle::Badge::Cut ? c.danger : badge == RowStyle::Badge::Intersect ? c.opIntersect : c.success;
+    Color ink = c.textOnAccent;
+    if (muted) fill.a = ink.a = 0.45f;
+    const float r = ui.S(4.6f);
+    dl->AddCircleFilled(centre, r + ui.S(1.2f), ui::ToU32(selected ? c.selectedRow : c.panel));
+    dl->AddCircleFilled(centre, r, ui::ToU32(fill));
+    const float a = r * 0.55f, t = ui.S(1.3f);
+    const ImU32 ic = ui::ToU32(ink);
+    switch (badge) {
+        case RowStyle::Badge::Cut: dl->AddLine({centre.x - a, centre.y}, {centre.x + a, centre.y}, ic, t); break;
+        case RowStyle::Badge::NewBody:
+            dl->AddLine({centre.x - a, centre.y}, {centre.x + a, centre.y}, ic, t);
+            dl->AddLine({centre.x, centre.y - a}, {centre.x, centre.y + a}, ic, t);
+            break;
+        case RowStyle::Badge::Intersect:   // ∩
+            dl->PathArcTo({centre.x, centre.y}, a * 0.9f, 3.14159265f, 6.2831853f, 8);
+            dl->PathStroke(ic, 0, t);
+            dl->AddLine({centre.x - a * 0.9f, centre.y}, {centre.x - a * 0.9f, centre.y + a}, ic, t);
+            dl->AddLine({centre.x + a * 0.9f, centre.y}, {centre.x + a * 0.9f, centre.y + a}, ic, t);
+            break;
+        case RowStyle::Badge::None: break;
+    }
+}
+
+/// The mark of an operation that turns a sketch into a solid. Joining is the
+/// usual case and gets none; the first solid is the body, so not "new".
+RowStyle::Badge OperationBadge(const doc::Feature& f, ObjectId firstSolid) {
+    const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(&f);
+    if (!op || dynamic_cast<const doc::SheetMetalFeature*>(&f)) return RowStyle::Badge::None;
+    switch (op->operation) {
+        case doc::BooleanOp::Cut:       return RowStyle::Badge::Cut;
+        case doc::BooleanOp::Intersect: return RowStyle::Badge::Intersect;
+        case doc::BooleanOp::NewBody:   return f.id == firstSolid ? RowStyle::Badge::None : RowStyle::Badge::NewBody;
+        case doc::BooleanOp::Join:      break;
+    }
+    return RowStyle::Badge::None;
+}
+
+/// Does a feature belong to the kind the tree is filtered to?
+bool OfKind(const doc::Feature& f, ShellState::TreeKind kind) {
+    using K = ShellState::TreeKind;
+    const auto* sketch = dynamic_cast<const doc::SketchFeature*>(&f);
+    const bool work = dynamic_cast<const doc::WorkPlaneFeature*>(&f) || dynamic_cast<const doc::WorkAxisFeature*>(&f) ||
+                      dynamic_cast<const doc::WorkPointFeature*>(&f);
+    switch (kind) {
+        case K::All:          return true;
+        case K::Operations:   return !sketch && !work;
+        case K::Sketches:     return sketch != nullptr;
+        case K::WorkGeometry: return work;
+        case K::Problems:
+            return f.status.state != doc::FeatureState::Ok || (sketch && sketch->HasBrokenProjections());
+    }
+    return true;
+}
 
 /// Draws a tree row; returns its interaction.
 struct RowResult {
@@ -119,7 +180,9 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     }
     x += ui.S(14);
     if (*style.icon) {
-        ui.icons.Draw(dl, style.icon, {x, p.y + (h - ui.S(16)) / 2}, ui.S(16), {1, 1, 1, style.muted ? 0.45f : 1.0f});
+        const float iy = p.y + (h - ui.S(16)) / 2;
+        ui.icons.Draw(dl, style.icon, {x, iy}, ui.S(16), {1, 1, 1, style.muted ? 0.45f : 1.0f});
+        if (style.badge != RowStyle::Badge::None) DrawBadge(ui, dl, {x + ui.S(13), iy + ui.S(13)}, style.badge, style.muted, style.selected);
         x += ui.S(22);
     }
 
@@ -272,15 +335,43 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         dl->AddText(ui.fonts.strong, ui.S(13), {p.x + ui.S(14), p.y + (h - ui.S(13)) / 2 - ui.S(1)}, ui::ToU32(c.text),
                     Tr("Дерево построения"));
         dl->AddLine({p.x, p.y + h - 1}, {p.x + width, p.y + h - 1}, ui::ToU32(c.dividerSoft));
+        using Kind = ShellState::TreeKind;
+        Kind& kind = app.shell.treeKind;
         ImGui::SetCursorScreenPos({p.x + width - ui.S(38), p.y + ui.S(7)});
-        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск в дереве"), true, app.shell.treeSearch)) {
+        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск и фильтры дерева"), true, app.shell.treeSearch)) {
             app.shell.treeSearch = !app.shell.treeSearch;
             app.shell.treeFilter.clear();
+            if (kind != Kind::Problems) kind = Kind::All;
+        }
+        // Problems at a glance: "⚠ N" beside the search lists only them.
+        int problems = 0;
+        for (const auto& f : d.Features()) problems += OfKind(*f, Kind::Problems) ? 1 : 0;
+        if (problems == 0 && kind == Kind::Problems) kind = Kind::All;
+        if (problems > 0) {
+            const std::string count = std::to_string(problems);
+            const float bw = ui.S(26) + ui.fonts.medium->CalcTextSizeA(ui.S(12), FLT_MAX, 0, count.c_str()).x;
+            const ImVec2 bp{p.x + width - ui.S(44) - bw, p.y + ui.S(7)};
+            ImGui::SetCursorScreenPos(bp);
+            const bool on = kind == Kind::Problems;
+            if (ImGui::InvisibleButton("##tree-problems", {bw, ui.S(26)})) kind = on ? Kind::All : Kind::Problems;
+            const bool hover = ImGui::IsItemHovered();
+            if (on || hover) dl->AddRectFilled(bp, {bp.x + bw, bp.y + ui.S(26)}, ui::ToU32(on ? c.accentSoft : c.hover), ui.S(6));
+            ui.icons.Draw(dl, "status-warning", {bp.x + ui.S(5), bp.y + ui.S(5.5f)}, ui.S(15), Color{1, 1, 1, 1});
+            dl->AddText(ui.fonts.medium, ui.S(12), {bp.x + ui.S(23), bp.y + (ui.S(26) - ui.S(12)) / 2}, ui::ToU32(on ? c.accentHover : c.text),
+                        count.c_str());
+            ui::ItemTooltip(ui, on ? Tr("Показать всё дерево") : Tr("Показать только операции с ошибками и предупреждениями"));
         }
         ImGui::SetCursorScreenPos({p.x, p.y + h});
         if (app.shell.treeSearch) {
             ImGui::SetCursorScreenPos({p.x + ui.S(8), p.y + h + ui.S(6)});
             ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
+            ImGui::SetCursorScreenPos({p.x + ui.S(8), ImGui::GetCursorScreenPos().y + ui.S(4)});
+            static constexpr const char* kKinds[] = {N_("Всё"), N_("Операции"), N_("Эскизы"), N_("Раб. элементы")};
+            const char* labels[std::size(kKinds)];
+            for (std::size_t i = 0; i < std::size(kKinds); ++i) labels[i] = Tr(kKinds[i]);
+            const int current = kind == Kind::Problems ? -1 : static_cast<int>(kind);
+            const int chosen = ui::Segmented(ui, "##tree-kind", labels, current, 4, width - ui.S(16));
+            if (chosen != current && chosen >= 0) kind = static_cast<Kind>(chosen);
             ImGui::Dummy({0, ui.S(4)});
         }
     }
@@ -338,6 +429,14 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         if (const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(f.get()))
             if (!consumedBy.count(op->sketch)) consumedBy[op->sketch] = op->id;
 
+    // The first solid makes the part's body: "new body" is marked only after it.
+    ObjectId firstSolid{};
+    for (const auto& f : d.Features())
+        if (dynamic_cast<const doc::SketchSolidFeature*>(f.get()) && !dynamic_cast<const doc::SheetMetalFeature*>(f.get())) {
+            firstSolid = f->id;
+            break;
+        }
+
     const std::string& filter = app.shell.treeFilter;
     const auto draw = [&](const doc::Feature& f, std::size_t index, int depth, bool hasChildren) {
         if (!filter.empty() && f.name.find(filter) == std::string::npos) return false;
@@ -346,6 +445,7 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         style.caret = hasChildren;
         style.open = app.shell.expanded.count(f.id) > 0;
         style.icon = FeatureIcon(f);
+        style.badge = OperationBadge(f, firstSolid);
         style.selected = session.selectedFeature == f.id || (session.mode == EditMode::Sketch && session.activeSketch == f.id);
         style.muted = !d.IsActive(index) || f.suppressed;
         style.meta = FeatureMeta(f, d);
@@ -449,23 +549,29 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         }
     };
 
-    if (d.EndMarker() == 0) marker();
-    for (std::size_t i = 0; i < d.FeatureCount(); ++i) {
-        const doc::Feature& f = *d.Features()[i];
-        const auto consumer = consumedBy.find(f.id);
-        const bool nested = consumer != consumedBy.end() && d.IndexOf(consumer->second) > static_cast<int>(i);
-        if (!nested) {
-            // Children: sketches this operation consumes.
-            std::vector<std::size_t> children;
-            for (std::size_t j = 0; j < d.FeatureCount(); ++j) {
-                const auto it = consumedBy.find(d.Features()[j]->id);
-                if (it != consumedBy.end() && it->second == f.id && j < i) children.push_back(j);
+    if (app.shell.treeKind != ShellState::TreeKind::All) {
+        // One kind: a flat list, nested sketches included, no end marker.
+        for (std::size_t i = 0; i < d.FeatureCount(); ++i)
+            if (const doc::Feature& f = *d.Features()[i]; OfKind(f, app.shell.treeKind)) draw(f, i, 1, false);
+    } else {
+        if (d.EndMarker() == 0) marker();
+        for (std::size_t i = 0; i < d.FeatureCount(); ++i) {
+            const doc::Feature& f = *d.Features()[i];
+            const auto consumer = consumedBy.find(f.id);
+            const bool nested = consumer != consumedBy.end() && d.IndexOf(consumer->second) > static_cast<int>(i);
+            if (!nested) {
+                // Children: sketches this operation consumes.
+                std::vector<std::size_t> children;
+                for (std::size_t j = 0; j < d.FeatureCount(); ++j) {
+                    const auto it = consumedBy.find(d.Features()[j]->id);
+                    if (it != consumedBy.end() && it->second == f.id && j < i) children.push_back(j);
+                }
+                const bool open = draw(f, i, 1, !children.empty());
+                if (open)
+                    for (std::size_t j : children) draw(*d.Features()[j], j, 2, false);
             }
-            const bool open = draw(f, i, 1, !children.empty());
-            if (open)
-                for (std::size_t j : children) draw(*d.Features()[j], j, 2, false);
+            if (i + 1 == d.EndMarker()) marker();
         }
-        if (i + 1 == d.EndMarker()) marker();
     }
 
     if (d.FeatureCount() == 0) {

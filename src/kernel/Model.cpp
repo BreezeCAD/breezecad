@@ -1549,10 +1549,12 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                      return occt::MakeRevolution(faces, *rev, profile.sketch, frame);
                                  });
             } else if (auto* fillet = dynamic_cast<doc::FilletFeature*>(&f)) {
+                std::string partly;
                 ApplyEdgeFeature(*fillet, bodies, fillet->status,
                                  [&](const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, const std::vector<std::size_t>&) {
-                                     return occt::MakeFillet(body, edges, fillet->radius.value);
+                                     return occt::MakeFillet(body, edges, fillet->radius.value, &partly);
                                  });
+                if (!partly.empty() && fillet->status.state == FeatureState::Ok) fillet->status = {FeatureState::Warning, partly};
             } else if (auto* chamfer = dynamic_cast<doc::ChamferFeature*>(&f)) {
                 ApplyEdgeFeature(*chamfer, bodies, chamfer->status,
                                  [&](const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, const std::vector<std::size_t>& kept) {

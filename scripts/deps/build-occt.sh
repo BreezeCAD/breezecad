@@ -52,6 +52,12 @@ SRC=$(cd "$SRC" && pwd)
 native() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
 ARGS=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$(native "$PREFIX")")
+# ccache, when the caller has it (CI keeps the folder in the Actions cache):
+# a rebuild after a flag's change reuses the objects of unchanged sources
+# instead of compiling OCCT for three-quarters of an hour.
+if command -v ccache >/dev/null 2>&1; then
+    ARGS+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
 LIBTYPE=Shared
 FREETYPE=system
 

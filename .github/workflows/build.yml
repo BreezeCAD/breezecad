@@ -44,6 +44,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 60   # the OCCT first build is ~45 min; a hung job must not sit for 6 h
     env:
       BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     permissions:
@@ -81,6 +82,7 @@ jobs:
             mingw-w64-x86_64-glfw
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-ccache
             mingw-w64-x86_64-gdb
             mingw-w64-x86_64-python
             git
@@ -91,15 +93,25 @@ jobs:
         id: occt-key
         run: |
           echo "prefix=$(cygpath -m "$GITHUB_WORKSPACE")/.deps/occt" >> "$GITHUB_OUTPUT"
+          echo "key-prefix=occt-windows-mingw-gcc$(gcc -dumpfullversion)-" >> "$GITHUB_OUTPUT"
           echo "key=occt-windows-mingw-gcc$(gcc -dumpfullversion)-${{ hashFiles('scripts/deps/build-occt.sh') }}" >> "$GITHUB_OUTPUT"
+          # ccache (restored below): one folder for the BreezeCAD and OCCT objects.
+          echo "CCACHE_DIR=$(cygpath -u "$GITHUB_WORKSPACE")/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
       - name: Restore OCCT
         id: occt
         uses: actions/cache/restore@v4
         with:
           path: .deps/occt
           key: ${{ steps.occt-key.outputs.key }}
+          # A new branch has no entry of its own: take a compatible OCCT from
+          # another branch instead of building for 45 minutes. The exact key
+          # still wins when it exists. The build/save steps react to what was
+          # actually matched (cache-matched-key), not to an exact hit.
+          restore-keys: ${{ steps.occt-key.outputs.key-prefix }}
       - name: Build OCCT (first run)
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         run: |
           set +e
           CMAKE_PREFIX_PATH=/mingw64 SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh windows .deps/occt > occt.log 2>&1
@@ -110,23 +122,29 @@ jobs:
           exit $status
       # Saved before BreezeCAD builds: a failing build must not cost OCCT again.
       - name: Save OCCT
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
           path: .deps/occt
           key: ${{ steps.occt-key.outputs.key }}
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-windows-
       - name: Versions
         run: |
           g++ --version | head -1
           cmake --version | head -1
           occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
-          echo "::notice title=Windows toolchain::$(g++ -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }})"
+          echo "::notice title=Windows toolchain::$(g++ -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || (steps.occt.outputs.cache-matched-key != '' && 'older entry') || 'built' }})"
           cat .deps/occt/occt-build.txt
           echo "OCCT_PREFIX=${{ steps.occt-key.outputs.prefix }}" >> "$GITHUB_ENV"
       - name: Configure
         # The online installer looks for its files in the release it belongs to:
         # main → the latest numbered release, anything else → next-build.
-        run: OCCT_DIR=$OCCT_PREFIX/lib/cmake/opencascade cmake --preset windows-mingw -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
+        run: OCCT_DIR=$OCCT_PREFIX/lib/cmake/opencascade cmake --preset windows-mingw -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
       - name: Module packages (from their repositories)
         shell: bash   # Git Bash: gh is there, not in MSYS2
         env:
@@ -137,6 +155,13 @@ jobs:
         run: |
           export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"   # tests listed at build time load OCCT
           cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Save ccache
+        # Even a failed build warms the cache: the objects it made are good.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test
         run: |
           set +e +o pipefail   # the msys2 shell runs with -e: keep going to name the crash
@@ -156,12 +181,16 @@ jobs:
           if [ $status -ne 0 ]; then
             exe=$(find build/windows-mingw -name bz_tests.exe | head -1)
             timeout 1200 "$exe" -d 2>&1 | grep -vE "WARN|INFO|^$|^=+$" | tail -12 | sed 's/^/last cases: /' | tee -a test.log
-            # Each test case alone: names every one that crashes.
+            # Each test case alone: names the ones that crash. A budget — the
+            # first 20, 60 s each: a widely broken build named enough, and the
+            # step cannot run for hours.
+            n=0
             "$exe" -ltc --no-version 2>/dev/null | grep -vE "^\[doctest\]|^=+$|^$" | while IFS= read -r name; do
-              timeout 300 "$exe" -tc="${name//,/\\,}" >/dev/null 2>&1 || echo "crashes, fails or hangs: $name"
+              timeout 60 "$exe" -tc="${name//,/\\,}" >/dev/null 2>&1 || echo "crashes, fails or hangs: $name"
+              n=$((n+1)); [ $n -ge 20 ] && break
             done | tee -a test.log
             # And once more under gdb for the backtrace of the first crash (frames only).
-            timeout 1200 gdb -batch -ex run -ex bt --args "$exe" 2>&1 | grep -E "^#[0-9]+ " | head -40 \
+            timeout 300 gdb -batch -ex run -ex bt --args "$exe" 2>&1 | grep -E "^#[0-9]+ " | head -40 \
               | sed -E 's/^(#[0-9]+) +0x[0-9a-f]+ in /\1 /; s/ from .*//' | sed 's/^/gdb: /' | tee -a test.log
           fi
           exit $status
@@ -317,6 +346,7 @@ jobs:
     # same compiler): the package runs on distributions from 2019 on; the
     # system's own packages would tie it to the build machine's glibc.
     runs-on: ubuntu-24.04
+    timeout-minutes: 60   # the OCCT first build is ~40 min; a hung job must not sit for 6 h
     env:
       BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     permissions:
@@ -356,10 +386,21 @@ jobs:
             channels:
               - conda-forge
           create-args: >-
-            cmake ninja gxx_linux-64=13 sysroot_linux-64=2.28
+            cmake ninja ccache gxx_linux-64=13 sysroot_linux-64=2.28
             freetype fontconfig expat glfw libgl-devel xorg-libx11 xorg-libxi
             xorg-libxrandr xorg-libxinerama xorg-libxcursor xorg-libxext xorg-xorgproto
           cache-environment: true
+      - name: ccache setup
+        run: |
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-linux-
       # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
       # ADR-0001), kept in the Actions cache.
       - name: Restore OCCT
@@ -368,8 +409,12 @@ jobs:
         with:
           path: .deps/occt
           key: occt-linux-conda-gcc13-glibc228-${{ hashFiles('scripts/deps/build-occt.sh') }}
+          # A new branch takes a compatible OCCT from another branch instead
+          # of building for 40 minutes; the exact key still wins. Build/save
+          # react to what was actually matched, not to an exact hit.
+          restore-keys: occt-linux-conda-gcc13-glibc228-
       - name: Build OCCT (first run)
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         run: |
           set +e
           # Three at a time, as the BreezeCAD build below: four ran the runner out of memory.
@@ -380,7 +425,7 @@ jobs:
           [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' occt.log | head -80
           exit $status
       - name: Save OCCT
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
           path: .deps/occt
@@ -412,10 +457,11 @@ jobs:
         run: |
           $CXX --version | head -1
           occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
-          echo "::notice title=Linux toolchain::$($CXX -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }}), GLFW $(grep -h 'define GLFW_VERSION_M' "$CONDA_PREFIX"/include/GLFW/glfw3.h | awk '{printf "%s.", $3}')"
+          echo "::notice title=Linux toolchain::$($CXX -dumpfullversion), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || (steps.occt.outputs.cache-matched-key != '' && 'older entry') || 'built' }}), GLFW $(grep -h 'define GLFW_VERSION_M' "$CONDA_PREFIX"/include/GLFW/glfw3.h | awk '{printf "%s.", $3}')"
           cat .deps/occt/occt-build.txt
       - name: Configure
         run: cmake --preset linux-release -DCMAKE_PREFIX_PATH="$PWD/.deps/occt;$CONDA_PREFIX" -DOpenCASCADE_DIR="$PWD/.deps/occt/lib/cmake/opencascade"
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DBZ_SETUP_STATIC_GLFW=ON -DBZ_SETUP_CHANNEL=${{ github.ref == 'refs/heads/main' && 'latest' || 'next-build' }}
       - name: Module packages (from their repositories)
         env:
@@ -437,6 +483,12 @@ jobs:
             echo "::notice title=Build again::exit $status: $(tail -8 build.log | tr '\n' ' ' | cut -c1-900)"
           fi
           exit $status
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.run_id }}-${{ github.run_attempt }}
       # No pipes here: in this login shell a pipe's status came out as 1 for a
       # clean run (ctest passed, the step failed).
       - name: Test
@@ -444,9 +496,10 @@ jobs:
           set +e
           start=$(date +%s)
           if [ -n "$BZ_TEST_FILTER" ]; then
-            ./build/linux-release/bin/bz_tests $BZ_TEST_FILTER > test.log 2>&1
+            # A time limit: a hung test fails with its name, not in 6 hours.
+            timeout 1200 ./build/linux-release/bin/bz_tests $BZ_TEST_FILTER > test.log 2>&1
           else
-            ctest --preset linux-release --output-on-failure > test.log 2>&1
+            ctest --preset linux-release --output-on-failure --timeout 1200 > test.log 2>&1
           fi
           status=$?
           tail -5 test.log
@@ -608,6 +661,7 @@ jobs:
     # Apple Silicon only (arm64); Homebrew's bottles here are built for
     # macOS 15, which is the oldest system the app supports (macos-14 retired 2.11.2026).
     runs-on: macos-15
+    timeout-minutes: 45   # the OCCT first build fits; a hung job must not sit for 6 h
     env:
       BZ_CORPUS_TOKEN: ${{ secrets.BZ_CORPUS_TOKEN }}
     steps:
@@ -630,20 +684,29 @@ jobs:
           echo "BZ_CORPUS_DIR=${{ github.workspace }}/.corpus" >> "$GITHUB_ENV"
           echo "::notice title=Reference parts::private: $(find .corpus -name '*.bzc' | wc -l) parts"
       - name: Dependencies
-        run: brew install ninja glfw freetype dylibbundler
+        run: brew install ninja glfw freetype dylibbundler ccache
       # OCCT: our own build, the same on every system (scripts/deps/build-occt.sh,
       # ADR-0001), kept in the Actions cache. The key: the script and the compiler.
       - name: OCCT cache key
         id: occt-key
-        run: echo "key=occt-macos-arm64-$(clang++ --version | head -1 | tr -cd '[:alnum:].-' | cut -c1-60)-${{ hashFiles('scripts/deps/build-occt.sh') }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "key-prefix=occt-macos-arm64-$(clang++ --version | head -1 | tr -cd '[:alnum:].-' | cut -c1-60)-" >> "$GITHUB_OUTPUT"
+          echo "key=occt-macos-arm64-$(clang++ --version | head -1 | tr -cd '[:alnum:].-' | cut -c1-60)-${{ hashFiles('scripts/deps/build-occt.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
       - name: Restore OCCT
         id: occt
         uses: actions/cache/restore@v4
         with:
           path: .deps/occt
           key: ${{ steps.occt-key.outputs.key }}
+          # A new branch takes a compatible OCCT from another branch instead
+          # of building for 20 minutes; the exact key still wins. Build/save
+          # react to what was actually matched, not to an exact hit.
+          restore-keys: ${{ steps.occt-key.outputs.key-prefix }}
       - name: Build OCCT (first run)
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         run: |
           set +e
           CMAKE_PREFIX_PATH="$(brew --prefix)" SRC="$RUNNER_TEMP/occt-src" bash scripts/deps/build-occt.sh macos "$PWD/.deps/occt" > occt.log 2>&1
@@ -653,20 +716,27 @@ jobs:
           [ $status -eq 0 ] || grep -E -A12 'FAILED:|error:|Error|Killed|internal compiler' occt.log | head -80
           exit $status
       - name: Save OCCT
-        if: steps.occt.outputs.cache-hit != 'true'
+        if: steps.occt.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
           path: .deps/occt
           key: ${{ steps.occt-key.outputs.key }}
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-macos-
       - name: Versions
         run: |
           clang++ --version | head -1
           occt=$(awk '/define OCC_VERSION_COMPLETE/ {gsub(/"/, "", $3); print $3}' .deps/occt/include/opencascade/Standard_Version.hxx)
-          echo "::notice title=macOS toolchain::$(sw_vers -productVersion) $(uname -m), $(clang++ --version | head -1), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || 'built' }}), GLFW $(brew list --versions glfw | awk '{print $2}')"
+          echo "::notice title=macOS toolchain::$(sw_vers -productVersion) $(uname -m), $(clang++ --version | head -1), OCCT $occt (cache: ${{ steps.occt.outputs.cache-hit == 'true' && 'hit' || (steps.occt.outputs.cache-matched-key != '' && 'older entry') || 'built' }}), GLFW $(brew list --versions glfw | awk '{print $2}')"
           cat .deps/occt/occt-build.txt
           echo "BZ_OCCT_PREFIX=$PWD/.deps/occt" >> "$GITHUB_ENV"
       - name: Configure
         run: cmake --preset macos -DCMAKE_PREFIX_PATH="$BZ_OCCT_PREFIX;$(brew --prefix)" -DOpenCASCADE_DIR="$BZ_OCCT_PREFIX/lib/cmake/opencascade"
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Module packages (from their repositories)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -674,12 +744,19 @@ jobs:
       - name: Build
         id: build
         run: cmake --build --preset macos 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test
         run: |
+          # A time limit: a hung test fails with its name, not in 6 hours.
           if [ -n "$BZ_TEST_FILTER" ]; then
-            ./build/macos/bin/bz_tests $BZ_TEST_FILTER 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+            timeout 1200 ./build/macos/bin/bz_tests $BZ_TEST_FILTER 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
           fi
-          ctest --preset macos --output-on-failure 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+          ctest --preset macos --output-on-failure --timeout 1200 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
       - name: Report failures
         if: failure()
         run: bash scripts/ci-annotate.sh build.log test.log
@@ -693,8 +770,10 @@ jobs:
           [ "$n" -gt 0 ] || { echo "::error title=Package::no OCCT libraries in the macOS package"; exit 1; }
       # Finder's side: the types are the app's, Quick Look draws the picture a
       # part keeps inside (the thumbnail extension), the disk image mounts.
+      # Push runs only: it takes ~5 minutes and a pull request loses nothing
+      # that the start check does not already cover.
       - name: File types, thumbnails and the disk image
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && github.event_name == 'push' }}
         continue-on-error: true
         timeout-minutes: 5   # Quick Look / mdls hung for hours on macos-15
         run: |
@@ -782,6 +861,7 @@ jobs:
     needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write   # to update the next-build pre-release
     steps:
@@ -844,6 +924,7 @@ jobs:
     needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -896,6 +977,7 @@ jobs:
     needs: [windows, linux, macos]
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/next' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

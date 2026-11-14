@@ -1,5 +1,7 @@
 #include "kernel/occt/EdgeMatch.h"
 
+#include "core/Log.h"
+
 #include <BRepAdaptor_Curve.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -142,6 +144,24 @@ double Score(const EdgeReference& ref, const EdgeReference& candidate, double si
     return faces * 100.0 + radius * 10.0 + nearness;
 }
 
+/// Writes to the log when the match for `ref` is doubtful: other edges of
+/// the same kind between the same faces exist (only the distance to the old
+/// middle told them apart — a slot cut through a filleted edge leaves its own
+/// edge facing the same two ways), or only one of the edge's two faces is
+/// still recognised.
+void LogDoubtfulMatch(const EdgeReference& ref, const Vec3& took, int alike, double second, double best) {
+    const Vec3& m = ref.middle;
+    // Found right where it was: nothing to doubt, nothing to write (a part
+    // with forty equal chamfered holes would fill the log on every rebuild).
+    if ((took - m).Length() < 1e-6) return;
+    if (alike > 1)
+        log::Info("refs: {} alike edges for the one at ({:.3f}, {:.3f}, {:.3f}); took the nearest, {:.3f} mm from it "
+                  "(next differs by {:.4f})",
+                  alike, m.x, m.y, m.z, (took - m).Length(), best - second);
+    else if (best < 200.0)
+        log::Info("refs: weak edge match at ({:.3f}, {:.3f}, {:.3f}): one of its two faces not recognised", m.x, m.y, m.z);
+}
+
 } // namespace
 
 doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& body) {
@@ -170,14 +190,33 @@ std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::Edge
 
     std::vector<std::optional<TopoDS_Edge>> found;
     for (const EdgeReference& ref : refs) {
-        double best = -1;
+        double best = -1, second = -1;
         std::optional<TopoDS_Edge> match;
-        for (const auto& [edge, sig] : candidates)
-            if (const double s = Score(ref, sig, size); s > best) {
+        Vec3 took;
+        for (const auto& [edge, sig] : candidates) {
+            const double s = Score(ref, sig, size);
+            if (s > best) {
+                second = best;
                 best = s;
                 match = edge;
+                took = sig.middle;
+            } else if (s > second) {
+                second = s;
             }
+        }
         found.push_back(match);
+        // Alike: the same faces and (nearly) the same radius — the score
+        // differs only in nearness, which is below 1. Counted only when it
+        // matters: another candidate came that close.
+        int alike = 1;
+        if (match && second > best - 1.0)
+            for (const auto& [edge, sig] : candidates)
+                if (!edge.IsSame(*match) && Score(ref, sig, size) > best - 1.0) ++alike;
+        // Diagnostics only (stab/fc-ideas): the choice is the same as before.
+        // Data from real parts decides whether such a match becomes an error
+        // ("found ambiguously: pick it again"), as FreeCAD takes a drifted
+        // reference only when the match is unique.
+        if (match) LogDoubtfulMatch(ref, took, alike, second, best);
     }
     return found;
 }

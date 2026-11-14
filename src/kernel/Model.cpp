@@ -1161,6 +1161,13 @@ bool FollowSupport(doc::SketchFeature& sk, const doc::Document& doc, const std::
         return true;
     }
     if (!p.onFace || !p.face.IsSet()) return true;
+    // The face was made by `support`: with that feature suppressed or rolled
+    // back the face is gone, and a portrait match anywhere else is another
+    // face (a sketch on a suppressed boss took the plate's top, 10 mm lower).
+    if (const doc::Feature* support = doc.Find(p.support)) {
+        const int at = doc.IndexOf(p.support);
+        if (support->suppressed || (at >= 0 && !doc.IsActive(static_cast<std::size_t>(at)))) return false;
+    }
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
         if (const auto plane = occt::ResolvePlaneFrame(it->shape, p.face)) {
             // The face's clean plane (FaceMatch), not the normal stored when

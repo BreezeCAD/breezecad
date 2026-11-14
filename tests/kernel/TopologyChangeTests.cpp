@@ -145,9 +145,11 @@ TEST_CASE("a filleted edge split by an earlier slot keeps the fillet on both pie
 
 // A sketch on the top face of a boss; then the boss is suppressed, so that
 // face is gone. Inventor: the sketch is "sick" — it says its face is lost.
-// We take the nearest face facing the same way (the plate's top, 10 mm
-// lower) and say nothing.
-TEST_CASE("a sketch whose face is gone says so instead of moving to another face" * doctest::may_fail()) {
+// We took the nearest face facing the same way (the plate's top, 10 mm
+// lower) and said nothing. Now the sketch's support decides: with the
+// feature that made the face suppressed, the face is gone, whatever still
+// matches its portrait (stab/fc-ideas, BETA-BUGS №13).
+TEST_CASE("a sketch whose face is gone says so instead of moving to another face") {
     doc::Document d;
     auto& base = AddSketch(d);
     AddRect(d, base, {0, 0}, {40, 40});

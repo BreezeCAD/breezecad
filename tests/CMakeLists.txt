@@ -21,6 +21,7 @@ add_executable(bz_tests
     drawing/BalloonTests.cpp
     drawing/DimensionTests.cpp
     drawing/DrawingTests.cpp
+    drawing/DxfTests.cpp
     drawing/DrawingViewTests.cpp
     drawing/PdfTests.cpp
     drawing/SectionTests.cpp

@@ -1061,6 +1061,9 @@ void RegisterDrawingActions(AppContext& app) {
            inDrawing, [&app] { AddSpecification(app); }, 0, N_("спецификация bom перечень состав сборки")});
     a.Add({"file.exportPdf", N_("Экспорт в PDF"), "export", 0, N_("Все листы чертежа — страницами в натуральную величину, для печати и отправки"),
            inDrawing, [&app] { ExportDocument(app, ExportFormat::Pdf); }, 0, N_("пдф печать вывод")});
+    a.Add({"file.exportDxf", N_("Экспорт в DXF"), "export", 0,
+           N_("Все листы чертежа в один DXF, в натуральную величину: для ЧПУ, лазера и других САПР"), inDrawing,
+           [&app] { ExportDocument(app, ExportFormat::Dxf); }, 0, N_("дхф автокад чпу вывод")});
     a.Add({"drawing.removeSheet", N_("Удалить лист"), "ui-trash", 0, N_("Убрать текущий лист из чертежа (Ctrl+Z вернёт)"),
            [&app] { DrawingState* d = ActiveDrawing(app); return d && d->drawing.sheets.size() > 1; }, [&app] {
                DrawingState* d = ActiveDrawing(app);
@@ -1118,6 +1121,7 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
             sink.EndGroup();
             sink.BeginGroup(N_("Вывод"));
             sink.Large("file.exportPdf", N_("Экспорт\nв PDF"));
+            sink.Large("file.exportDxf", N_("Экспорт\nв DXF"));
             sink.EndGroup();
             break;
     }

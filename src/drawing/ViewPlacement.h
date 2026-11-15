@@ -14,6 +14,8 @@ namespace bz::drawing {
 
 /// The model's box seen from `direction` at 1:1, the model's origin at (0, 0).
 Box2 Extent(ViewDirection direction, const Box3& model);
+/// The same for a view (a section has its own direction).
+Box2 Extent(const View& view, const Box3& model);
 
 /// Where views may go: inside the frame (10 mm in), off the title block,
 /// graph 26 and `taken` (views already there).

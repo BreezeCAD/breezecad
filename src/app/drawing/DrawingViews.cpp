@@ -96,11 +96,13 @@ Session* DrawingViews::SessionOf(Workspace& ws, DrawingState& d, ObjectId id, st
     return src->session.get();
 }
 
-void DrawingViews::Start(ObjectId view, const std::string& key, const kernel::ViewShapes& shapes, dw::ViewDirection direction) {
-    const dw::ViewBasis b = dw::BasisOf(direction);
-    myJobView = view;
+void DrawingViews::Start(const dw::View& view, const std::string& key, const kernel::ViewShapes& shapes) {
+    const dw::ViewBasis b = dw::BasisOf(view);
+    std::optional<kernel::CutPlane> cut;
+    if (view.section) cut = kernel::CutPlane{view.section->point, view.section->eye};
+    myJobView = view.id;
     myJobKey = key;
-    myJob = std::async(std::launch::async, [shapes, b] { return shapes.Project(b.eye, b.up); });
+    myJob = std::async(std::launch::async, [shapes, b, cut] { return shapes.Project(b.eye, b.up, cut); });
 }
 
 void DrawingViews::Poll() {
@@ -122,6 +124,7 @@ void DrawingViews::Poll() {
     for (const auto& m : result->marks) e.lines.marks.push_back({m.center, m.radius});
     e.lines.axes.clear();
     for (const auto& a : result->axes) e.lines.axes.push_back({a.a, a.b});
+    e.lines.sections = std::move(result->sections);
 }
 
 const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const dw::View& view) {
@@ -136,7 +139,11 @@ const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const d
         e.problem = problem;
         return nullptr;
     }
-    const std::string key = sourceKey + "|" + std::string(dw::DirectionId(view.direction));
+    std::string key = sourceKey + "|" + std::string(dw::DirectionId(view.direction));
+    if (view.section) {   // a section: its plane and sight too
+        const dw::SectionCut& c = *view.section;
+        key += std::format("|{},{},{}|{},{},{}|{},{},{}", c.point.x, c.point.y, c.point.z, c.eye.x, c.eye.y, c.eye.z, c.up.x, c.up.y, c.up.z);
+    }
     if (e.key == key) return e.ready ? &e.lines : nullptr;
     const bool computing = myJob.valid() && myJobView == view.id && myJobKey == key;
     if (!computing && !myJob.valid()) {
@@ -148,7 +155,7 @@ const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const d
             return nullptr;
         }
         e.problem.clear();
-        Start(view.id, key, shapes, view.direction);
+        Start(view, key, shapes);
     }
     // Meanwhile the lines it had (a model being edited), if any.
     return e.ready ? &e.lines : nullptr;
@@ -214,7 +221,7 @@ std::optional<dw::ModelEdge> DrawingViews::EdgeAt(Workspace& ws, DrawingState& d
                                                   dw::Json& ref) {
     const kernel::ViewShapes shapes = Shapes(ws, d, view.model);
     if (shapes.Empty()) return std::nullopt;
-    const dw::ViewBasis b = dw::BasisOf(view.direction);
+    const dw::ViewBasis b = dw::BasisOf(view);
     const double s = view.scale.Value();
     const auto picked = shapes.EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s);
     if (!picked) return std::nullopt;

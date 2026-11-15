@@ -28,6 +28,15 @@ struct ProjectedLines {
     };
     std::vector<Mark> marks;   ///< round faces seen end on
     std::vector<Axis> axes;    ///< round faces seen from the side
+    /// A section (ADR-0012, step 6): the faces on the cutting plane, each as
+    /// its closed loops (outer and holes) — hatched by the drawing.
+    std::vector<std::vector<std::vector<Vec2>>> sections;
+};
+
+/// The plane a section view cuts the model with: what is on the `normal`
+/// side of it (toward the viewer) is taken away.
+struct CutPlane {
+    Vec3 point, normal;
 };
 
 /// An edge of the model as it is: the ends of a line, the centre, axis and
@@ -56,7 +65,8 @@ public:
     /// `eye` — toward the viewer, `up` — up on the sheet (DrawingView.h,
     /// BasisOf); x of the result is up × eye. Smooth edges (between faces
     /// that meet tangentially: fillets) are left out, as ЕСКД draws them.
-    Expected<ProjectedLines> Project(Vec3 eye, Vec3 up) const;
+    /// `cut` — a section: the model cut first, its faces on the plane given too.
+    Expected<ProjectedLines> Project(Vec3 eye, Vec3 up, const std::optional<CutPlane>& cut = std::nullopt) const;
 
     /// The edge of the bodies nearest to `p` (the view's plane at 1:1, as
     /// Project gives it) within `tolerance`; of edges that look the same from

@@ -87,7 +87,7 @@ private:
     };
     /// The model of `id` now: an open tab's or one read here; nullptr and `problem` if none.
     Session* SessionOf(Workspace& ws, DrawingState& d, ObjectId id, std::string& sourceKey, std::string& problem);
-    void Start(ObjectId view, const std::string& key, const kernel::ViewShapes& shapes, drawing::ViewDirection direction);
+    void Start(const drawing::View& view, const std::string& key, const kernel::ViewShapes& shapes);
 
     std::map<std::string, std::unique_ptr<Source>> mySources;   ///< by file
     std::map<std::string, std::pair<std::string, kernel::ViewShapes>> myShapes;   ///< by model: its state and its bodies then

@@ -196,6 +196,23 @@ void AddView(SheetLayout& out, const View& view, const ViewLines& lines) {
         for (Vec2 p : points) line.points.push_back(place(p));
         out.polylines.push_back(std::move(line));
     };
+    // A section: its cut faces hatched (under the contour lines).
+    for (const auto& face : lines.sections) {
+        std::vector<std::vector<Vec2>> loops;
+        Box2 box;
+        for (const auto& loop : face) {
+            std::vector<Vec2> on;
+            for (Vec2 p : loop) {
+                on.push_back(place(p));
+                box.Include(on.back());
+            }
+            loops.push_back(std::move(on));
+        }
+        if (box.IsEmpty()) continue;
+        // ГОСТ 2.306: 1–10 mm apart, by the size of the face (chosen: a tenth of its smaller side, 1.5–5 mm).
+        const double step = std::clamp(std::min(box.max.x - box.min.x, box.max.y - box.min.y) / 10, 1.5, 5.0);
+        for (Polyline& p : Hatch(loops, step)) out.polylines.push_back(std::move(p));
+    }
     if (view.hidden)
         for (const auto& l : lines.hidden) add(l, LineWeight::Thin, LineStyle::Dashed);
     for (const auto& l : lines.visible) add(l, LineWeight::Thick, LineStyle::Solid);
@@ -214,6 +231,84 @@ void AddView(SheetLayout& out, const View& view, const ViewLines& lines) {
         const Vec2 step = d * (kAxisOverrun / len);
         out.polylines.push_back({{p - step, q + step}, LineWeight::Thin, LineStyle::DashDot});
     }
+}
+
+std::vector<Polyline> Hatch(const std::vector<std::vector<Vec2>>& loops, double step, double angleDeg) {
+    std::vector<Polyline> out;
+    if (step <= 0) return out;
+    const double a = angleDeg * kPi / 180.0;
+    const Vec2 dir{std::cos(a), std::sin(a)}, across{-dir.y, dir.x};
+    // Lines along `dir`, one every `step` across it; each cut where it crosses the loops.
+    double lo = 1e300, hi = -1e300;
+    for (const auto& l : loops)
+        for (Vec2 p : l) {
+            lo = std::min(lo, p.Dot(across));
+            hi = std::max(hi, p.Dot(across));
+        }
+    if (lo > hi) return out;
+    for (double c = std::ceil(lo / step) * step; c <= hi; c += step) {
+        std::vector<double> ts;
+        for (const auto& l : loops)
+            for (std::size_t i = 0; i < l.size(); ++i) {
+                const Vec2 p = l[i], q = l[(i + 1) % l.size()];
+                const double dp = p.Dot(across) - c, dq = q.Dot(across) - c;
+                if ((dp < 0) == (dq < 0)) continue;   // the half-open rule: a vertex on the line counts once
+                const double t = dp / (dp - dq);
+                ts.push_back((p + (q - p) * t).Dot(dir));
+            }
+        std::sort(ts.begin(), ts.end());
+        for (std::size_t i = 0; i + 1 < ts.size(); i += 2) {
+            if (ts[i + 1] - ts[i] < 1e-9) continue;
+            out.push_back({{across * c + dir * ts[i], across * c + dir * ts[i + 1]}, LineWeight::Thin, LineStyle::Solid});
+        }
+    }
+    return out;
+}
+
+void AddCuttingLine(SheetLayout& out, const View& parent, const View& section) {
+    if (!section.section) return;
+    const SectionCut& cut = *section.section;
+    const double s = parent.scale.Value();
+    const Vec2 a = parent.at + cut.a * s, b = parent.at + cut.b * s;
+    const Vec2 ab = b - a;
+    const double len = ab.Length();
+    if (len < 1e-6) return;
+    const Vec2 t = ab / len;
+    // The sight on the parent's sheet: the cut's sight (−eye) in the parent's plane.
+    const ViewBasis pb = BasisOf(parent);
+    const Vec3 right = pb.up.Cross(pb.eye).Normalized();
+    const Vec3 sight = cut.eye.Normalized() * -1;
+    Vec2 n{sight.Dot(right), sight.Dot(pb.up)};
+    if (n.Length() < 1e-6) return;
+    n = n.Normalized();
+    // ГОСТ 2.303: strokes 8–20 mm (chosen 10, shorter on a short line); the arrow
+    // 2–3 mm from the stroke's outer end, its tip on the stroke (chosen 2.5).
+    const double stroke = std::min(10.0, len / 3);
+    constexpr double kArrowShaft = 8, kLetterHeight = 7;   // letters about twice the dimension figures (ГОСТ 2.316, not checked)
+    for (const auto& [end, inward] : {std::pair{a, t}, std::pair{b, t * -1}}) {
+        out.strokes.push_back({end, end + inward * stroke, LineWeight::Thick});
+        const Vec2 tip = end + inward * 2.5;
+        const Vec2 tail = tip - n * kArrowShaft;
+        out.polylines.push_back({{tail, tip}, LineWeight::Thin, LineStyle::Solid});
+        const Vec2 back = tip - n * kArrowLength, w = Vec2{-n.y, n.x} * kArrowHalfWidth;
+        out.fills.push_back({{tip, back + w, back - w}});
+        Label l;
+        l.text   = cut.letter;
+        l.height = kLetterHeight;
+        l.align  = Align::Center;
+        l.at     = tail - inward * 4 - Vec2{0, kLetterHeight / 2};
+        out.labels.push_back(std::move(l));
+    }
+}
+
+void AddSectionLabel(SheetLayout& out, const View& section, const Box2& box) {
+    if (!section.section || box.IsEmpty()) return;
+    Label l;
+    l.text   = section.section->letter + "\u2013" + section.section->letter;   // «А–А», ГОСТ 2.305
+    l.height = 7;
+    l.align  = Align::Center;
+    l.at     = {(box.min.x + box.max.x) / 2, box.max.y + 5};
+    out.labels.push_back(std::move(l));
 }
 
 Box2 ViewBox(const View& view, const ViewLines& lines) {
@@ -387,7 +482,15 @@ SheetLayout LayoutPage(const Drawing& drawing, const Page& page, const SheetCont
     const std::vector<View> views = ViewsOf(sheet);
     if (content.lines)
         for (const View& v : views)
-            if (const ViewLines* l = content.lines(sheet, v)) AddView(out, v, *l);
+            if (const ViewLines* l = content.lines(sheet, v)) {
+                AddView(out, v, *l);
+                AddSectionLabel(out, v, ViewBox(v, *l));
+            }
+    // Cutting lines of the sections, on the views they cut.
+    for (const View& v : views)
+        if (v.section)
+            for (const View& parent : views)
+                if (parent.id == v.section->of) AddCuttingLine(out, parent, v);
     // Dimensions over the views; one whose view is gone is not drawn (it stays in the file).
     if (content.edges)
         for (const Dimension& dim : DimensionsOf(sheet)) {

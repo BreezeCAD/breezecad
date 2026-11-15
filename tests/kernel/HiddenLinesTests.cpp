@@ -189,4 +189,49 @@ TEST_CASE("dimension edges: the golden drawing's dimensions on the bracket they 
     CHECK(values[2] == doctest::Approx(90));
 }
 
+TEST_CASE("section: the plate cut at half its height — the cut face with the hole in it") {
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(Plate());
+    // As MakeCut makes it for a horizontal line through the front view, the section put under it.
+    const auto lines = shapes.Project({0, 0, 1}, {0, 1, 0}, kernel::CutPlane{{0, 0, 15}, {0, 0, 1}});
+    REQUIRE(lines);
+    REQUIRE(lines->sections.size() == 1);
+    REQUIRE(lines->sections[0].size() == 2);   // the outline and the hole
+    Box2 outer, inner;
+    for (Vec2 p : lines->sections[0][0]) outer.Include(p);
+    for (Vec2 p : lines->sections[0][1]) inner.Include(p);
+    if (outer.max.x - outer.min.x < inner.max.x - inner.min.x) std::swap(outer, inner);
+    CHECK(outer.max.x - outer.min.x == doctest::Approx(120).epsilon(1e-6));
+    CHECK(outer.max.y - outer.min.y == doctest::Approx(80).epsilon(1e-6));
+    CHECK(inner.max.x - inner.min.x == doctest::Approx(10).epsilon(1e-3));
+    // The upper half is gone: nothing of z above 15 is left to see.
+    const Box2 seen = BoxOf(lines->visible);
+    CHECK(seen.max.x == doctest::Approx(60).epsilon(1e-6));
+    // A plane that misses the part: no cut faces.
+    const auto off = shapes.Project({0, 0, 1}, {0, 1, 0}, kernel::CutPlane{{0, 0, 50}, {0, 0, 1}});
+    REQUIRE(off);
+    CHECK(off->sections.empty());
+}
+
+TEST_CASE("section: the golden drawing's sections of the bracket have cut faces") {
+    const std::filesystem::path data = std::filesystem::path(BZ_SOURCE_DIR) / "tests" / "data";
+    auto part = doc::LoadBzc(data / "кронштейн.bzc");
+    REQUIRE(part);
+    kernel::Model model;
+    model.Rebuild(*part);
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(model);
+    const auto drawing = drawing::LoadDrawing(data / "drawings" / "v1" / "a3-sections.bzd");
+    REQUIRE(drawing);
+    int sections = 0;
+    for (const drawing::View& v : drawing::ViewsOf(drawing->sheets.front())) {
+        if (!v.section) continue;
+        ++sections;
+        const drawing::ViewBasis b = drawing::BasisOf(v);
+        const auto lines = shapes.Project(b.eye, b.up, kernel::CutPlane{v.section->point, v.section->eye});
+        REQUIRE(lines);
+        CHECK_FALSE(lines->sections.empty());
+        CHECK_FALSE(lines->visible.empty());
+    }
+    CHECK(sections == 2);
+}
+
 TEST_SUITE_END();

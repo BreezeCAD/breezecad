@@ -5,6 +5,10 @@
 #include "kernel/occt/ModelImpl.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepLib.hxx>
@@ -22,6 +26,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Cylinder.hxx>
 
@@ -191,17 +196,77 @@ ViewShapes ViewShapes::Of(const Model& model) {
     return out;
 }
 
-Expected<ProjectedLines> ViewShapes::Project(Vec3 eye, Vec3 up) const {
+namespace {
+
+/// The model cut by the plane: what is on the normal's side goes.
+Expected<TopoDS_Shape> CutBy(const TopoDS_Shape& shape, const CutPlane& cut) {
+    const Vec3 n = cut.normal.Normalized();
+    const gp_Pnt p(cut.point.x, cut.point.y, cut.point.z);
+    const TopoDS_Face plane = BRepBuilderAPI_MakeFace(gp_Pln(p, gp_Dir(n.x, n.y, n.z))).Face();
+    const gp_Pnt away(p.X() + n.x, p.Y() + n.y, p.Z() + n.z);
+    BRepPrimAPI_MakeHalfSpace half(plane, away);
+    BRepAlgoAPI_Cut op(shape, half.Solid());
+    if (!op.IsDone() || op.Shape().IsNull()) return Error{"Разрез не построился: ядро не смогло рассечь модель"};
+    return op.Shape();
+}
+
+/// The faces of `shape` on the cutting plane, as loops in the view's plane.
+std::vector<std::vector<std::vector<Vec2>>> SectionFaces(const TopoDS_Shape& shape, const CutPlane& cut, const Vec3& right, const Vec3& up) {
+    const Vec3 n = cut.normal.Normalized();
+    const auto to2d = [&](const gp_Pnt& q) { return Vec2{q.X() * right.x + q.Y() * right.y + q.Z() * right.z, q.X() * up.x + q.Y() * up.y + q.Z() * up.z}; };
+    std::vector<std::vector<std::vector<Vec2>>> out;
+    for (TopExp_Explorer f(shape, TopAbs_FACE); f.More(); f.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(f.Current());
+        BRepAdaptor_Surface s(face, false);
+        if (s.GetType() != GeomAbs_Plane) continue;
+        const gp_Pln pl = s.Plane();
+        const gp_Dir d = pl.Axis().Direction();
+        if (std::abs(d.X() * n.x + d.Y() * n.y + d.Z() * n.z) < 1 - 1e-6) continue;
+        const gp_Pnt o = pl.Location();
+        const double off = (o.X() - cut.point.x) * n.x + (o.Y() - cut.point.y) * n.y + (o.Z() - cut.point.z) * n.z;
+        if (std::abs(off) > 1e-5) continue;
+        std::vector<std::vector<Vec2>> loops;
+        for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+            std::vector<Vec2> loop;
+            for (BRepTools_WireExplorer e(TopoDS::Wire(w.Current()), face); e.More(); e.Next()) {
+                BRepAdaptor_Curve c(e.Current());
+                std::vector<Vec2> pts;
+                if (c.GetType() == GeomAbs_Line) {
+                    pts = {to2d(c.Value(c.FirstParameter())), to2d(c.Value(c.LastParameter()))};
+                } else {
+                    GCPnts_TangentialDeflection points(c, 0.08, 0.005);
+                    for (int i = 1; i <= points.NbPoints(); ++i) pts.push_back(to2d(points.Value(i)));
+                }
+                if (e.Current().Orientation() == TopAbs_REVERSED) std::reverse(pts.begin(), pts.end());
+                for (std::size_t i = loop.empty() ? 0 : 1; i < pts.size(); ++i) loop.push_back(pts[i]);
+            }
+            if (loop.size() >= 3) loops.push_back(std::move(loop));
+        }
+        if (!loops.empty()) out.push_back(std::move(loops));
+    }
+    return out;
+}
+
+} // namespace
+
+Expected<ProjectedLines> ViewShapes::Project(Vec3 eye, Vec3 up, const std::optional<CutPlane>& cut) const {
     if (!myData) return Error{"В модели нет тел"};
     const Vec3 e = eye.Normalized(), u = up.Normalized(), r = u.Cross(e).Normalized();
     if (r.Length() < 0.5) return Error{"Неверное направление вида"};
     ProjectedLines out;
     try {
+        TopoDS_Shape shape = myData->shape;
+        if (cut) {
+            Expected<TopoDS_Shape> cutShape = CutBy(shape, *cut);
+            if (!cutShape) return cutShape.GetError();
+            shape = *cutShape;
+            out.sections = SectionFaces(shape, *cut, r, u);
+        }
         const gp_Dir eyeDir(e.x, e.y, e.z), rightDir(r.x, r.y, r.z), upDir(u.x, u.y, u.z);
         // The view's plane through the origin: its normal toward the eye, x to the right.
         const gp_Ax2 plane(gp::Origin(), eyeDir, rightDir);
         Handle(HLRBRep_Algo) algo = new HLRBRep_Algo();
-        algo->Add(myData->shape);
+        algo->Add(shape);
         algo->Projector(HLRAlgo_Projector(plane));
         algo->Update();
         algo->Hide();
@@ -211,7 +276,7 @@ Expected<ProjectedLines> ViewShapes::Project(Vec3 eye, Vec3 up) const {
         AddEdges(result.HCompound(), out.hidden);
         AddEdges(result.OutLineHCompound(), out.hidden);
         DropCovered(out.hidden, out.visible);
-        AddAxes(myData->shape, eyeDir, rightDir, upDir, out);
+        AddAxes(shape, eyeDir, rightDir, upDir, out);
     } catch (const Standard_Failure&) {
         return Error{"Вид не построился: ядро не смогло убрать невидимые линии"};
     }

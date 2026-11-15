@@ -6,6 +6,8 @@
 // background, one view at a time; the sheet shows each when it is ready.
 
 #include "core/Id.h"
+#include "assembly/Placement.h"
+#include "drawing/Balloon.h"
 #include "drawing/DrawingView.h"
 #include "drawing/SheetLayout.h"
 #include "kernel/Model.h"
@@ -58,6 +60,19 @@ public:
     std::optional<drawing::ModelEdge> EdgeAt(Workspace& ws, DrawingState& d, const drawing::View& view, Vec2 sheetPoint,
                                              double tolerance, drawing::Json& ref);
 
+    /// A component of an assembly view's model: where it is and how big.
+    struct Part {
+        ObjectId              id;
+        std::string           path;
+        assembly::Placement   placement;   ///< part → assembly
+        Box3                  box;         ///< in the assembly
+    };
+    /// The components of the model `model` with geometry, in tree order; none for a part.
+    std::vector<Part> Parts(Workspace& ws, DrawingState& d, ObjectId model);
+    /// A position's number and dot now; nullopt when its component is gone.
+    std::optional<drawing::BalloonTarget> BalloonTarget(Workspace& ws, DrawingState& d, const drawing::View& view,
+                                                        const drawing::Balloon& balloon);
+
     /// The model's box (placing new views); loads it if it is not open.
     std::optional<kernel::Bounds> ModelBounds(Workspace& ws, DrawingState& d, ObjectId model, std::string* problem = nullptr);
 
@@ -97,6 +112,13 @@ private:
         std::vector<std::optional<drawing::ModelEdge>> edges;
     };
     std::map<std::string, Found> myFound;   ///< by the references' text
+    struct Positions {
+        std::string                         key;
+        std::vector<Part>                   parts;
+        std::map<ObjectId, std::string>     numbers;   ///< by component
+    };
+    std::map<ObjectId, Positions> myPositions;   ///< by model
+    Positions& PositionsOf(Workspace& ws, DrawingState& d, ObjectId model);
     /// Fields and rows by model, kept while the model's state (`key`) is the same.
     struct Properties {
         std::string                   key;

@@ -26,17 +26,24 @@ SpecSection SectionOf(const SpecComponent& c) {
     return SpecSection::Parts;
 }
 
-std::vector<SpecRow> SpecRows(const SpecInput& input) {
-    struct Group {
-        SpecSection section;
-        SpecComponent c;
-        int quantity = 0;
-    };
+namespace {
+
+struct Group {
+    SpecSection   section;
+    SpecComponent c;
+    int           quantity = 0;
+};
+
+using GroupKey = std::tuple<std::string, std::string, std::string, std::string>;
+GroupKey KeyOf(const SpecComponent& c) { return std::make_tuple(c.path, c.designation, c.name, c.note); }
+
+/// The rows' components: equal ones together, in the standard's order, numbered.
+std::vector<Group> Groups(const SpecInput& input) {
     // Equal components — one file, one designation, name and note — are one row.
-    std::map<std::tuple<std::string, std::string, std::string, std::string>, Group> groups;
-    std::vector<std::tuple<std::string, std::string, std::string, std::string>> order;
+    std::map<GroupKey, Group> groups;
+    std::vector<GroupKey> order;
     for (const SpecComponent& c : input.components) {
-        const auto key = std::make_tuple(c.path, c.designation, c.name, c.note);
+        const auto key = KeyOf(c);
         auto [it, added] = groups.try_emplace(key, Group{SectionOf(c), c, 0});
         if (added) order.push_back(key);
         it->second.quantity += std::max(1, c.quantity);
@@ -64,7 +71,21 @@ std::vector<SpecRow> SpecRows(const SpecInput& input) {
         while (taken.count(next)) ++next;
         g.c.position = std::to_string(next++);
     }
+    return items;
+}
 
+} // namespace
+
+std::vector<std::string> SpecPositions(const SpecInput& input) {
+    std::map<GroupKey, std::string> byKey;
+    for (const Group& g : Groups(input)) byKey[KeyOf(g.c)] = g.c.position;
+    std::vector<std::string> out;
+    for (const SpecComponent& c : input.components) out.push_back(byKey[KeyOf(c)]);
+    return out;
+}
+
+std::vector<SpecRow> SpecRows(const SpecInput& input) {
+    const std::vector<Group> items = Groups(input);
     std::vector<SpecRow> rows;
     const auto section = [&](SpecSection s) {
         rows.push_back({});

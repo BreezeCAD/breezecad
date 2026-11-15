@@ -51,12 +51,12 @@ std::pair<Vec2, Vec2> Closest(const std::vector<Vec2>& a, const std::vector<Vec2
 }
 
 /// Approximate width of a text on the sheet (the layout has no font): a
-/// character about 0.6 of the height, as ГОСТ 2.304 type B.
+/// character about 0.8 of the capitals' height (IBM Plex figures at ГОСТ 2.304 size).
 double TextWidth(const std::string& text, double height) {
     std::size_t chars = 0;
     for (const char c : text)
         if ((static_cast<unsigned char>(c) & 0xC0U) != 0x80U) ++chars;
-    return static_cast<double>(chars) * height * 0.6;
+    return static_cast<double>(chars) * height * 0.8;
 }
 
 struct Pen {

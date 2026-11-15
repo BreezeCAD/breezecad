@@ -506,6 +506,12 @@ SheetLayout LayoutPage(const Drawing& drawing, const Page& page, const SheetCont
             const Box2 box = AddDimension(out, *v, dim, m, lost);
             out.hits.push_back({dim.id, box});
         }
+    if (content.balloon)
+        for (const Balloon& b : BalloonsOf(sheet)) {
+            const auto v = std::find_if(views.begin(), views.end(), [&](const View& x) { return x.id == b.view; });
+            if (v == views.end()) continue;
+            out.hits.push_back({b.id, AddBalloon(out, *v, b, content.balloon(sheet, *v, b))});
+        }
     return out;
 }
 

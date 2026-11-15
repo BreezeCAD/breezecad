@@ -378,12 +378,68 @@ std::vector<dw::SpecRow> DrawingViews::SpecRows(Workspace& ws, DrawingState& d, 
     return p.rows;
 }
 
+DrawingViews::Positions& DrawingViews::PositionsOf(Workspace& ws, DrawingState& d, ObjectId model) {
+    Positions& p = myPositions[model];
+    std::string key, problem;
+    Session* s = SessionOf(ws, d, model, key, problem);
+    if (!s || !s->assembly) {
+        p = {};
+        return p;
+    }
+    if (p.key == key) return p;
+    p = {};
+    p.key = key;
+    const assembly::Assembly& a = s->assembly->assembly;
+    const kernel::AssemblyReader reader(a, s->assembly->geometry);
+    // The numbers as the specification gives them (DrawingViews::SpecRows builds it the same way).
+    dw::SpecInput in;
+    std::vector<ObjectId> ids;
+    for (const kernel::ComponentRecord& r : reader.Components()) {
+        dw::SpecComponent c;
+        c.path = r.path;
+        c.designation = r.designation;
+        c.name = r.name;
+        c.quantity = r.quantity;
+        for (const assembly::Component& comp : a.components)
+            if (comp.id == r.id) {
+                c.position = comp.properties.position;
+                c.note = comp.properties.note;
+            }
+        in.components.push_back(std::move(c));
+        ids.push_back(r.id);
+        if (const auto box = reader.BoundsOf(r.id); box && r.hasGeometry && r.visible) {
+            Part part{r.id, r.path, r.placement, {}};
+            part.box.Include(box->min);
+            part.box.Include(box->max);
+            p.parts.push_back(std::move(part));
+        }
+    }
+    const std::vector<std::string> numbers = dw::SpecPositions(in);
+    for (std::size_t i = 0; i < ids.size() && i < numbers.size(); ++i) p.numbers[ids[i]] = numbers[i];
+    return p;
+}
+
+std::vector<DrawingViews::Part> DrawingViews::Parts(Workspace& ws, DrawingState& d, ObjectId model) {
+    return PositionsOf(ws, d, model).parts;
+}
+
+std::optional<dw::BalloonTarget> DrawingViews::BalloonTarget(Workspace& ws, DrawingState& d, const dw::View& view,
+                                                             const dw::Balloon& balloon) {
+    const Positions& p = PositionsOf(ws, d, view.model);
+    const auto number = p.numbers.find(balloon.component);
+    if (number == p.numbers.end()) return std::nullopt;
+    for (const Part& part : p.parts)
+        if (part.id == balloon.component) return dw::BalloonTarget{number->second, part.placement.Point(balloon.point)};
+    return std::nullopt;   // hidden or without geometry: its dot is nowhere
+}
+
 dw::SheetContent DrawingViews::Content(Workspace& ws, DrawingState& d) {
     dw::SheetContent c;
     c.lines = [this, &ws, &d](const dw::Sheet&, const dw::View& v) { return Lines(ws, d, v); };
     c.fields = [this, &ws, &d](const dw::Sheet& s) { return AutoFields(ws, d, s); };
     c.spec = [this, &ws, &d](const dw::Sheet& s) { return SpecRows(ws, d, s); };
     c.edges = [this, &ws, &d](const dw::Sheet&, const dw::View& v, const std::vector<dw::Json>& refs) { return Edges(ws, d, v, refs); };
+    c.balloon = [this, &ws, &d](const dw::Sheet&, const dw::View& v, const dw::Balloon& b) { return BalloonTarget(ws, d, v, b); };
     return c;
 }
 

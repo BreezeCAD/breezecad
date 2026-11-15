@@ -1,2 +1,3 @@
 resources/beta/*.txt -text
 resources/beta/*.bat -text
+scripts/dev/hooks/*.sh text eol=lf

@@ -6,6 +6,7 @@
 #include "core/Monitor.h"
 #include "core/PathText.h"
 #include "core/Version.h"
+#include "kernel/Model.h"
 #include "platform/Paths.h"
 #include "platform/Process.h"
 #include "platform/SystemInfo.h"
@@ -77,9 +78,11 @@ std::string Stamp(const char* format) {
 }
 
 void BuildHeader() {
-    std::snprintf(gHeader, sizeof gHeader, "BreezeCAD crash report\nVersion: %s\nSystem: %s\nGraphics: %s\nStarted: %s\n",
-                  VersionLine().c_str(), gSystem.empty() ? "?" : gSystem.c_str(), gGraphics.empty() ? "?" : gGraphics.c_str(),
-                  gStarted.c_str());
+    // The geometry kernel's version too: the same file can build differently
+    // on another OCCT (stabilization plan, stage 0).
+    std::snprintf(gHeader, sizeof gHeader, "BreezeCAD crash report\nVersion: %s\nKernel: %s\nSystem: %s\nGraphics: %s\nStarted: %s\n",
+                  VersionLine().c_str(), kernel::GeometryKernelVersion().c_str(), gSystem.empty() ? "?" : gSystem.c_str(),
+                  gGraphics.empty() ? "?" : gGraphics.c_str(), gStarted.c_str());
 }
 
 /// The oldest reports go: a crash a day for a year would otherwise pile up.

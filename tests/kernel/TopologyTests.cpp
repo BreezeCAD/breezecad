@@ -9,6 +9,9 @@
 
 #include <algorithm>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 
@@ -66,3 +69,5 @@ TEST_CASE("topology lists faces and edges with what they are and where") {
     CHECK(m->distance == doctest::Approx(5));
     CHECK_FALSE(kernel::MeasureBetween(model, true, 99, true, 0));
 }
+
+TEST_SUITE_END();

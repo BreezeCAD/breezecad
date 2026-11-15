@@ -205,10 +205,22 @@ void Recovery::Recover(AppContext& app, const char* stage, const std::string& re
     myRecovering = true;
     ++myRecovered;
     log::Error("Recovered: {} in {} ({}; last action: {})", reason, stage, crashed ? "crash" : "exception", last);
-    mon::Action("recovery", std::format("{}: {} ({})", stage, reason, last));
+    // The action that led here, once: a failure repeating used to wrap the
+    // previous «recovery: …» again each time («recovery: … (recovery: … (…»)
+    // until the line was cut off. The user's own action and a count instead.
+    if (!last.starts_with("recovery: ")) {
+        myOrigin = last;
+        myRepeats = 0;
+    }
+    ++myRepeats;
+    mon::Action("recovery", myRepeats > 1 ? std::format("{}: {} — после «{}», {}-й раз", stage, reason, myOrigin, myRepeats)
+                                          : std::format("{}: {} — после «{}»", stage, reason, myOrigin));
 
     CloseTools(app);
     PutBack(app);
+    for (DocState& d : myState.docs)
+        if (app.workspace.IsOpen(d.session)) d.session->recoveredSinceSave = true;
+    if (myState.tab && TabOpen(app.workspace, myState.tab)) myState.tab->recoveredSinceSave = true;
     if (crashed) {
         // A crash may have left the view or the parts' geometry half-way
         // through a change: shown again from scratch.

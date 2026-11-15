@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -174,3 +177,5 @@ TEST_CASE("a coil cut whose profile has corners exactly on the hole's wall cuts 
         CHECK(removed < 25.0);
     }
 }
+
+TEST_SUITE_END();

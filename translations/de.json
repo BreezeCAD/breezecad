@@ -2234,8 +2234,6 @@
     "Щёлкните ребро листа": "Klicken Sie auf eine Blechkante",
     "Щёлкните ребро листа или дальнее ребро полки, введите высоту и угол. Enter — готово, Esc — отмена": "Klicken Sie auf eine Blechkante oder die hintere Kante eines Schenkels, geben Sie Höhe und Winkel ein. Enter – fertig, Esc – abbrechen",
     "Щёлкните ребро листа, на котором сделать отбортовку": "Klicken Sie auf die Blechkante, an der die Lasche entstehen soll",
-    "Щёлкните ребро модели или грань (весь её контур) — проекция появится в эскизе и будет следовать за моделью": "Klicken Sie auf eine Modellkante oder Fläche (ihre gesamte Kontur) – die Projektion erscheint in der Skizze und folgt dem Modell",
-    "Щёлкните ребро модели или грань — её контур станет обычной закреплённой геометрией эскиза, за моделью не следует": "Klicken Sie auf eine Modellkante oder Fläche – ihre Kontur wird zu normaler fixierter Skizzengeometrie und folgt dem Modell nicht",
     "Щёлкните ребро на модели, чтобы добавить его; повторный щелчок убирает.": "Klicken Sie am Modell auf eine Kante, um sie hinzuzufügen; ein erneuter Klick entfernt sie.",
     "Щёлкните ребро. Enter — готово, Esc — отмена": "Klicken Sie auf eine Kante. Enter – fertig, Esc – abbrechen",
     "Щёлкните ребро: точка встанет посередине его длины.": "Klicken Sie auf eine Kante: Der Punkt liegt in der Mitte ihrer Länge.",

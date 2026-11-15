@@ -21,6 +21,9 @@
 #include <filesystem>
 #include <map>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::assembly;
 using doctest::Approx;
@@ -683,3 +686,5 @@ TEST_CASE("an extrusion up to a face is a link like a projection: a circle of th
     CHECK(kernel::WouldCycle(b.m, b.a, postId, b.plate, "Узел"));
     CHECK_FALSE(kernel::WouldCycle(b.m, b.a, b.plate, postId, "Узел"));
 }
+
+TEST_SUITE_END();

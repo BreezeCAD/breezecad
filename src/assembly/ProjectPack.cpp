@@ -98,7 +98,10 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
     const fs::path temp = out.parent_path() / PathFromUtf8("." + ToUtf8(out.filename()) + ".assembly");
     std::vector<std::uint8_t> preview;
     if (auto p = doc::ReadBzcPreview(assemblyFile); p) preview = std::move(*p);
-    if (Status s = SaveAssembly(a, temp, "BreezeCAD project", preview); !s) return s.GetError();
+    // Only its paths change: the kernel it was saved with stays.
+    std::string kernel;
+    if (auto archive = doc::ReadBzcArchive(assemblyFile); archive) kernel = archive->kernel;
+    if (Status s = SaveAssembly(a, temp, "BreezeCAD project", kernel, preview); !s) return s.GetError();
     Expected<std::string> assemblyBytes = ReadBytes(temp);
     std::error_code ec;
     fs::remove(temp, ec);

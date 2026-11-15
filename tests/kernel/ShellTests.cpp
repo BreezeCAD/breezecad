@@ -4,6 +4,9 @@
 
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -115,3 +118,5 @@ TEST_CASE("shell open at the top of a plate with a through hole and a slot: they
     const double cavity = 56.0 * 36 * 10 - pi * 49 * 10 - slotWall * 10;
     CHECK(model.Volume() == doctest::Approx(whole - cavity).epsilon(1e-4));
 }
+
+TEST_SUITE_END();

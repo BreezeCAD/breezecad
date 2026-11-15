@@ -23,6 +23,7 @@
 #include "platform/Paths.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
+#include "kernel/Model.h"
 
 #include <algorithm>
 #include <array>
@@ -730,7 +731,7 @@ std::optional<std::filesystem::path> StandardPartFile(AppContext& app, const Ses
             return std::nullopt;
         }
         std::filesystem::create_directories(folder, ec);
-        if (const Status saved = doc::SaveBzc(made->doc, file, "BreezeCAD"); !saved) {
+        if (const Status saved = doc::SaveBzc(made->doc, file, "BreezeCAD", kernel::GeometryKernelVersion()); !saved) {
             app.notes.Error(Trf("Не удалось сохранить деталь: {}", Tr(saved.GetError().message)));
             return std::nullopt;
         }

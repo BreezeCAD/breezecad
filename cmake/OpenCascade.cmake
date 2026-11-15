@@ -1,4 +1,5 @@
-# Open CASCADE Technology. Supported: 7.6 … 8.0.
+# Open CASCADE Technology. CI and packages: 8.0.1, built by scripts/deps/build-occt.sh
+# (one OCCT everywhere, ADR-0001). Older 7.6 … 7.9 may still build but are not checked.
 # Point CMake at an install with -DOpenCASCADE_DIR=<prefix>/cmake
 # (Windows/MSYS2 example: C:/occt/install/cmake).
 

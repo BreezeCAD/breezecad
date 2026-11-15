@@ -20,6 +20,9 @@
 
 #include <chrono>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::CurveKind;
@@ -380,3 +383,5 @@ TEST_CASE("шов: заметное расхождение (1e-7 мм) не сл
     model.Rebuild(d);
     CHECK(fillet.status.state == FeatureState::Ok);
 }
+
+TEST_SUITE_END();

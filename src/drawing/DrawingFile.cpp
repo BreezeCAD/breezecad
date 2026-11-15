@@ -8,8 +8,8 @@
 namespace bz::drawing {
 
 Status SaveDrawing(const Drawing& drawing, const std::filesystem::path& path, std::string_view generator,
-                   std::span<const std::uint8_t> preview) {
-    return doc::WriteBzcArchive(path, doc::kDrawingType, generator, ToJson(drawing), {}, preview);
+                   std::string_view kernel, std::span<const std::uint8_t> preview) {
+    return doc::WriteBzcArchive(path, doc::kDrawingType, generator, kernel, ToJson(drawing), {}, preview);
 }
 
 Expected<Drawing> LoadDrawing(const std::filesystem::path& path, ReadReport* report) {

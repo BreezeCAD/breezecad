@@ -7,6 +7,9 @@
 #include <TopoDS.hxx>
 #include <doctest.h>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::kernel;
 
@@ -79,3 +82,5 @@ TEST_CASE("measure a cylinder") {
     CHECK(*r.radius == doctest::Approx(5.0));
     CHECK(*r.length == doctest::Approx(2 * kPi * 5));
 }
+
+TEST_SUITE_END();

@@ -1,6 +1,7 @@
 // The drawing as a PDF: the font read for it, the file's structure (objects
 // where the cross-reference table says they are), pages a sheet, and the
 // text findable (ToUnicode).
+#include "drawing/Dimension.h"
 #include "drawing/DrawingPdf.h"
 #include "drawing/Pdf.h"
 #include "drawing/TrueType.h"
@@ -110,6 +111,34 @@ TEST_CASE("PDF: a page a sheet at full size, objects where the table says") {
     CHECK(streams.find("<0412>") != std::string::npos);   // В
     CHECK(streams.find("<043B>") != std::string::npos);   // л
     CHECK(pdf.find("/Title <FEFF04110417041A") != std::string::npos);   // «БЗК…» in the properties
+}
+
+TEST_CASE("PDF: a dimension prints with its filled arrows and its value") {
+    Drawing d;
+    View v;
+    v.id = ObjectId{7};
+    v.model = ObjectId{2};
+    v.at = {100, 100};
+    d.sheets.front().views.push_back(MakeViewItem(v));
+    Dimension dim;
+    dim.id = ObjectId{9};
+    dim.view = v.id;
+    dim.axis = DimensionAxis::Horizontal;
+    dim.edges = {Json{{"middle", Json::array({0, 0, 30})}}};
+    dim.at = {0, 45};
+    d.sheets.front().annotations.push_back(MakeDimensionItem(dim));
+    SheetContent content;
+    content.edges = [](const Sheet&, const View&, const std::vector<Json>& refs) {
+        ModelEdge e;
+        e.kind = ModelEdge::Kind::Line;
+        e.a = {-60, 0, 30};
+        e.b = {60, 0, 30};
+        return std::vector<std::optional<ModelEdge>>(refs.size(), e);
+    };
+    const std::string streams = Streams(Text(DrawingPdf(d, Plex(), "BreezeCAD test", content)));
+    std::size_t fills = 0;
+    for (std::size_t at = streams.find("h f\n"); at != std::string::npos; at = streams.find("h f\n", at + 1)) ++fills;
+    CHECK(fills == 2);
 }
 
 TEST_CASE("PDF: written through a temporary file; a bad folder is an error") {

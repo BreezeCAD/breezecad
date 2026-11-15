@@ -196,7 +196,9 @@ Expected<Drawing> FromJson(std::string_view text, ReadReport* report) {
         d.sheets.push_back(std::move(first));
     }
     const bool unknown = std::any_of(d.sheets.begin(), d.sheets.end(), [](const Sheet& s) {
-        return !s.annotations.empty() || std::any_of(s.views.begin(), s.views.end(), [](const Item& i) { return !IsKnownItem(i); });
+        const auto unknownItem = [](const Item& i) { return !IsKnownItem(i); };
+        return std::any_of(s.annotations.begin(), s.annotations.end(), unknownItem) ||
+               std::any_of(s.views.begin(), s.views.end(), unknownItem);
     });
     if (unknown && warnings)
         warnings->push_back("В чертеже есть виды или обозначения, которые эта версия не показывает. Они сохранятся без изменений.");

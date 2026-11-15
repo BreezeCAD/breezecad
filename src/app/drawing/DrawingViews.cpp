@@ -7,6 +7,7 @@
 #include "app/drawing/DrawingState.h"
 #include "core/I18n.h"
 #include "core/PathText.h"
+#include "document/JsonIO.h"
 #include "kernel/AssemblyReadApi.h"
 
 #include <chrono>
@@ -139,13 +140,7 @@ const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const d
     if (e.key == key) return e.ready ? &e.lines : nullptr;
     const bool computing = myJob.valid() && myJobView == view.id && myJobKey == key;
     if (!computing && !myJob.valid()) {
-        // The bodies copied once per model state, shared by its views.
-        const std::string file = sourceKey.substr(0, sourceKey.rfind(':'));
-        auto& [shapesKey, shapes] = myShapes[file];
-        if (shapesKey != sourceKey) {
-            shapesKey = sourceKey;
-            shapes = kernel::ViewShapes::Of(*model);
-        }
+        const kernel::ViewShapes shapes = Shapes(ws, d, view.model);
         if (shapes.Empty()) {
             e.ready = false;
             e.key = key;
@@ -157,6 +152,74 @@ const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const d
     }
     // Meanwhile the lines it had (a model being edited), if any.
     return e.ready ? &e.lines : nullptr;
+}
+
+kernel::ViewShapes DrawingViews::Shapes(Workspace& ws, DrawingState& d, ObjectId model, std::string* key, std::string* problem) {
+    std::string sourceKey, why;
+    Session* session = SessionOf(ws, d, model, sourceKey, why);
+    if (!session) {
+        if (problem) *problem = why;
+        return {};
+    }
+    // The bodies copied once per model state, shared by its views and dimensions.
+    const std::string file = sourceKey.substr(0, sourceKey.rfind(':'));
+    auto& [shapesKey, shapes] = myShapes[file];
+    if (shapesKey != sourceKey) {
+        shapesKey = sourceKey;
+        shapes = kernel::ViewShapes::Of(session->model);
+    }
+    if (key) *key = sourceKey;
+    if (shapes.Empty() && problem) *problem = Tr("В модели нет тел");
+    return shapes;
+}
+
+namespace {
+
+dw::ModelEdge ToDrawing(const kernel::ModelEdge& e) {
+    dw::ModelEdge out;
+    out.kind = e.kind == kernel::ModelEdge::Kind::Line     ? dw::ModelEdge::Kind::Line
+               : e.kind == kernel::ModelEdge::Kind::Circle ? dw::ModelEdge::Kind::Circle
+                                                           : dw::ModelEdge::Kind::Other;
+    out.a = e.a;
+    out.b = e.b;
+    out.center = e.center;
+    out.axis = e.axis;
+    out.radius = e.radius;
+    return out;
+}
+
+} // namespace
+
+std::vector<std::optional<dw::ModelEdge>> DrawingViews::Edges(Workspace& ws, DrawingState& d, const dw::View& view,
+                                                              const std::vector<dw::Json>& refs) {
+    std::string key;
+    const kernel::ViewShapes shapes = Shapes(ws, d, view.model, &key);
+    if (shapes.Empty()) return std::vector<std::optional<dw::ModelEdge>>(refs.size());
+    std::string text = std::to_string(view.model.value);
+    for (const dw::Json& r : refs) text += r.dump();
+    Found& f = myFound[text];
+    if (f.key == key && f.edges.size() == refs.size()) return f.edges;
+    std::vector<doc::EdgeReference> parsed(refs.size());
+    std::vector<bool> ok(refs.size());
+    for (std::size_t i = 0; i < refs.size(); ++i) ok[i] = doc::json_io::Read(refs[i], parsed[i]);
+    const std::vector<std::optional<kernel::ModelEdge>> found = shapes.Resolve(parsed);
+    f.key = key;
+    f.edges.assign(refs.size(), std::nullopt);
+    for (std::size_t i = 0; i < refs.size() && i < found.size(); ++i)
+        if (ok[i] && found[i]) f.edges[i] = ToDrawing(*found[i]);
+    return f.edges;
+}
+
+std::optional<dw::ModelEdge> DrawingViews::EdgeAt(Workspace& ws, DrawingState& d, const dw::View& view, Vec2 sheetPoint, double tolerance,
+                                                  dw::Json& ref) {
+    const kernel::ViewShapes shapes = Shapes(ws, d, view.model);
+    if (shapes.Empty()) return std::nullopt;
+    const dw::ViewBasis b = dw::BasisOf(view.direction);
+    const double s = view.scale.Value();
+    const auto picked = shapes.EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s);
+    if (!picked) return std::nullopt;
+    ref = doc::json_io::ToJson(picked->ref);
+    return ToDrawing(picked->edge);
 }
 
 std::string DrawingViews::Problem(ObjectId view) const {
@@ -313,6 +376,7 @@ dw::SheetContent DrawingViews::Content(Workspace& ws, DrawingState& d) {
     c.lines = [this, &ws, &d](const dw::Sheet&, const dw::View& v) { return Lines(ws, d, v); };
     c.fields = [this, &ws, &d](const dw::Sheet& s) { return AutoFields(ws, d, s); };
     c.spec = [this, &ws, &d](const dw::Sheet& s) { return SpecRows(ws, d, s); };
+    c.edges = [this, &ws, &d](const dw::Sheet&, const dw::View& v, const std::vector<dw::Json>& refs) { return Edges(ws, d, v, refs); };
     return c;
 }
 

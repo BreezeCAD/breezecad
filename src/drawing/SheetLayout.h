@@ -12,11 +12,13 @@
 
 #include "core/Math.h"
 #include "drawing/Drawing.h"
+#include "drawing/Dimension.h"
 #include "drawing/DrawingView.h"
 #include "drawing/Specification.h"
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,7 +44,20 @@ struct Polyline {
     std::vector<Vec2> points;
     LineWeight        weight = LineWeight::Thick;
     LineStyle         style = LineStyle::Solid;
-}; 
+    bool              problem = false;   ///< a dimension whose edges are lost: red on the screen
+};
+
+/// A filled shape: an arrow of a dimension (ГОСТ 2.307). Convex.
+struct Fill {
+    std::vector<Vec2> points;
+    bool              problem = false;
+};
+
+/// What the editor can pick on the sheet: an annotation and the box it takes.
+struct Hit {
+    ObjectId id;
+    Box2     box;
+};
 
 enum class Align : unsigned char { Left, Center };
 
@@ -55,6 +70,7 @@ struct Label {
     Align       align = Align::Left;
     double      rotation = 0;   ///< degrees, counter-clockwise
     double      maxWidth = 0;   ///< the cell's width: longer text is squeezed to it; 0 — no limit
+    bool        problem = false;   ///< red on the screen (a dimension whose edges are lost)
 };
 
 struct Box {
@@ -67,7 +83,9 @@ struct SheetLayout {
     Box    titleBlock;              ///< 185 × 55, the lower right corner of the frame
     std::vector<Stroke> strokes;
     std::vector<Label>  labels;
-    std::vector<Polyline> polylines;   ///< the views
+    std::vector<Polyline> polylines;   ///< the views and their dimensions
+    std::vector<Fill>     fills;       ///< arrows
+    std::vector<Hit>      hits;        ///< the annotations, for picking
 };
 
 /// What the kernel computed of a view (kernel/drawing): at 1:1, in the
@@ -101,6 +119,9 @@ using ViewLinesSource = std::function<const ViewLines*(const Sheet&, const View&
 /// given is left out (frames only).
 struct SheetContent {
     ViewLinesSource                                   lines;
+    /// The model edges of a dimension of the view now (Dimension.h); none
+    /// given — dimensions are left out.
+    std::function<std::vector<std::optional<ModelEdge>>(const Sheet&, const View&, const std::vector<Json>&)> edges;
     std::function<Fields(const Sheet&)>               fields;
     std::function<std::vector<SpecRow>(const Sheet&)> spec;
 };

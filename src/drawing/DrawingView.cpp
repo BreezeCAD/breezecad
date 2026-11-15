@@ -1,5 +1,7 @@
 #include "drawing/DrawingView.h"
 
+#include "drawing/Dimension.h"
+
 #include <array>
 #include <cmath>
 #include <format>
@@ -134,7 +136,7 @@ Item MakeViewItem(const View& view) {
     return item;
 }
 
-bool IsKnownItem(const Item& item) { return ReadView(item).has_value(); }
+bool IsKnownItem(const Item& item) { return ReadView(item).has_value() || ReadDimension(item).has_value(); }
 
 std::vector<View> ViewsOf(const Sheet& sheet) {
     std::vector<View> out;

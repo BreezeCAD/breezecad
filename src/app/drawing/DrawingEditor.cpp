@@ -8,6 +8,7 @@
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "core/PathText.h"
+#include "drawing/Dimension.h"
 #include "drawing/DrawingPdf.h"
 #include "drawing/DrawingView.h"
 #include "drawing/SheetLayout.h"
@@ -152,6 +153,14 @@ void DrawPolyline(ImDrawList* dl, const SheetView& v, const dw::Polyline& p, ImU
     }
 }
 
+/// An arrow of a dimension.
+void DrawFill(ImDrawList* dl, const SheetView& v, const dw::Fill& f, ImU32 color) {
+    if (f.points.size() < 3) return;
+    std::vector<ImVec2> points;
+    for (Vec2 p : f.points) points.push_back(v.ToScreen(p));
+    dl->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), color);
+}
+
 void DrawSheet(ImDrawList* dl, ui::Ui& ui, const SheetView& v, const dw::SheetLayout& l) {
     const ui::ThemeColors& c = ui.C();
     const ImVec2 a = v.ToScreen({0, l.height}), b = v.ToScreen({l.width, 0});
@@ -164,8 +173,10 @@ void DrawSheet(ImDrawList* dl, ui::Ui& ui, const SheetView& v, const dw::SheetLa
     const float thin  = std::max(1.0f, static_cast<float>(0.18 * v.zoom));
     for (const dw::Stroke& s : l.strokes)
         dl->AddLine(v.ToScreen(s.a), v.ToScreen(s.b), ink, s.weight == dw::LineWeight::Thick ? thick : thin);
-    for (const dw::Polyline& p : l.polylines) DrawPolyline(dl, v, p, ink, thick, thin);
-    for (const dw::Label& label : l.labels) DrawLabel(dl, ui.fonts.body, v, label, ink);
+    const ImU32 lost = ui::ToU32(c.danger);   // a dimension whose edges are gone
+    for (const dw::Polyline& p : l.polylines) DrawPolyline(dl, v, p, p.problem ? lost : ink, thick, thin);
+    for (const dw::Fill& f : l.fills) DrawFill(dl, v, f, f.problem ? lost : ink);
+    for (const dw::Label& label : l.labels) DrawLabel(dl, ui.fonts.body, v, label, label.problem ? lost : ink);
 }
 
 /// The whole sheet: `margin` around it, `top` more above (the note there).
@@ -448,6 +459,11 @@ void DeleteView(DrawingState& d, ObjectId id) {
                 const auto v = dw::ReadView(i);
                 return v && v->id == id;
             });
+            // Its dimensions go with it.
+            std::erase_if(s.annotations, [&](const dw::Item& i) {
+                const auto dim = dw::ReadDimension(i);
+                return dim && dim->view == id;
+            });
             // Views in projection with it stay, on their own.
             for (dw::Item& item : s.views)
                 if (auto v = dw::ReadView(item); v && v->parent == id) {
@@ -506,6 +522,180 @@ void ViewMenu(DrawingState& d) {
     ImGui::EndPopup();
 }
 
+// --- dimensions (ADR-0012, step 5) ------------------------------------------------------
+
+/// Changes one dimension of the sheet shown (an undo step).
+void ChangeDimension(DrawingState& d, ObjectId id, const std::string& label, const std::function<void(dw::Dimension&)>& change) {
+    const ObjectId sheet = d.Sheet().id;
+    d.Change(label, [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets)
+            if (s.id == sheet)
+                if (dw::Item* item = dw::FindAnnotation(s, id))
+                    if (auto dim = dw::ReadDimension(*item)) {
+                        change(*dim);
+                        dw::WriteDimension(*item, *dim);
+                    }
+    });
+}
+
+void DeleteAnnotation(DrawingState& d, ObjectId id) {
+    const ObjectId sheet = d.Sheet().id;
+    d.Change(Tr("Удалить размер"), [&](dw::Drawing& dr) {
+        for (dw::Sheet& s : dr.sheets)
+            if (s.id == sheet)
+                std::erase_if(s.annotations, [&](const dw::Item& i) {
+                    const auto dim = dw::ReadDimension(i);
+                    return dim && dim->id == id;
+                });
+    });
+    if (d.selectedAnnotation == id) d.selectedAnnotation = {};
+}
+
+/// The menu of a dimension: how a linear one measures, its text, delete.
+void DimensionMenu(DrawingState& d) {
+    if (!ImGui::BeginPopup("##dim-menu")) return;
+    const auto dims = dw::DimensionsOf(d.Sheet());
+    const auto it = std::find_if(dims.begin(), dims.end(), [&](const dw::Dimension& x) { return x.id == d.selectedAnnotation; });
+    if (it == dims.end()) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const dw::Dimension dim = *it;
+    if (dim.kind == dw::DimensionKind::Linear) {
+        const std::pair<dw::DimensionAxis, const char*> axes[] = {{dw::DimensionAxis::Horizontal, N_("Горизонтальный")},
+                                                                  {dw::DimensionAxis::Vertical, N_("Вертикальный")},
+                                                                  {dw::DimensionAxis::Aligned, N_("Параллельный")}};
+        for (const auto& [axis, name] : axes)
+            if (ImGui::MenuItem(Tr(name), nullptr, dim.axis == axis) && dim.axis != axis)
+                ChangeDimension(d, dim.id, Tr("Вид размера"), [axis](dw::Dimension& x) { x.axis = axis; });
+        ImGui::Separator();
+    }
+    static std::string text;
+    if (ImGui::IsWindowAppearing()) text = dim.text.empty() ? "<>" : dim.text;
+    ImGui::TextUnformatted(Tr("Текст размера («<>» — значение):"));
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::InputText("##dim-text", &text, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        const std::string now = text == "<>" ? std::string{} : text;
+        if (now != dim.text) ChangeDimension(d, dim.id, Tr("Текст размера"), [now](dw::Dimension& x) { x.text = now; });
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(Tr("Удалить размер"), "Delete")) DeleteAnnotation(d, dim.id);
+    ImGui::EndPopup();
+}
+
+/// A dimension being made: its edges picked one by one on a view, then its
+/// line placed with a click (as in КОМПАС: the command stays on for the next one).
+struct DimensionTool {
+    bool                          active = false;
+    dw::DimensionKind             kind = dw::DimensionKind::Linear;
+    ObjectId                      view;
+    std::vector<dw::Json>         refs;
+    std::vector<dw::ModelEdge>    edges;
+
+    std::size_t Needs() const { return kind == dw::DimensionKind::Linear || kind == dw::DimensionKind::Angle ? 2 : 1; }
+    /// Enough edges to show the dimension under the cursor.
+    bool CanPlace() const { return !edges.empty() && (kind != dw::DimensionKind::Angle || edges.size() == 2); }
+    void Reset() {
+        view = {};
+        refs.clear();
+        edges.clear();
+    }
+};
+
+DimensionTool& Tool() {
+    static DimensionTool tool;   // one sheet edited at a time
+    return tool;
+}
+
+void StartDimension(AppContext& app, dw::DimensionKind kind) {
+    DimensionTool& t = Tool();
+    t.Reset();
+    t.active = true;
+    t.kind = kind;
+    if (DrawingState* d = ActiveDrawing(app)) {
+        d->selectedAnnotation = {};
+        if (dw::ViewsOf(d->Sheet()).empty()) {
+            app.notes.Info(Tr("На листе нет видов: размеры ставятся на виды модели"));
+            t.active = false;
+        }
+    }
+}
+
+/// The dimension the tool makes with its line through `cursor` (sheet mm).
+/// A linear one measures across or along by where the cursor is, as in КОМПАС:
+/// above or below its points — horizontal, beside them — vertical, else along them.
+dw::Dimension ToolDimension(const DimensionTool& t, const dw::View& view, Vec2 cursor) {
+    dw::Dimension dim;
+    dim.view  = view.id;
+    dim.kind  = t.kind;
+    dim.edges = t.refs;
+    dim.at    = dw::ViewPointOf(view, cursor);
+    if (t.kind != dw::DimensionKind::Linear) return dim;
+    std::vector<std::optional<dw::ModelEdge>> edges(t.edges.begin(), t.edges.end());
+    dim.axis = dw::DimensionAxis::Aligned;
+    const auto m = dw::MeasureOf(view, dim, edges);
+    if (!m) return dim;
+    const double x0 = std::min(m->p1.x, m->p2.x), x1 = std::max(m->p1.x, m->p2.x);
+    const double y0 = std::min(m->p1.y, m->p2.y), y1 = std::max(m->p1.y, m->p2.y);
+    const bool outY = cursor.y < y0 || cursor.y > y1, outX = cursor.x < x0 || cursor.x > x1;
+    if (outY && !outX) dim.axis = dw::DimensionAxis::Horizontal;
+    else if (outX && !outY) dim.axis = dw::DimensionAxis::Vertical;
+    // A diameter of a shaft seen from its side (one circle, linear) measures across it.
+    return dim;
+}
+
+const char* ToolPrompt(const DimensionTool& t) {
+    switch (t.kind) {
+        case dw::DimensionKind::Linear:
+            return t.edges.empty() ? N_("Линейный размер: укажите ребро на виде (Esc — выйти)")
+                   : t.edges.size() == 1 ? N_("Второе ребро — размер между ними; щелчок мимо рёбер — длина этого ребра")
+                                         : N_("Щелчок — поставить размер. Выше или ниже — горизонтальный, сбоку — вертикальный");
+        case dw::DimensionKind::Diameter:
+            return t.edges.empty() ? N_("Диаметр: укажите окружность или дугу (Esc — выйти)") : N_("Щелчок — поставить размер");
+        case dw::DimensionKind::Radius:
+            return t.edges.empty() ? N_("Радиус: укажите дугу или окружность (Esc — выйти)") : N_("Щелчок — поставить размер");
+        case dw::DimensionKind::Angle:
+            return t.edges.empty()     ? N_("Угловой размер: укажите первое прямое ребро (Esc — выйти)")
+                   : t.edges.size() == 1 ? N_("Укажите второе прямое ребро")
+                                         : N_("Щелчок — поставить размер в нужном углу");
+    }
+    return "";
+}
+
+/// Dragging a dimension: its line and text move, its edges stay.
+struct DimensionDrag {
+    ObjectId id;
+    Vec2     start;   ///< the sheet point grabbed
+    Vec2     from;    ///< its `at` then
+    double   scale = 1;
+    bool     moved = false;
+};
+
+DimensionDrag& DimDrag() {
+    static DimensionDrag drag;
+    return drag;
+}
+
+/// An edge picked for a dimension, drawn over the view.
+void DrawPickedEdge(ImDrawList* dl, const SheetView& sv, const dw::View& v, const dw::ModelEdge& e, ImU32 color, float width) {
+    std::vector<ImVec2> points;
+    if (e.kind == dw::ModelEdge::Kind::Circle) {
+        Vec3 x = e.axis.Cross(Vec3{0, 0, 1});
+        if (x.Length() < 1e-6) x = e.axis.Cross(Vec3{1, 0, 0});
+        x = x.Normalized();
+        const Vec3 y = e.axis.Normalized().Cross(x);
+        for (int i = 0; i <= 64; ++i) {
+            const double t = 2 * kPi * i / 64;
+            points.push_back(sv.ToScreen(dw::SheetPointOf(v, e.center + (x * std::cos(t) + y * std::sin(t)) * e.radius)));
+        }
+    } else {
+        points = {sv.ToScreen(dw::SheetPointOf(v, e.a)), sv.ToScreen(dw::SheetPointOf(v, e.b))};
+    }
+    dl->AddPolyline(points.data(), static_cast<int>(points.size()), color, ImDrawFlags_None, width);
+}
+
 /// Dragging a view: it and the views in projection with it.
 struct ViewDrag {
     ObjectId view;
@@ -534,7 +724,7 @@ void PlaceDragged(DrawingState& d, const ViewDrag& drag, Vec2 delta) {
 // --- the tree -------------------------------------------------------------------
 
 bool TreeRow(ui::Ui& ui, const char* id, const char* icon, const std::string& text, float x, float y, float width, bool selected,
-             bool muted, bool* doubleClicked = nullptr) {
+             bool muted, bool* doubleClicked = nullptr, bool problem = false) {
     const ui::ThemeColors& c = ui.C();
     const float h = ui.S(28);
     ImGui::SetCursorScreenPos({x, y});
@@ -544,7 +734,8 @@ bool TreeRow(ui::Ui& ui, const char* id, const char* icon, const std::string& te
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (selected || hovered) dl->AddRectFilled({x, y}, {x + width, y + h}, ui::ToU32(selected ? c.selectedRow : c.hoverRow), ui.S(6));
     if (icon) ui.icons.Draw(dl, icon, {x + ui.S(8), y + ui.S(6)}, ui.S(16), muted ? c.textMuted : c.textSecondary);
-    dl->AddText(ui.fonts.body, ui.S(13), {x + ui.S(icon ? 32 : 8), y + ui.S(6)}, ui::ToU32(muted ? c.textMuted : c.text), text.c_str());
+    const Color& ink = problem ? c.danger : muted ? c.textMuted : c.text;
+    dl->AddText(ui.fonts.body, ui.S(13), {x + ui.S(icon ? 32 : 8), y + ui.S(6)}, ui::ToU32(ink), text.c_str());
     return clicked;
 }
 
@@ -617,6 +808,19 @@ void RegisterDrawingActions(AppContext& app) {
            [&app] { AddStandardViews(app); }, 0, N_("вид спереди сверху слева проекции")});
     a.Add({"drawing.isoView", N_("Изометрия"), "ui-cube", 0, N_("Изометрия детали (ГОСТ 2.317) на свободном месте листа"), inDrawing,
            [&app] { AddIsoView(app); }, 0, N_("аксонометрия вид")});
+    const auto onSheet = [&app] {
+        DrawingState* d = ActiveDrawing(app);
+        return d && d->Sheet().kind == dw::SheetKind::Drawing;
+    };
+    a.Add({"drawing.dimLinear", N_("Линейный размер"), "sk-dimension", 0,
+           N_("Длина ребра или расстояние между двумя рёбрами вида; размер следует за моделью (ГОСТ 2.307)"), onSheet,
+           [&app] { StartDimension(app, dw::DimensionKind::Linear); }, 0, N_("размер длина расстояние")});
+    a.Add({"drawing.dimDiameter", N_("Диаметральный размер"), "sk-circle", 0, N_("Диаметр окружности или дуги вида — со знаком Ø"), onSheet,
+           [&app] { StartDimension(app, dw::DimensionKind::Diameter); }, 0, N_("размер диаметр отверстие вал")});
+    a.Add({"drawing.dimRadius", N_("Радиальный размер"), "ui-dimension", 0, N_("Радиус дуги или окружности вида — со знаком R"), onSheet,
+           [&app] { StartDimension(app, dw::DimensionKind::Radius); }, 0, N_("размер радиус скругление")});
+    a.Add({"drawing.dimAngle", N_("Угловой размер"), "a-angle", 0, N_("Угол между двумя прямыми рёбрами вида"), onSheet,
+           [&app] { StartDimension(app, dw::DimensionKind::Angle); }, 0, N_("размер угол")});
     a.Add({"drawing.specification", N_("Спецификация"), "ui-list", 0,
            N_("Спецификация сборки по ГОСТ 2.106 на листах А4: разделы, позиции, количество — из сборки, меняется вместе с ней"),
            inDrawing, [&app] { AddSpecification(app); }, 0, N_("спецификация bom перечень состав сборки")});
@@ -654,10 +858,10 @@ void FillDrawingRibbon(AppContext& app, RibbonSink& sink) {
         case RibbonTab::Sketch:   // «Обозначения»
             sink.BeginGroup(N_("Размеры"));
             sink.LargeLater("dim-arrange", N_("Авто-\nразмер"));
-            sink.LargeLater("sk-dimension", N_("Линейный"));
-            sink.LargeLater("sk-circle", N_("Диамет-\nральный"));
-            sink.LargeLater("ui-dimension", N_("Радиальный"));
-            sink.LargeLater("a-angle", N_("Угловой"));
+            sink.Large("drawing.dimLinear", N_("Линейный"), Tool().active && Tool().kind == dw::DimensionKind::Linear);
+            sink.Large("drawing.dimDiameter", N_("Диамет-\nральный"), Tool().active && Tool().kind == dw::DimensionKind::Diameter);
+            sink.Large("drawing.dimRadius", N_("Радиальный"), Tool().active && Tool().kind == dw::DimensionKind::Radius);
+            sink.Large("drawing.dimAngle", N_("Угловой"), Tool().active && Tool().kind == dw::DimensionKind::Angle);
             sink.EndGroup();
             sink.BeginGroup(N_("Обозначения"));
             sink.LargeLater("a-axis", N_("Обозначение\nцентра"));
@@ -728,16 +932,38 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
                 const bool picked = d.selectedView == v.id;
                 const float indent = ui.S(v.parent ? 40 : 24);
                 if (TreeRow(ui, "##view", v.direction == dw::ViewDirection::Iso ? "ui-cube" : "ui-frame", ViewTitle(v), x + indent, y,
-                            width - indent, picked, false))
+                            width - indent, picked, false)) {
                     d.selectedView = v.id;
+                    d.selectedAnnotation = {};
+                }
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                     d.selectedView = v.id;
+                    d.selectedAnnotation = {};
                     ImGui::OpenPopup("##view-menu");
                 }
                 y += ui.S(30);
+                // Its dimensions: the value now; red when its edges are lost (ADR-0012).
+                for (const dw::Dimension& dim : dw::DimensionsOf(sheet)) {
+                    if (dim.view != v.id) continue;
+                    ImGui::PushID(static_cast<int>(dim.id.value));
+                    const auto m = dw::MeasureOf(v, dim, DrawingViews::Of(d).Edges(app.workspace, d, v, dim.edges));
+                    const std::string text = m ? dw::DimensionText(dim, *m) : Tr("Размер: ребро пропало");
+                    const float in = indent + ui.S(16);
+                    if (TreeRow(ui, "##dim", "sk-dimension", text, x + in, y, width - in, d.selectedAnnotation == dim.id, false, nullptr, !m)) {
+                        d.selectedAnnotation = dim.id;
+                        d.selectedView = {};
+                    }
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                        d.selectedAnnotation = dim.id;
+                        d.selectedView = {};
+                        ImGui::OpenPopup("##dim-menu");
+                    }
+                    y += ui.S(30);
+                    ImGui::PopID();
+                }
                 ImGui::PopID();
             }
-            const std::size_t newer = sheet.views.size() - views.size() + sheet.annotations.size();
+            const std::size_t newer = sheet.views.size() - views.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size();
             if (newer > 0) {
                 TreeRow(ui, "##newer", nullptr, Trf("Объектов из более новой версии: {}", newer), x + ui.S(24), y, width - ui.S(24), false, true);
                 y += ui.S(30);
@@ -769,6 +995,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         ImGui::PopID();
     }
     ViewMenu(d);
+    DimensionMenu(d);
     ImGui::SetCursorScreenPos({pos.x, y});
     ImGui::Dummy({1, ui.S(8)});
     EndArea();
@@ -828,7 +1055,115 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         return {};
     };
     ViewDrag& drag = Drag();
-    if (hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+    DimensionDrag& dimDrag = DimDrag();
+    DimensionTool& tool = Tool();
+    if (tool.active && (sheet.kind != dw::SheetKind::Drawing || (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape)))) {
+        tool.active = false;
+        tool.Reset();
+    }
+    // A dimension being made: edges picked on a view, then its place.
+    std::optional<dw::Dimension> phantom;
+    std::optional<dw::View>      phantomView;
+    if (tool.active && hovered) {
+        const Vec2 at = view.ToSheet(io.MousePos);
+        const ObjectId id = tool.view ? tool.view : viewAt(at);
+        const auto v = std::find_if(onSheet.begin(), onSheet.end(), [&](const dw::View& x) { return x.id == id; });
+        if (v != onSheet.end()) {
+            std::optional<dw::Measure> measure;
+            if (tool.CanPlace()) {
+                phantom = ToolDimension(tool, *v, at);
+                phantomView = *v;
+                measure = dw::MeasureOf(*v, *phantom, std::vector<std::optional<dw::ModelEdge>>(tool.edges.begin(), tool.edges.end()));
+                if (!measure) phantom.reset();
+            }
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                bool took = false;
+                if (tool.edges.size() < tool.Needs()) {
+                    dw::Json ref;
+                    const auto e = views.EdgeAt(app.workspace, d, *v, at, 6.0 / d.zoom, ref);
+                    const bool fits = e && (tool.kind == dw::DimensionKind::Linear ||
+                                            (tool.kind == dw::DimensionKind::Angle ? e->kind == dw::ModelEdge::Kind::Line
+                                                                                   : e->kind == dw::ModelEdge::Kind::Circle));
+                    if (fits) {
+                        tool.view = v->id;
+                        tool.refs.push_back(std::move(ref));
+                        tool.edges.push_back(*e);
+                        took = true;
+                    } else if (e) {
+                        app.notes.Info(tool.kind == dw::DimensionKind::Angle ? Tr("Угол ставится между прямыми рёбрами")
+                                                                             : Tr("Нужна окружность или дуга"));
+                        took = true;
+                    }
+                }
+                if (!took && phantom) {
+                    const dw::Dimension made = *phantom;
+                    const ObjectId sheetId = d.Sheet().id;
+                    ObjectId madeId;
+                    d.Change(Tr("Размер"), [&](dw::Drawing& dr) {
+                        for (dw::Sheet& s : dr.sheets)
+                            if (s.id == sheetId) {
+                                dw::Dimension x = made;
+                                x.id = dr.Ids().Next();
+                                madeId = x.id;
+                                s.annotations.push_back(dw::MakeDimensionItem(x));
+                            }
+                    });
+                    d.selectedAnnotation = madeId;
+                    d.selectedView = {};
+                    tool.Reset();   // the command stays on for the next dimension
+                    phantom.reset();
+                }
+            }
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {   // a step back: the picked edges, then the command
+            if (tool.edges.empty()) tool.active = false;
+            tool.Reset();
+            phantom.reset();
+        }
+    }
+    if (!tool.active && hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+        const Vec2 at = view.ToSheet(io.MousePos);
+        // A dimension over the views is picked first.
+        dimDrag = {};
+        d.selectedAnnotation = {};
+        for (std::size_t i = layout.hits.size(); i-- > 0;) {
+            const Box2& b = layout.hits[i].box;
+            if (at.x >= b.min.x - 1 && at.x <= b.max.x + 1 && at.y >= b.min.y - 1 && at.y <= b.max.y + 1) {
+                d.selectedAnnotation = layout.hits[i].id;
+                break;
+            }
+        }
+        if (d.selectedAnnotation) {
+            d.selectedView = {};
+            for (const dw::Dimension& x : dw::DimensionsOf(sheet))
+                if (x.id == d.selectedAnnotation && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    for (const dw::View& v : onSheet)
+                        if (v.id == x.view) dimDrag = {x.id, at, x.at, v.scale.Value(), false};
+        }
+    }
+    if (dimDrag.id && ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const Vec2 delta = view.ToSheet(io.MousePos) - dimDrag.start;
+        if (std::abs(delta.x) + std::abs(delta.y) > 0) dimDrag.moved = true;
+        if (dw::Item* item = dw::FindAnnotation(d.Sheet(), dimDrag.id))
+            if (auto x = dw::ReadDimension(*item)) {
+                x->at = dimDrag.from + delta / dimDrag.scale;
+                dw::WriteDimension(*item, *x);
+            }
+    }
+    if (dimDrag.id && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        if (dimDrag.moved)
+            if (dw::Item* item = dw::FindAnnotation(d.Sheet(), dimDrag.id))
+                if (auto x = dw::ReadDimension(*item)) {
+                    // One undo step: back where it was, then the change.
+                    const Vec2 to = x->at;
+                    x->at = dimDrag.from;
+                    dw::WriteDimension(*item, *x);
+                    ChangeDimension(d, dimDrag.id, Tr("Сдвинуть размер"), [to](dw::Dimension& y) { y.at = to; });
+                }
+        dimDrag = {};
+    }
+    if (!tool.active && !d.selectedAnnotation && hovered &&
+        (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
         const Vec2 at = view.ToSheet(io.MousePos);
         d.selectedView = viewAt(at);
         drag = {};
@@ -851,7 +1186,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         if (drag.lockY) delta.y = 0;
         if (std::abs(delta.x) + std::abs(delta.y) > 0) drag.moved = true;
         PlaceDragged(d, drag, delta);
-    } else if (ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+    } else if (!dimDrag.id && ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
         d.center = d.center + Vec2{-io.MouseDelta.x / d.zoom, io.MouseDelta.y / d.zoom};
         view.center = d.center;
     }
@@ -877,12 +1212,14 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
         }
         drag = {};
     }
-    // Right click on a view (not a drag of the sheet): its menu.
-    if (hovered && d.selectedView && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
-        ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0 && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).y == 0)
-        ImGui::OpenPopup("##view-menu");
-    if (d.selectedView && (hovered || ImGui::IsWindowFocused()) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete))
-        DeleteView(d, d.selectedView);
+    // Right click on a view or a dimension (not a drag of the sheet): its menu.
+    const bool rightClick = hovered && !tool.active && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+                            ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0 && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).y == 0;
+    if (rightClick && d.selectedAnnotation) ImGui::OpenPopup("##dim-menu");
+    else if (rightClick && d.selectedView) ImGui::OpenPopup("##view-menu");
+    const bool deleteKey = (hovered || ImGui::IsWindowFocused()) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete);
+    if (deleteKey && d.selectedAnnotation) DeleteAnnotation(d, d.selectedAnnotation);
+    else if (deleteKey && d.selectedView) DeleteView(d, d.selectedView);
     // Double click on the title block: fill it in (as in КОМПАС).
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         const Vec2 at = view.ToSheet(io.MousePos);
@@ -893,8 +1230,30 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
 
     ImGui::PushClipRect(pos, {pos.x + size.x, pos.y + size.y}, true);
     // Drawn from the layout of this frame's start; a view being dragged is drawn where it is now.
-    const dw::SheetLayout now = drag.moved ? dw::LayoutPage(d.drawing, page, content) : layout;
+    const dw::SheetLayout now = drag.moved || dimDrag.moved ? dw::LayoutPage(d.drawing, page, content) : layout;
     DrawSheet(dl, ui, view, now);
+    // The picked dimension framed; the one being made, and its edges, in the accent colour.
+    for (const dw::Hit& h : now.hits)
+        if (h.id == d.selectedAnnotation) {
+            const ImVec2 a = view.ToScreen({h.box.min.x - 1, h.box.max.y + 1}), z = view.ToScreen({h.box.max.x + 1, h.box.min.y - 1});
+            dl->AddRect(a, z, ui::ToU32(c.accent), ui.S(2), 0, ui.S(1.5f));
+        }
+    if (tool.active && tool.view)
+        for (const dw::View& v : onSheet)
+            if (v.id == tool.view)
+                for (const dw::ModelEdge& e : tool.edges) DrawPickedEdge(dl, view, v, e, ui::ToU32(c.accent), ui.S(3));
+    if (phantom && phantomView) {
+        dw::SheetLayout ghost;
+        ghost.width = now.width;
+        ghost.height = now.height;
+        dw::AddDimension(ghost, *phantomView, *phantom,
+                         dw::MeasureOf(*phantomView, *phantom, std::vector<std::optional<dw::ModelEdge>>(tool.edges.begin(), tool.edges.end())));
+        const ImU32 accent = ui::ToU32(c.accent);
+        const float thin = std::max(1.0f, static_cast<float>(0.18 * view.zoom));
+        for (const dw::Polyline& p : ghost.polylines) DrawPolyline(dl, view, p, accent, thin, thin);
+        for (const dw::Fill& f : ghost.fills) DrawFill(dl, view, f, accent);
+        for (const dw::Label& l : ghost.labels) DrawLabel(dl, ui.fonts.body, view, l, accent);
+    }
     // The views: the picked one framed; one without lines says why.
     for (const dw::View& v : dw::ViewsOf(d.Sheet())) {
         const Box2 b = BoxOfView(app, d, v);
@@ -912,9 +1271,10 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     ImGui::PopClipRect();
 
     // A note at the top, as over the part's view: what to do now.
-    const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size();
+    const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size();
     std::string note;
-    if (newer > 0) note = Trf("На листе есть объекты из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer);
+    if (tool.active) note = Tr(ToolPrompt(tool));
+    else if (newer > 0) note = Trf("На листе есть объекты из более новой версии BreezeCAD ({}): они сохранятся без изменений", newer);
     else if (onSheet.empty() && sheet.kind == dw::SheetKind::Drawing) note = Tr("«Стандартные виды» на вкладке «Виды» — главный вид, сверху и слева по детали. Двойной щелчок по надписи — заполнить её");
     else if (views.Busy()) note = Tr("Виды считаются…");
     if (!note.empty()) {
@@ -925,6 +1285,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     }
 
     ViewMenu(d);
+    DimensionMenu(d);
     // The whole sheet again: a button in the corner, as «Домой» over the model.
     ImGui::SetCursorScreenPos({pos.x + size.x - ui.S(48), pos.y + ui.S(12)});
     if (ui::IconButton(ui, "##sheet-fit", "view-fit", 36, 20, Tr("Лист целиком (F)"))) d.zoom = 0;

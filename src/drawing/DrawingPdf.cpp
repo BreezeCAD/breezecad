@@ -48,6 +48,7 @@ std::vector<std::uint8_t> DrawingPdf(const Drawing& drawing, const TrueTypeFont&
         pdf.BeginPage(l.width, l.height);
         for (const Stroke& s : l.strokes) pdf.Line(s.a, s.b, s.weight == LineWeight::Thick ? kThick : kThin);
         for (const Polyline& p : l.polylines) pdf.Polyline(p.points, p.weight == LineWeight::Thick ? kThick : kThin, DashOf(p.style));
+        for (const Fill& f : l.fills) pdf.Fill(f.points);
         for (const Label& label : l.labels) {
             if (label.text.empty()) continue;
             const double em = EmOf(label, font), width = pdf.TextWidth(label.text, em);

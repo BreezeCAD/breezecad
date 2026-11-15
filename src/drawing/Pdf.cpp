@@ -124,6 +124,14 @@ void PdfWriter::Polyline(const std::vector<Vec2>& points, double widthMm, const 
     c += "S [] 0 d 2 J 0 j\n";
 }
 
+void PdfWriter::Fill(const std::vector<Vec2>& points) {
+    if (myPages.empty() || points.size() < 3) return;
+    std::string& c = myPages.back().content;
+    c += std::format("{} {} m\n", Num(points[0].x), Num(points[0].y));
+    for (std::size_t i = 1; i < points.size(); ++i) c += std::format("{} {} l\n", Num(points[i].x), Num(points[i].y));
+    c += "h f\n";
+}
+
 void PdfWriter::Text(std::string_view utf8, Vec2 at, double emMm, double rotation, double squeeze) {
     if (myPages.empty() || utf8.empty() || emMm <= 0) return;
     std::string glyphs;

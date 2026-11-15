@@ -1,5 +1,6 @@
 #include "drawing/SheetLayout.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 #include <utility>
@@ -383,9 +384,25 @@ SheetLayout LayoutPage(const Drawing& drawing, const Page& page, const SheetCont
         return LayoutSpecPage(sheet, rows, page.page, page.count, &automatic);
     }
     SheetLayout out = LayoutSheet(sheet, page.number, page.count, &automatic);
+    const std::vector<View> views = ViewsOf(sheet);
     if (content.lines)
-        for (const View& v : ViewsOf(sheet))
+        for (const View& v : views)
             if (const ViewLines* l = content.lines(sheet, v)) AddView(out, v, *l);
+    // Dimensions over the views; one whose view is gone is not drawn (it stays in the file).
+    if (content.edges)
+        for (const Dimension& dim : DimensionsOf(sheet)) {
+            const auto v = std::find_if(views.begin(), views.end(), [&](const View& x) { return x.id == dim.view; });
+            if (v == views.end()) continue;
+            const std::vector<std::optional<ModelEdge>> edges = content.edges(sheet, *v, dim.edges);
+            const std::optional<Measure> m = MeasureOf(*v, dim, edges);
+            std::vector<Vec2> lost;
+            if (!m)
+                for (const Json& e : dim.edges)   // where the edges were: their middle points
+                    if (const auto mid = e.find("middle"); mid != e.end() && mid->is_array() && mid->size() == 3)
+                        lost.push_back(SheetPointOf(*v, {(*mid)[0].get<double>(), (*mid)[1].get<double>(), (*mid)[2].get<double>()}));
+            const Box2 box = AddDimension(out, *v, dim, m, lost);
+            out.hits.push_back({dim.id, box});
+        }
     return out;
 }
 

@@ -69,7 +69,7 @@ std::optional<View> ReadView(const Item& item);
 void WriteView(Item& item, const View& view);
 Item MakeViewItem(const View& view);
 
-/// Whether this version shows the item (a view it reads); others are kept as they are.
+/// Whether this version shows the item (a view or a dimension it reads); others are kept as they are.
 bool IsKnownItem(const Item& item);
 
 /// The views of the sheet that this version reads, in drawing order.

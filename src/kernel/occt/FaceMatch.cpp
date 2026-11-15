@@ -139,10 +139,14 @@ std::optional<TopoDS_Face> ResolveFace(const TopoDS_Shape& body, const doc::Face
 std::optional<Frame> ResolvePlaneFrame(const TopoDS_Shape& body, const doc::FaceReference& ref) {
     const std::optional<TopoDS_Face> face = ResolveFace(body, ref);
     if (!face) return std::nullopt;
-    const Vec3 n = ref.normal.Normalized();
+    // The face's own normal, cleaned — not the one stored when it was picked:
+    // that one carries the noise of the moment (-3.6e-12, -1, 0) for ever,
+    // and every sketch and plane on it is tilted by it (stabilization plan,
+    // stage 2).
+    const Vec3 n = CleanDirection(PlanarNormal(*face).value_or(ref.normal));
     const Vec3 location = ToVec(BRepAdaptor_Surface(*face).Plane().Location().XYZ());
     const Vec3 onFace = ref.point + n * (location - ref.point).Dot(n);
-    return doc::PlaneFrame({ref.normal, onFace});
+    return CleanFrame(doc::PlaneFrame({n, onFace}));
 }
 
 std::optional<doc::CylinderTouch> ResolveCylinder(const TopoDS_Shape& body, const doc::CylinderTouch& ref) {

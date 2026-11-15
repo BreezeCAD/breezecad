@@ -30,6 +30,7 @@ add_executable(bz_tests
     assembly/RotationAnglesTests.cpp
     assembly/SolverTests.cpp
     core/CrashCodeTests.cpp
+    core/MathTests.cpp
     core/ExpressionTests.cpp
     core/FaultGuardTests.cpp
     core/FoldersTests.cpp

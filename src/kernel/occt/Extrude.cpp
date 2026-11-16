@@ -369,6 +369,7 @@ Ran RunBoolean(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double 
     Op op;
     op.SetArguments(arguments);
     op.SetTools(tools);
+    op.SetUseOBB(true);
     if (fuzzy > 0) {
         op.SetFuzzyValue(fuzzy);
         op.SetNonDestructive(true);

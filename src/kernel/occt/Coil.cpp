@@ -125,6 +125,15 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
             result = result.IsNull() ? piece : BRepAlgoAPI_Fuse(result, piece).Shape();
             _lap("fuse");
         }
+        {
+            auto _tu = std::chrono::steady_clock::now();
+            const int before = [&] { int n = 0; for (TopExp_Explorer e(result, TopAbs_FACE); e.More(); e.Next()) ++n; return n; }();
+            ShapeUpgrade_UnifySameDomain unify(result, true, true, false);
+            unify.Build();
+            result = unify.Shape();
+            const int after = [&] { int n = 0; for (TopExp_Explorer e(result, TopAbs_FACE); e.More(); e.Next()) ++n; return n; }();
+            log::Info("COIL unify: {:.0f} ms faces {} -> {}", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-_tu).count(), before, after);
+        }
         _lap("check-prep");
         if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Пружина получилась некорректной"};
         return result;

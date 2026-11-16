@@ -5,6 +5,7 @@
 #include "platform/Mobile.h"
 #endif
 #include "app/BetaTesting.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "app/Format.h"
 #include "app/Language.h"
 #include "app/viewport/MarkingMenu.h"
@@ -752,6 +753,21 @@ void DrawOptimizationSettings(AppContext& app, float width, bool performance) {
         if (const int n = ui::Segmented(ui, "rebuild", rebuild, r, 2, width); n != r) app.settings.backgroundRebuild = n == 0;
         caption(Tr("В фоне окно не замирает, пока считается тяжёлая операция: модель обновится, когда расчёт закончится. "
                    "«Сразу» — по-старому, на случай если фоновый расчёт ведёт себя странно."));
+        ui::FieldLabel(ui, Tr("Загрузка деталей сборки"));
+        static constexpr std::array<const char*, 2> loadMode{N_("Параллельно"), N_("По очереди")};
+        const int p = app.settings.parallelPartLoad ? 0 : 1;
+        if (const int n = ui::Segmented(ui, "pload", loadMode, p, 2, width); n != p) app.settings.parallelPartLoad = n == 0;
+        caption(Tr("Параллельно — при открытии сборки её детали считаются одновременно на разных ядрах, сборки открываются "
+                   "заметно быстрее. «По очереди» — прежнее поведение, если на слабом компьютере стало хуже."));
+        ui::FieldLabel(ui, Tr("Зависшие операции"));
+        static constexpr std::array<const char*, 2> toMode{N_("Прерывать"), N_("Ждать")};
+        const int t = app.settings.opTimeouts ? 0 : 1;
+        if (const int n = ui::Segmented(ui, "opto", toMode, t, 2, width); n != t) {
+            app.settings.opTimeouts = n == 0;
+            kernel::occt::SetBooleanBudgetMs(app.settings.opTimeouts ? kernel::occt::kDefaultBooleanBudgetMs : 0.0);
+        }
+        caption(Tr("Прерывать — операция, считающаяся дольше 20 секунд, отменяется: деталь открывается с пометкой ошибки на "
+                   "операции, а не виснет. Цена отмены — поток зависшей операции досчитывает фоном до конца сеанса."));
         return;
     }
     ui::FieldLabel(ui, Tr("Качество графики"));

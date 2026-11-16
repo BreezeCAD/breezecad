@@ -78,6 +78,7 @@ struct AssemblyModel::Impl {
     /// Parts edited in memory, by the same key: (document, model).
     std::map<std::string, std::pair<const doc::Document*, const Model*>> inMemory;
     double diskInterval = 0.0;   ///< the window sets ~1 s (AssemblyState)
+    bool parallelLoad = true;   ///< детали сборки грузятся на своих потоках (настройка «Производительность»)
     std::chrono::steady_clock::time_point lastDiskCheck{};
     std::unordered_map<ObjectId, std::string> partOf;   ///< component -> key in `parts`
     std::unordered_map<ObjectId, assembly::Placement> placed;   ///< where each was shown

@@ -66,6 +66,7 @@ add_executable(bz_tests
     kernel/MeasureTests.cpp
     kernel/ExtrudeToFaceTests.cpp
     kernel/ExtrudeToCurvedTests.cpp
+    kernel/RegressionOpenTests.cpp
     kernel/ModelTests.cpp
     kernel/PatternTests.cpp
     kernel/ProjectionTests.cpp

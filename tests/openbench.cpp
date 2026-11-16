@@ -82,27 +82,16 @@ bool BenchProject(const std::filesystem::path& bzp, std::vector<OpTime>& ops, do
         return false;
     }
 
-    // Уникальные детали — каждая один раз, как их грузит AssemblyModel.
-    std::vector<std::filesystem::path> parts;
-    for (const assembly::Component& c : asmly->components) {
-        const std::filesystem::path p = assembly::ResolvePartPath(*mainAsm, c.path);
-        if (std::ranges::find(parts, p) == parts.end()) parts.push_back(p);
-    }
-    std::cout << "  деталей уникальных: " << parts.size() << "\n";
-
-    std::vector<std::pair<std::string, double>> partMs;
+    // Как при открытии в программе: AssemblyModel сама грузит уникальные
+    // детали на своих потоках (параллельная загрузка по умолчанию включена).
+    // Замер — то, что в действительности видит пользователь при открытии.
+    kernel::AssemblyModel model;
+    const auto tParts = std::chrono::steady_clock::now();
+    model.Update(*asmly, *mainAsm, nullptr);
+    const double partsMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tParts).count();
+    std::cout << "  компонентов: " << asmly->components.size()
+              << ", загрузка+пересчёт деталей (AssemblyModel::Update): " << partsMs << " мс\n";
     bool ok = true;
-    for (const std::filesystem::path& p : parts) {
-        double ms = 0;
-        const std::size_t before = ops.size();
-        if (!BenchPart(p, ops, ms)) ok = false;
-        partMs.push_back({ToUtf8(p.filename()), ms});
-        (void)before;
-    }
-    // Сборка: пересчёт узлов решателя (геометрия не строится, но узлы решаются).
-    std::sort(partMs.begin(), partMs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-    for (const auto& [name, ms] : partMs)
-        std::cout << "  " << name << ": " << ms << " мс\n";
     totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::filesystem::remove_all(dir, ec);
     return ok;

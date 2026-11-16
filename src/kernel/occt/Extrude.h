@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Expected.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "document/ExtrudeFeature.h"
 
 #include <TopoDS_Face.hxx>
@@ -51,15 +52,5 @@ std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape
 /// Merges coplanar faces and collinear edges left by booleans, so the model
 /// keeps a clean topology (one face per flat side).
 TopoDS_Shape Clean(const TopoDS_Shape& shape);
-
-/// A boolean stopped from inside OCCT: its wall-clock budget ran out.
-/// Thrown across our own frames only (after BOPAlgo::Build returned).
-struct BooleanBudgetExceeded {};
-
-/// Wall-clock budget of one boolean, ms (<= 0: no limit, as before).
-/// On exceeding, the operation is cancelled inside OCCT and comes back an
-/// error: the part opens with a note on the operation instead of hanging.
-void   SetBooleanBudgetMs(double ms);
-double BooleanBudgetMs();
 
 } // namespace bz::kernel::occt

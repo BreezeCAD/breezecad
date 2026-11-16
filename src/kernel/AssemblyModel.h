@@ -72,6 +72,9 @@ public:
     /// Files are looked at for changes at most this often (seconds); a new
     /// component's file at once. 0 (the default): at every Update.
     void SetDiskCheckInterval(double seconds);
+    /// Детали сборки грузятся несколькими потоками при открытии (по
+    /// умолчанию включено; выключатель — настройка «Производительность»).
+    void SetParallelPartLoad(bool on);
 
     /// The components as bodies of one model (for the viewport).
     const Model& Shown() const;

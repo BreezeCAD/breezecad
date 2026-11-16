@@ -7,8 +7,14 @@
 #include "document/WorkAxisFeature.h"
 #include "document/WorkPlaneFeature.h"
 #include "document/WorkPointFeature.h"
+#include "core/FaultGuard.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "kernel/occt/AssemblyModelImpl.h"
 #include "kernel/occt/ModelImpl.h"
+
+#include <atomic>
+#include <thread>
+#include <unordered_set>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRep_Tool.hxx>
@@ -314,6 +320,8 @@ bool AssemblyModel::IsPartInMemory(const std::filesystem::path& file) const { re
 
 void AssemblyModel::SetDiskCheckInterval(double seconds) { myImpl->diskInterval = seconds; }
 
+void AssemblyModel::SetParallelPartLoad(bool on) { myImpl->parallelLoad = on; }
+
 void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& assemblyFile,
                            std::vector<std::string>* problems) {
     Impl& m = *myImpl;
@@ -326,6 +334,14 @@ void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& a
     const bool lookAtDisk = m.diskInterval <= 0 ||
                             std::chrono::duration<double>(now - m.lastDiskCheck).count() >= m.diskInterval;
     if (lookAtDisk) m.lastDiskCheck = now;
+    struct Todo {
+        std::string key;
+        std::filesystem::path file;
+        std::filesystem::file_time_type time;
+        bool had = false;   // уже была в m.parts (в список перезагруженных)
+    };
+    std::vector<Todo> todo;
+    std::unordered_set<std::string> queued;
     for (const assembly::Component& c : a.components) {
         const std::filesystem::path file = assembly::ResolvePartPath(assemblyFile, c.path);
         const std::string key = ToUtf8(file);
@@ -352,19 +368,56 @@ void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& a
         std::error_code ec;
         const auto time = std::filesystem::last_write_time(file, ec);
         if (it != m.parts.end() && (ec || it->second.time == time)) continue;   // loaded and unchanged
+        if (!queued.insert(key).second) continue;   // второй компонент на тот же файл — грузим один раз
+        todo.push_back({key, file, ec ? std::filesystem::file_time_type{} : time, it != m.parts.end()});
+    }
 
+    // Детали независимы — грузятся на своих потоках. Сбой потока стоит одну
+    // деталь с пометкой (guard::RunGuarded), не программу. Вложенный
+    // параллелизм внутри булевых на это время выключается.
+    std::vector<Expected<LoadedPart>> loaded;
+    loaded.reserve(todo.size());
+    for (std::size_t i = 0; i < todo.size(); ++i) loaded.emplace_back(Error{"не загружена"});
+    if (todo.size() > 1 && m.parallelLoad) {
+        occt::PushBooleansSerial();
+        std::atomic<std::size_t> next{0};
+        const auto work = [&] {
+            for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed); i < todo.size();
+                 i = next.fetch_add(1, std::memory_order_relaxed)) {
+                std::string fault;
+                Expected<LoadedPart> result = Error{"не загружена"};
+                const bool survived = guard::RunGuarded([&] { result = LoadPart(todo[i].file); }, &fault);
+                if (!survived) result = Error{std::format("Сбой при загрузке: {}", fault)};
+                loaded[i] = std::move(result);
+            }
+        };
+        std::vector<std::thread> pool;
+        const unsigned workers = std::min<unsigned>(
+            std::min(8u, std::max(1u, std::thread::hardware_concurrency())),
+            static_cast<unsigned>(todo.size()));
+        for (unsigned w = 1; w < workers; ++w) pool.emplace_back(work);
+        work();
+        for (std::thread& t : pool) t.join();
+        occt::PopBooleansSerial();
+    } else {
+        for (std::size_t i = 0; i < todo.size(); ++i) loaded[i] = LoadPart(todo[i].file);
+    }
+
+    // Применение — в порядке компонентов: числа поколений детерминированы.
+    for (std::size_t i = 0; i < todo.size(); ++i) {
         Impl::Part part;
-        part.time = ec ? std::filesystem::file_time_type{} : time;
+        part.time = todo[i].time;
         part.generation = ++m.partsGeneration;
-        if (Expected<LoadedPart> loaded = LoadPart(file)) {
-            part.loaded = std::make_unique<LoadedPart>(std::move(*loaded));
+        if (loaded[i]) {
+            part.loaded = std::make_unique<LoadedPart>(std::move(*loaded[i]));
             part.TakeShape(part.loaded->model);
         } else {
-            part.problem = loaded.GetError().message;
+            part.problem = loaded[i].GetError().message;
         }
-        if (it != m.parts.end()) reloaded.push_back(key);
-        m.parts[key] = std::move(part);
+        if (todo[i].had) reloaded.push_back(todo[i].key);
+        m.parts[todo[i].key] = std::move(part);
     }
+
     for (auto& [key, part] : m.parts)
         if (!part.problem.empty() && !part.reported) {
             if (problems) problems->push_back(part.problem);

@@ -366,6 +366,10 @@ struct Ran {
 /// cylinder ending on another's generatrix, a profile corner exactly on a
 /// wall) are then treated as meeting; the arguments are left as they were
 /// (a failed boolean changes their tolerances otherwise).
+// >0 — мы на потоке параллельной загрузки деталей: вложенный параллелизм
+// булевых выключаем, чтобы пулы OCCT не перемножались.
+std::atomic<int> gSerialDepth{0};
+
 // Эта сборка OCCT 7.8.1 не принимает внешний индикатор прогресса
 // (SetProgressIndicator отсутствует) — прервать зависшую булеву изнутри
 // нельзя. Поэтому при включённом бюджете булева уходит на отдельный поток
@@ -380,7 +384,9 @@ Ran RunBooleanImpl(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, dou
     op.SetArguments(arguments);
     op.SetTools(tools);
     op.SetUseOBB(true);
-    op.SetRunParallel(true);   // эксперимент: многопоточная пара сборок пересечений
+    // Параллельная пара сборок пересечений; на потоках параллельной загрузки
+    // деталей вложенный параллелизм выключен, чтобы пулы OCCT не перемножались.
+    op.SetRunParallel(gSerialDepth.load(std::memory_order_relaxed) == 0);
     if (fuzzy > 0) {
         op.SetFuzzyValue(fuzzy);
         op.SetNonDestructive(true);
@@ -463,6 +469,9 @@ std::atomic<double> gBudgetMs{[] {
 
 void SetBooleanBudgetMs(const double ms) { gBudgetMs.store(ms > 0 ? ms : 0.0, std::memory_order_relaxed); }
 double BooleanBudgetMs() { return gBudgetMs.load(std::memory_order_relaxed); }
+
+void PushBooleansSerial() { gSerialDepth.fetch_add(1, std::memory_order_relaxed); }
+void PopBooleansSerial() { gSerialDepth.fetch_sub(1, std::memory_order_relaxed); }
 
 namespace {
 

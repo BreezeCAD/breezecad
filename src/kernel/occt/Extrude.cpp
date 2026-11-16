@@ -380,6 +380,7 @@ Ran RunBooleanImpl(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, dou
     op.SetArguments(arguments);
     op.SetTools(tools);
     op.SetUseOBB(true);
+    op.SetRunParallel(true);   // эксперимент: многопоточная пара сборок пересечений
     if (fuzzy > 0) {
         op.SetFuzzyValue(fuzzy);
         op.SetNonDestructive(true);

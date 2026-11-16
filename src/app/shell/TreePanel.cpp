@@ -342,51 +342,72 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
     const ui::ThemeColors& c = ui.C();
     doc::Document& d = session.doc;
 
-    // Header with a name filter.
+    using Kind = ShellState::TreeKind;
+    Kind& kind = app.shell.treeKind;
+    // Problems at a glance: the «Проблемы N» chip lists only them.
+    int problems = 0;
+    for (const auto& f : d.Features()) problems += OfKind(*f, Kind::Problems) ? 1 : 0;
+    if (problems == 0 && kind == Kind::Problems) kind = Kind::All;
+
+    // Header; the name filter's magnifier is at the right.
+    const float headerH = ui.S(40);
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float h = ui.S(40);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddText(ui.fonts.strong, ui.S(13), {p.x + ui.S(14), p.y + (h - ui.S(13)) / 2 - ui.S(1)}, ui::ToU32(c.text),
+        dl->AddText(ui.fonts.strong, ui.S(13), {p.x + ui.S(14), p.y + (headerH - ui.S(13)) / 2 - ui.S(1)}, ui::ToU32(c.text),
                     Tr("Дерево построения"));
-        dl->AddLine({p.x, p.y + h - 1}, {p.x + width, p.y + h - 1}, ui::ToU32(c.dividerSoft));
-        using Kind = ShellState::TreeKind;
-        Kind& kind = app.shell.treeKind;
         ImGui::SetCursorScreenPos({p.x + width - ui.S(38), p.y + ui.S(7)});
-        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск и фильтры дерева"), true, app.shell.treeSearch)) {
+        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск по дереву"), true, app.shell.treeSearch)) {
             app.shell.treeSearch = !app.shell.treeSearch;
             app.shell.treeFilter.clear();
-            if (kind != Kind::Problems) kind = Kind::All;
         }
-        // Problems at a glance: "⚠ N" beside the search lists only them.
-        int problems = 0;
-        for (const auto& f : d.Features()) problems += OfKind(*f, Kind::Problems) ? 1 : 0;
-        if (problems == 0 && kind == Kind::Problems) kind = Kind::All;
-        if (problems > 0) {
-            const std::string count = std::to_string(problems);
-            const float bw = ui.S(26) + ui.fonts.medium->CalcTextSizeA(ui.S(12), FLT_MAX, 0, count.c_str()).x;
-            const ImVec2 bp{p.x + width - ui.S(44) - bw, p.y + ui.S(7)};
-            ImGui::SetCursorScreenPos(bp);
-            const bool on = kind == Kind::Problems;
-            if (ImGui::InvisibleButton("##tree-problems", {bw, ui.S(26)})) kind = on ? Kind::All : Kind::Problems;
+        ImGui::SetCursorScreenPos({p.x, p.y + headerH});
+    }
+    if (app.shell.treeSearch) {
+        ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
+        ImGui::Dummy({0, ui.S(4)});
+    }
+    // Kind chips, always at hand (макет design/tree-header): «Всё · Тела · Эскизы · Раб. · Проблемы N».
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float chipH = app.shell.mobile.phone ? ui.S(28) : ui.S(24);
+        const float gap = ui.S(4), padX = ui.S(10);
+        const Kind  kinds[] = {Kind::All, Kind::Operations, Kind::Sketches, Kind::WorkGeometry, Kind::Problems};
+        const std::string labels[] = {Tr("Всё"), Tr("Тела"), Tr("Эскизы"), Tr("Раб."),
+                                      problems > 0 ? Trf("Проблемы {}", problems) : std::string()};
+        // One row: on a narrow panel the text shrinks a little (as the segmented did).
+        float fs = ui.S(12);
+        const float avail = width - ui.S(16);
+        const auto rowWidth = [&] {
+            float w = 0;
+            for (const auto& l : labels)
+                if (!l.empty()) w += ui.fonts.medium->CalcTextSizeA(fs, FLT_MAX, 0, l.c_str()).x + 2 * padX + gap;
+            return w > gap ? w - gap : 0;
+        };
+        if (rowWidth() > avail) fs = std::max(ui.S(9), fs * avail / rowWidth());
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        float cx = start.x + ui.S(8);
+        for (int i = 0; i < 5; ++i) {
+            if (labels[i].empty()) continue;
+            const bool on = kind == kinds[i];
+            const float cw = ui.fonts.medium->CalcTextSizeA(fs, FLT_MAX, 0, labels[i].c_str()).x + 2 * padX;
+            ImGui::SetCursorScreenPos({cx, start.y});
+            ImGui::PushID(i);
+            if (ImGui::InvisibleButton("chip", {cw, chipH})) kind = on ? Kind::All : kinds[i];
+            ImGui::PopID();
             const bool hover = ImGui::IsItemHovered();
-            if (on || hover) dl->AddRectFilled(bp, {bp.x + bw, bp.y + ui.S(26)}, ui::ToU32(on ? c.accentSoft : c.hover), ui.S(6));
-            ui.icons.Draw(dl, "status-warning", {bp.x + ui.S(5), bp.y + ui.S(5.5f)}, ui.S(15), Color{1, 1, 1, 1});
-            dl->AddText(ui.fonts.medium, ui.S(12), {bp.x + ui.S(23), bp.y + (ui.S(26) - ui.S(12)) / 2}, ui::ToU32(on ? c.accentHover : c.text),
-                        count.c_str());
-            ui::ItemTooltip(ui, on ? Tr("Показать всё дерево") : Tr("Показать только операции с ошибками и предупреждениями"));
+            if (on)
+                dl->AddRectFilled({cx, start.y}, {cx + cw, start.y + chipH}, ui::ToU32(c.accentSoft), chipH / 2);
+            else if (hover)
+                dl->AddRectFilled({cx, start.y}, {cx + cw, start.y + chipH}, ui::ToU32(c.hover), chipH / 2);
+            dl->AddText(ui.fonts.medium, fs, {cx + padX, start.y + (chipH - fs) / 2},
+                        ui::ToU32(on ? c.accentHover : hover ? c.text : c.textSecondary), labels[i].c_str());
+            cx += cw + gap;
         }
-        ImGui::SetCursorScreenPos({p.x, p.y + h});
-        if (app.shell.treeSearch) {
-            ImGui::SetCursorScreenPos({p.x + ui.S(8), p.y + h + ui.S(6)});
-            ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
-            ImGui::SetCursorScreenPos({p.x + ui.S(8), ImGui::GetCursorScreenPos().y + ui.S(4)});
-            static constexpr const char* kKinds[] = {N_("Всё"), N_("Операции"), N_("Эскизы"), N_("Раб. элементы")};
-            const int current = kind == Kind::Problems ? -1 : static_cast<int>(kind);
-            const int chosen = ui::Segmented(ui, "##tree-kind", kKinds, current, 4, width - ui.S(16));   // Segmented translates
-            if (chosen != current && chosen >= 0) kind = static_cast<Kind>(chosen);
-            ImGui::Dummy({0, ui.S(4)});
-        }
+        // The divider under the chips (was under the header alone).
+        const float rowsY = start.y + chipH + ui.S(6);
+        dl->AddLine({start.x, rowsY - 1}, {start.x + width, rowsY - 1}, ui::ToU32(c.dividerSoft));
+        ImGui::SetCursorScreenPos({start.x, rowsY});
     }
 
     const float rowW = width - ui.S(12);

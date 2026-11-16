@@ -41,7 +41,9 @@ public:
 
 private:
     void Save(AppContext& app, Session& session);
-    /// Each frame while rendering: the picture done → written to the file.
+    void Copy(AppContext& app, Session& session);
+    /// Each frame while rendering: the picture done → written to the file
+    /// or put into the clipboard.
     void Poll(AppContext& app);
 
     bool myOpen = false;
@@ -51,6 +53,7 @@ private:
     int  mySize = 1;         ///< kSizes
     std::filesystem::path myFolder;   ///< where the last picture went
     bool                  myRendering = false;
+    bool                  myToClipboard = false;   ///< the picture being made goes to the clipboard, not a file
     std::filesystem::path myTarget;   ///< where the picture being made goes
 };
 

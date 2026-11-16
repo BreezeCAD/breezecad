@@ -5,6 +5,7 @@
 #include "app/Session.h"
 #include "app/sketch/SketchEditor.h"
 #include "core/PathText.h"
+#include "platform/Clipboard.h"
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
 #include "render/Viewport.h"
@@ -25,6 +26,17 @@ struct Size {
     const char* label;
 };
 constexpr std::array<Size, 4> kSizes{{{1280, 720, "1280×720"}, {1920, 1080, "1920×1080"}, {3840, 2160, "3840×2160"}, {1080, 1080, "1080×1080"}}};
+
+render::Viewport::PhotoOptions MakeOptions(int background, bool floor, bool edges, int size) {
+    const Size& s = kSizes[static_cast<std::size_t>(size)];
+    render::Viewport::PhotoOptions o;
+    o.background = static_cast<render::Viewport::PhotoOptions::Background>(background);
+    o.width = s.width;
+    o.height = s.height;
+    o.floor = floor;
+    o.edges = edges;
+    return o;
+}
 
 void Caption(AppContext& app, const char* text, float width) {
     ui::FontScope font(app.ui.fonts.caption);
@@ -96,18 +108,23 @@ void PhotoEditor::Save(AppContext& app, Session& session) {
                                                           {{Tr("Картинка PNG"), "*.png"}}, ".png");
     if (!file) return;
 
-    const Size& size = kSizes[static_cast<std::size_t>(mySize)];
-    render::Viewport::PhotoOptions o;
-    o.background = static_cast<render::Viewport::PhotoOptions::Background>(myBackground);
-    o.width = size.width;
-    o.height = size.height;
-    o.floor = myFloor;
-    o.edges = myEdges;
-    if (!app.viewport.BeginPhoto(o)) {
+    if (!app.viewport.BeginPhoto(MakeOptions(myBackground, myFloor, myEdges, mySize))) {
         app.notes.Error(Tr("Не удалось сделать кадр: видеокарта не отдала изображение"));
         return;
     }
+    myToClipboard = false;
     myTarget = *file;
+    myRendering = true;
+}
+
+void PhotoEditor::Copy(AppContext& app, Session& session) {
+    (void)session;
+    if (myRendering) return;
+    if (!app.viewport.BeginPhoto(MakeOptions(myBackground, myFloor, myEdges, mySize))) {
+        app.notes.Error(Tr("Не удалось сделать кадр: видеокарта не отдала изображение"));
+        return;
+    }
+    myToClipboard = true;
     myRendering = true;
 }
 
@@ -123,6 +140,13 @@ void PhotoEditor::Poll(AppContext& app) {
     const std::optional<Image> image = state == State::Done ? app.viewport.TakePhoto() : std::nullopt;
     if (!image) {
         if (state != State::None) app.notes.Error(Tr("Не удалось сделать кадр: видеокарта не отдала изображение"));
+        return;
+    }
+    if (myToClipboard) {
+        if (platform::SetClipboardImage(*image))
+            app.notes.Info(Tr("Кадр скопирован в буфер обмена"));
+        else
+            app.notes.Error(Tr("Не удалось положить кадр в буфер обмена"));
         return;
     }
     std::size_t bytes = 0;
@@ -218,7 +242,9 @@ void PhotoEditor::DrawPanel(AppContext& app, Session& session) {
     const float bw = (width - ui.S(28) - gap) / 2.0f;
     const float bh = ui.S(36);
     ImGui::SetCursorScreenPos({fp.x + ui.S(14), fp.y + ui.S(12)});
-    if (ui::SecondaryButton(ui, "##photo-close", Tr("Закрыть"), nullptr, {bw, bh})) app.Later([&app, &session, this] { Cancel(app, session); });
+    // The mock-up (design/photo-mode) holds «Копировать» and «Сохранить PNG…» here; closing is the header cross or Esc.
+    if (ui::SecondaryButton(ui, "##photo-copy", Tr("Копировать"), nullptr, {bw, bh}, !myRendering))
+        app.Later([&app, &session, this] { Copy(app, session); });
     ImGui::SameLine(0, gap);
     if (ui::PrimaryButton(ui, "##photo-save", Tr("Сохранить PNG…"), nullptr, {bw, bh}, !myRendering))
         app.Later([&app, &session, this] { Save(app, session); });

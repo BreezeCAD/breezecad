@@ -402,10 +402,14 @@ const char* const kNothingLeft = "После операции не остало�
 
 /// What every boolean result goes through: not empty, cleaned, valid.
 Expected<TopoDS_Shape> FinishBoolean(const TopoDS_Shape& raw, doc::BooleanOp op) {
+    auto _t0 = std::chrono::steady_clock::now();
     if (IsEmpty(raw)) {
         return Error{op == doc::BooleanOp::Intersect ? "Пересечение пустое: тела не перекрываются" : kNothingLeft};
     }
     const TopoDS_Shape result = Clean(raw);
+    { int n = 0; for (TopExp_Explorer e(raw, TopAbs_FACE); e.More(); e.Next()) ++n;
+      log::Info("FINISH clean: {:.0f} ms faces={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count(), n); }
+    log::Info("FINISH check: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count());
     if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Результат операции некорректен"};
     return result;
 }
@@ -517,6 +521,7 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Sha
     Error                       last{"Ошибка булевой операции"};
     for (double fuzzy : kFuzzySteps) {
         said.retried = fuzzy > 0;
+        auto _tb = std::chrono::steady_clock::now();
         try {
             Ran ran;
             switch (op) {
@@ -525,12 +530,15 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Sha
                 case doc::BooleanOp::Intersect: ran = RunBoolean<BRepAlgoAPI_Common>(target, tool, fuzzy); break;
                 case doc::BooleanOp::NewBody:   break;
             }
+            log::Info("BOP fuzzy={} build: {:.0f} ms", fuzzy, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count());
             if (IsEmpty(ran.shape)) return FinishBoolean(ran.shape, op);   // nothing left is an answer, not a failure
+            _tb = std::chrono::steady_clock::now();
             Expected<TopoDS_Shape> result = FinishBoolean(ran.shape, op);
             if (!result) {
                 last = result.GetError();
                 continue;   // not valid: once more, with a tolerance
             }
+            log::Info("BOP finish: {:.0f} ms ok={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count(), result.HasValue());
             if (!cut) return result;
             const bool removed = VolumeOf(*result) < before - noise;
             // One face of a few is a ray gone wrong, not a groove left uncut.
@@ -661,10 +669,12 @@ std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape
 }
 
 TopoDS_Shape Clean(const TopoDS_Shape& input) {
+    auto _tc = std::chrono::steady_clock::now();
     // One cylinder made twice (a fillet and the extruded arc projected from
     // it) is given one surface first: with two frames of opposite hands
     // UnifySameDomain never finished, and the line between them stayed.
     const TopoDS_Shape shape = ShareCylinders(input);
+    log::Info("CLEAN share: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     auto* unify = new ShapeUpgrade_UnifySameDomain(shape, true, true, true);
     // Faces of a real part are "one plane" only up to the sketch solver's
     // residual and the transforms of a part drawn in an assembly. The
@@ -710,12 +720,14 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
     // Cleaning is a nicety: on a fault the shape goes on as the boolean or
     // sweep made it. The half-built object is left alone (leaked), its state
     // after the jump is not to be trusted even by its destructor.
+    log::Info("CLEAN prep: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     TopoDS_Shape result;
     if (!guard::RunGuarded([&] { unify->Build(); result = unify->Shape(); })) {
         log::Warn("Clean: OCCT fault in UnifySameDomain, the shape is left as it is");
         return input;
     }
     delete unify;
+    log::Info("CLEAN unify-build: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     return result;
 }
 

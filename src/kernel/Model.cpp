@@ -381,12 +381,16 @@ void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::
         status = {FeatureState::Error, "Щёлкните замкнутый контур эскиза, который использовать"};
         return;
     }
+    auto _t0 = std::chrono::steady_clock::now();
     Expected<TopoDS_Shape> tool = makeTool(faces, *sketch, profile->second.frame);
+    log::Info("TOOL {}: {:.0f} ms", f.name, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count());
     if (!tool) {
         status = {FeatureState::Error, tool.GetError().message};
         return;
     }
+    auto _t1 = std::chrono::steady_clock::now();
     CombineSolid(f.id, f.operation, *tool, impl, bodies, status);
+    log::Info("COMBINE {}: {:.0f} ms", f.name, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t1).count());
 }
 
 /// Distance from `p` to `shape`, mm (1e300 when it cannot be measured).
@@ -1477,7 +1481,7 @@ void SetUpOcct() {
         BOPAlgo_Options::SetParallelMode(false);
         const Handle(Message_Messenger)& messenger = Message::DefaultMessenger();
         // Range-for works with both OCCT 7.x and 8.x sequence types.
-        for (const auto& printer : messenger->Printers()) printer->SetTraceLevel(Message_Warning);
+        for (const auto& printer : messenger->Printers()) printer->SetTraceLevel(Message_Info);
     });
 }
 

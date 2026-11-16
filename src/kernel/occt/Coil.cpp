@@ -1,4 +1,6 @@
 #include "kernel/occt/Coil.h"
+#include "core/Log.h"
+#include <chrono>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -10,6 +12,7 @@
 #include <BRepLib.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepTools.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom_CylindricalSurface.hxx>
@@ -80,6 +83,8 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
         if (nearest < 1e-6) return Error{"Профиль касается оси или пересекает её — отодвиньте его от осевой линии"};
         if (hi - lo >= f.pitch.value - 1e-6) return Error{"Шаг меньше высоты профиля: витки пересекаются"};
 
+        auto _t0 = std::chrono::steady_clock::now();
+        auto _lap = [&](const char* what){ log::Info("COIL {}: {:.0f} ms", what, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count()); };
         // The helix: one edge per half turn on the cylinder through the profile centre.
         const gp_Dir axis(dir.x, dir.y, dir.z);
         const gp_Dir across((centre - foot).x, (centre - foot).y, (centre - foot).z);
@@ -97,6 +102,7 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
             BRepLib::BuildCurves3d(edge);
             helixWire.Add(edge);
         }
+        _lap("helix");
         if (!helixWire.IsDone()) return Error{"Пружина: не удалось построить винтовую линию"};
         const TopoDS_Wire helix = helixWire.Wire();
 
@@ -106,6 +112,7 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
             const TopoDS_Wire outer = BRepTools::OuterWire(face);
             Expected<TopoDS_Shape> solid = SweepWire(outer, helix, axis);
             if (!solid) return solid;
+            _lap("sweep-outer");
             TopoDS_Shape piece = *solid;
             for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
                 const TopoDS_Wire wire = TopoDS::Wire(w.Current());
@@ -113,9 +120,12 @@ Expected<TopoDS_Shape> MakeCoil(const std::vector<TopoDS_Face>& faces, const doc
                 Expected<TopoDS_Shape> hole = SweepWire(wire, helix, axis);
                 if (!hole) return hole;
                 piece = BRepAlgoAPI_Cut(piece, *hole).Shape();
+                _lap("cut-hole");
             }
             result = result.IsNull() ? piece : BRepAlgoAPI_Fuse(result, piece).Shape();
+            _lap("fuse");
         }
+        _lap("check-prep");
         if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Пружина получилась некорректной"};
         return result;
     } catch (const Standard_Failure& failure) {

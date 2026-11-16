@@ -452,9 +452,17 @@ Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopoDS_Shape& b, double fuzzy
 }
 
 /// The tolerances a boolean is tried with, in turn: exact first, then the
-/// touching-surfaces ones (BETA-BUGS №5, №7). Far below anything drawn on
-/// purpose: 0.1 µm, then 10 µm.
-constexpr double kFuzzySteps[] = {0.0, 1e-4, 1e-2};
+/// touching-surfaces ones (BETA-BUGS №5, №7). Доли диагонали габарита
+/// целевого тела: на детали ~100 мм даёт прежние 0.1 мкм и 10 мкм, а на
+/// микродетали фиксированный допуск не съест стенки.
+void FuzzyStepsFor(const TopoDS_Shape& target, double steps[3]) {
+    Bnd_Box box;
+    BRepBndLib::Add(target, box);
+    const double d = box.IsVoid() ? 100.0 : std::sqrt(box.SquareExtent());
+    steps[0] = 0.0;
+    steps[1] = 1e-6 * d;
+    steps[2] = 1e-4 * d;
+}
 
 // Бюджет времени одной булевой, мс. 0 — выключен (как раньше): включается
 // из настроек приложения, в тестах — переменной BZ_BOOLEAN_BUDGET_MS.
@@ -600,7 +608,9 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Sha
     bool                        missed = false;   // a valid cut came back without removing anything
     bool                        firstPartial = false;
     Error                       last{"Ошибка булевой операции"};
-    for (double fuzzy : kFuzzySteps) {
+    double                      fuzzySteps[3];
+    FuzzyStepsFor(target, fuzzySteps);
+    for (double fuzzy : fuzzySteps) {
         said.retried = fuzzy > 0;
         auto _tb = std::chrono::steady_clock::now();
         try {
@@ -658,7 +668,9 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const std::vecto
         // As a single tool: exact first, then with a tolerance for surfaces
         // that only touch.
         Error last{"Ошибка булевой операции"};
-        for (double fuzzy : kFuzzySteps) {
+        double fuzzySteps[3];
+        FuzzyStepsFor(target, fuzzySteps);
+        for (double fuzzy : fuzzySteps) {
             try {
                 const TopoDS_Shape raw = op == doc::BooleanOp::Join ? RunBooleanGuarded<BRepAlgoAPI_Fuse>(target, toolList, fuzzy, nullptr).shape
                                                                     : RunBooleanGuarded<BRepAlgoAPI_Cut>(target, toolList, fuzzy, nullptr).shape;
@@ -753,6 +765,48 @@ std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape
     return std::nullopt;
 }
 
+namespace {
+
+/// Рёбра, у которых только одна грань: дыры в оболочке тела. Шов (ребро,
+/// встречающееся в одной грани дважды) и вырожденное ребро (полюс конуса)
+/// дырами не считаются.
+int OpenEdges(const TopoDS_Shape& shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    int open = 0;
+    for (int i = 1; i <= edgeFaces.Extent(); ++i) {
+        const TopoDS_Edge& edge = TopoDS::Edge(edgeFaces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge) || edgeFaces(i).Extent() != 1) continue;
+        if (BRep_Tool::IsClosed(edge, TopoDS::Face(edgeFaces(i).First()))) continue;   // шов
+        ++open;
+    }
+    return open;
+}
+
+int SolidCount(const TopoDS_Shape& shape) {
+    int n = 0;
+    for (TopExp_Explorer e(shape, TopAbs_SOLID); e.More(); e.Next()) ++n;
+    return n;
+}
+
+/// Почему слияние граней сделало `after` хуже `before`, или nullptr, если
+/// всё в порядке. Слияние только убирает линии между кусками одной
+/// поверхности: число тел, объём и замкнутость оболочки должны сохраниться
+/// (refine у FreeCAD проверяется так же; на OCCT встречалось тело,
+/// вывернутое наизнанку).
+const char* CleanBrokeShape(const TopoDS_Shape& before, const TopoDS_Shape& after) {
+    if (after.IsNull()) return "не дало результата";
+    if (SolidCount(after) != SolidCount(before)) return "изменило число тел";
+    const double v0 = VolumeOf(before), v1 = VolumeOf(after);
+    // Та же геометрия, другие грани: интегралы объёма отличаются только
+    // округлением — намного меньше 1e-5 от объёма тела.
+    if (std::abs(v1 - v0) > 1e-5 * std::max(std::abs(v0), 1.0)) return "изменило объём";
+    if (OpenEdges(after) > OpenEdges(before)) return "открыло оболочку";
+    return nullptr;
+}
+
+} // namespace
+
 TopoDS_Shape Clean(const TopoDS_Shape& input) {
     auto _tc = std::chrono::steady_clock::now();
     int cleanFaces = 0;
@@ -818,6 +872,16 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
         return input;
     }
     delete unify;
+    // Сама проверка не должна стоить дороже слияния: если сделать её нельзя —
+    // тело идёт дальше слитым, как до появления проверки. Слияние, сломавшее
+    // тело, откатывается: исходное тело надёжнее слитого, но невалидного.
+    try {
+        if (const char* why = CleanBrokeShape(shape, result)) {
+            log::Warn("Clean: слияние граней {} — тело оставлено как было", why);
+            return input;
+        }
+    } catch (const Standard_Failure&) {
+    }
     log::Info("CLEAN unify-build: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     return result;
 }

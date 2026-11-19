@@ -6,6 +6,7 @@
 #include "app/Session.h"
 #include "app/assembly/InPlace.h"
 #include "app/sketch/SketchEditor.h"
+#include "app/sketch/SketchRepair.h"
 #include "core/Monitor.h"
 #include "core/PathText.h"
 #include "document/SketchFeature.h"
@@ -619,9 +620,45 @@ void DrawChangeDialog(AppContext& app) {
     // --- foot ---------------------------------------------------------------------------
     const float fy = o.y + height - footH / 2;
     const bool last = d.current + 1 >= st.changes.size();
+    const float bh = ui.S(36);
+    // «Вернуть как было»: the affected sketches back as they were (restored
+    // from their beforeBreak where it is kept, their projections unlinked) —
+    // an alternative to the four choices, one undo step like them.
+    float footX = o.x + pad;
+    {
+        const doc::Document* partDoc = st.geometry.PartOf(change.component);
+        bool canRestore = false;
+        if (partDoc)
+            for (const kernel::AffectedSketch& s : change.sketches) {
+                const auto* sk = partDoc->FindAs<doc::SketchFeature>(s.sketch);
+                if (sk && (!sk->projections.empty() || !sk->contextProjections.empty())) {
+                    canRestore = true;
+                    break;
+                }
+            }
+        const char* label = change.sketches.size() > 1 ? Tr("Вернуть все как было") : Tr("Вернуть эскиз как было");
+        const float rw = std::max(ui.S(190), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, label).x + ui.S(30));
+        ImGui::SetCursorScreenPos({footX, fy - bh / 2});
+        if (ui::SecondaryButton(ui, "##change-restore", label, nullptr, {rw, bh}, canRestore)) {
+            const std::string part = change.part, sketchName = change.sketches.front().name;
+            const std::string why = st.RestoreChange(d.current, as->path, name);
+            if (!why.empty()) {
+                app.notes.Error(Tr(why));
+            } else {
+                as->assembly->MarkUnsaved();
+                ShowRestoreNotice(app, *as, sketchName, std::format("«{}»: вернуть как было", part));
+                if (d.current >= st.changes.size()) {
+                    app.shell.changeDialog.reset();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ui::ItemTooltip(ui, Tr("Затронутые эскизы вернутся к последнему рабочему виду; спроецированная геометрия станет независимой от источника"));
+        footX += rw + ui.S(16);
+    }
     if (!last) {
         const std::string next = Trf("Затем — «{}» ({} / {})", st.changes[d.current + 1].part, d.current + 2, st.changes.size());
-        dl->AddText(ui.fonts.bodySmall, ui.S(12), {o.x + pad, fy - ui.S(7)}, ui::ToU32(c.textSecondary), next.c_str());
+        dl->AddText(ui.fonts.bodySmall, ui.S(12), {footX, fy - ui.S(7)}, ui::ToU32(c.textSecondary), next.c_str());
     }
     std::string primary;
     switch (choice) {
@@ -630,7 +667,7 @@ void DrawChangeDialog(AppContext& app) {
         case ChangeChoice::Mimic: primary = last ? Tr("Повторить контур") : Tr("Повторить контур и далее →"); break;
         case ChangeChoice::Manual: primary = Trf("Открыть {}", change.sketches.front().name); break;
     }
-    const float bh = ui.S(36), bw = std::max(ui.S(200), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, primary.c_str()).x + ui.S(40));
+    const float bw = std::max(ui.S(200), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, primary.c_str()).x + ui.S(40));
     const float pw = ui.S(140);
     ImGui::SetCursorScreenPos({o.x + width - pad - bw - ui.S(10) - pw, fy - bh / 2});
     if (ui::SecondaryButton(ui, "##change-previous", Tr("← Предыдущая"), nullptr, {pw, bh}, d.current > 0)) --d.current;

@@ -25,6 +25,7 @@
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/ChangeDialog.h"
 #include "app/handoff/HandoffUi.h"
+#include "app/sketch/SketchRepair.h"
 #include "document/StandardPacks.h"
 #include "document/StandardParts.h"
 #include "core/PathText.h"
@@ -2092,6 +2093,61 @@ void DrawBetaReport(AppContext& app) {
     ImGui::EndPopup();
 }
 
+// «Эскиз восстановлен. [Отменить] [Повторить изменение источника]»: the
+// restore notice (app/sketch/SketchRepair.h) as a small panel at the bottom
+// of the window, shown while the restore is the document's last undo step.
+bool DrawRestoreNotice(AppContext& app) {
+    RestoreNotice& n = app.shell.restoreNotice;
+    if (!n.active) return false;
+    // Its document was closed, or the restore is not the last step any more
+    // (undone another way, or something was done on top): nothing to offer.
+    if (!app.workspace.IsOpen(n.scope) || !n.CanUndo()) {
+        n.Dismiss();
+        return false;
+    }
+    ui::Ui& ui = app.ui;
+    const ui::ThemeColors& c = ui.C();
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos({display.x / 2, display.y - ui.S(54)}, ImGuiCond_Always, {0.5f, 1.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui.S(12, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui.S(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ui.S(8, 8));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::ToVec4(c.panel));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::ToVec4(c.divider));
+    const bool shown = ImGui::Begin("##restore-notice", nullptr,
+                                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+    if (!shown) {
+        ImGui::End();
+        return false;
+    }
+    ui.icons.Draw(ImGui::GetWindowDrawList(), "status-ok",
+                  {ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + ui.S(2)}, ui.S(16), c.success);
+    ImGui::SameLine(0, ui.S(8));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(Tr("Эскиз восстановлен."));
+    ImGui::SameLine(0, ui.S(12));
+    const auto width = [&](const char* label) {
+        return ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, label).x + ui.S(26);
+    };
+    const std::string undo = Tr("Отменить"), redo = Tr("Повторить изменение источника");
+    if (ui::SecondaryButton(ui, "##notice-undo", undo.c_str(), nullptr, {width(undo.c_str()), ui.S(28)}, n.CanUndo())) {
+        Session* scope = n.scope;
+        n.Dismiss();
+        scope->Undo();
+    }
+    ImGui::SameLine(0, ui.S(8));
+    // Честная заглушка: действия «Повторить изменение источника» пока нет —
+    // кнопка выключена, сказано почему.
+    if (ui::SecondaryButton(ui, "##notice-redo", redo.c_str(), nullptr, {width(redo.c_str()), ui.S(28)}, false)) {
+    }
+    ui::ItemTooltip(ui, Tr("Пока не реализовано: повторное применение изменения источника"));
+    ImGui::End();
+    return false;
+}
+
 void DrawDialogs(AppContext& app) {
     ui::Ui& ui = app.ui;
     const ui::ThemeColors& c = ui.C();
@@ -2101,6 +2157,7 @@ void DrawDialogs(AppContext& app) {
     DrawHandoff(app);
     DrawModulePanels(app);
     DrawDrawingDialogs(app);
+    DrawRestoreNotice(app);
 
     // --- Save changes? ---
     bool unsavedOpen = app.shell.closeRequest.has_value();

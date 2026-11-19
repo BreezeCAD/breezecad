@@ -11,6 +11,7 @@
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "app/sketch/SketchOverlay.h"
+#include "app/sketch/SketchRepair.h"
 #include "app/assembly/AssemblyUi.h"
 #include "app/viewport/FaceSelection.h"
 #include "app/viewport/MarkingMenu.h"
@@ -378,6 +379,7 @@ void DrawViewport(AppContext& app, Session& session, ImVec2 pos, ImVec2 size) {
     switch (session.mode) {
         case EditMode::Sketch:
             app.sketch.Frame(app, session, vf);
+            DrawSketchRepairBanner(app, session, vf);
             break;
         case EditMode::PickPlane:
             PickPlane(app, session, vf, dl);

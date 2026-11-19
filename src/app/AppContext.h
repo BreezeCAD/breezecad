@@ -5,6 +5,7 @@
 #include "app/Actions.h"
 #include "app/Autosave.h"
 #include "app/Notifications.h"
+#include "app/sketch/SketchRepair.h"
 #include "app/Settings.h"
 #include "app/Workspace.h"
 #include "app/mobile/MobileState.h"
@@ -147,6 +148,9 @@ struct ShellState {
     } waiting;
     /// «Обнаружено изменение, затрагивающее другие детали»: choices, preview.
     std::shared_ptr<ChangeDialogState> changeDialog;
+    /// «Эскиз восстановлен. [Отменить] [Повторить изменение источника]» after
+    /// a restore (app/sketch/SketchRepair.h).
+    RestoreNotice restoreNotice;
     /// «Продолжить на устройстве»: the computer's window or the device's copy (HandoffUi.h).
     std::shared_ptr<HandoffState> handoff;
     /// The question asked before an import (app/Import.h).

@@ -7,6 +7,7 @@
 #include "core/PathText.h"
 #include "assembly/Solver.h"
 #include "document/BzcFile.h"
+#include "document/SketchFeature.h"
 #include "core/Monitor.h"
 #include "core/Profile.h"
 
@@ -473,7 +474,39 @@ std::string AssemblyState::ResolveChange(std::size_t index, kernel::ChangeChoice
 
     static constexpr std::array<const char*, 4> kLabels{"Игнорировать изменения", "Автоматическое адаптирование",
                                                          "Мимикрирование с зазором", "Ручное редактирование"};
-    Checkpoint(std::format("{}: {}", change.part, kLabels[static_cast<std::size_t>(choice)]));
+    return FinishChange(index, copy, before, std::format("{}: {}", change.part, kLabels[static_cast<std::size_t>(choice)]),
+                        choice, rollback, file, contextName);
+}
+
+std::string AssemblyState::RestoreChange(std::size_t index, const std::filesystem::path& file, std::string_view contextName) {
+    if (index >= changes.size()) return "Нет такого изменения";
+    const SourceChange change = changes[index];
+    const doc::Document* part = geometry.PartOf(change.component);
+    if (!part) return "Деталь не найдена";
+    doc::Document copy = part->Clone();
+    const std::string before = doc::DocumentToJson(copy);
+    int first = -1;
+    for (const kernel::AffectedSketch& hit : change.sketches) {
+        const auto* sk = copy.FindAs<doc::SketchFeature>(hit.sketch);
+        if (!sk) continue;
+        std::unique_ptr<doc::Feature> edited = sk->Clone();
+        auto* restored = static_cast<doc::SketchFeature*>(edited.get());
+        if (!restored->RestoreBeforeBreak(copy.Ids())) continue;
+        const int at = copy.IndexOf(hit.sketch);
+        copy.Replace(std::move(edited));
+        first = first < 0 ? at : std::min(first, at);
+    }
+    if (first < 0) return "Восстанавливать нечего: ни в одном эскизе нет проекций";
+    copy.MarkChanged(static_cast<std::size_t>(first));
+    return FinishChange(index, copy, before, std::format("«{}»: вернуть как было", change.part), kernel::ChangeChoice::Ignore,
+                        false, file, contextName);
+}
+
+std::string AssemblyState::FinishChange(std::size_t index, doc::Document& copy, const std::string& before, std::string_view label,
+                                        kernel::ChangeChoice choice, bool rollback, const std::filesystem::path& file,
+                                        std::string_view contextName) {
+    const SourceChange change = changes[index];
+    Checkpoint(std::string(label));
     PartEdit* edit = EditOf(change.partFile);
     if (edit && edit->session) {
         edit->session->doc = std::move(copy);

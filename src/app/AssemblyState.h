@@ -235,6 +235,12 @@ public:
     /// done; the change then stays.
     std::string ResolveChange(std::size_t index, kernel::ChangeChoice choice, double gap, bool rollback,
                               const std::filesystem::path& file, std::string_view contextName);
+    /// «Вернуть как было»: every affected sketch of `changes[index]` is
+    /// restored (SketchFeature::RestoreBeforeBreak — back to `beforeBreak`
+    /// where it has one, its projections unlinked) and the change is taken off
+    /// the list: one undo step, like ResolveChange. An error message (Russian)
+    /// when no sketch of it can be restored; the change then stays.
+    std::string RestoreChange(std::size_t index, const std::filesystem::path& file, std::string_view contextName);
     /// The document `choice` would make of the part of `changes[index]`, for
     /// the preview: a copy, nothing of the assembly changes.
     Expected<doc::Document> TryChange(std::size_t index, kernel::ChangeChoice choice, double gap, std::string_view contextName) const;
@@ -279,6 +285,14 @@ private:
     /// Applies a choice to `doc` (the part of `change`).
     Expected<int> Apply(const SourceChange& change, kernel::ChangeChoice choice, double gap, doc::Document& doc,
                         std::string_view contextName) const;
+    /// The tail of ResolveChange/RestoreChange: `copy` (the part with the
+    /// choice or the restore applied, `before` its JSON before it) becomes the
+    /// part's edit as one undo step, the change is taken off the list and the
+    /// geometry is updated. `choice` Manual also fills `manual`. Empty on
+    /// success.
+    std::string FinishChange(std::size_t index, doc::Document& copy, const std::string& before, std::string_view label,
+                             kernel::ChangeChoice choice, bool rollback, const std::filesystem::path& file,
+                             std::string_view contextName);
     /// Whether a part has projections from here, and from where: looked at once per version of it.
     const ContextInfo& ContextOf(const std::string& key, ObjectId component, const doc::Document& part, std::string_view name);
     /// Parts with projections follow their sources; true when one changed.

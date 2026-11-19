@@ -4,6 +4,7 @@
 #include "../Fixtures.h"
 #include "app/AssemblyState.h"
 #include "app/Session.h"
+#include "app/sketch/SketchRepair.h"
 #include "document/EdgeFeature.h"
 #include "document/Recompute.h"
 #include "kernel/ContextProjection.h"
@@ -33,7 +34,8 @@ struct Scene {
     std::filesystem::path dir = std::filesystem::temp_directory_path() / "bz_change_queue";
     std::filesystem::path file = dir / "Узел.bza";
     const std::string     context = "Узел";
-    app::AssemblyState    st;
+    app::Session          asmDoc;   // holds `st`: its undo is what the restore notice calls
+    app::AssemblyState&   st;
     ObjectId              plate, box, right;
 
     app::Session& Add(const std::string& name, doc::Document doc, const Placement& at, ObjectId& id) {
@@ -50,7 +52,7 @@ struct Scene {
         return s;
     }
 
-    Scene() {
+    Scene() : st(asmDoc.MakeAssembly()) {
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
         doc::Document p;
@@ -217,5 +219,60 @@ TEST_CASE("решения окна: адаптировать, игнориров
         CHECK(s.st.manual.component == s.box);
         CHECK(s.st.manual.sketches == std::vector<ObjectId>{Scene::SketchOf(s.Box()).id});
         CHECK_FALSE(s.st.manual.rollback);
+    }
+}
+
+TEST_CASE("«Вернуть как было»: эскиз восстановлен одним шагом, отмена возвращает, повторной адаптации нет") {
+    Scene s;
+    s.AddTab();
+    s.Frames();
+    REQUIRE(s.st.changes.size() == 1);
+    CHECK(s.st.UndoLabel().find("вернуть как было") == std::string::npos);
+
+    SUBCASE("восстановление снимает изменение с шага, эскиз на месте, проекции отвязаны") {
+        CHECK(s.st.RestoreChange(0, s.file, s.context).empty());
+        CHECK(s.st.changes.empty());
+        doc::SketchFeature& sk = Scene::SketchOf(s.Box());
+        CHECK(sk.contextProjections.empty());
+        CHECK(sk.projections.empty());
+        CHECK_FALSE(sk.HasBrokenProjections());
+        CHECK(s.RightTop() == Approx(40));
+        CHECK(s.st.UndoLabel().find("вернуть как было") != std::string::npos);
+        // За этим источником повторно не адаптируется: следить больше нечему.
+        s.Frames();
+        CHECK(s.st.changes.empty());
+        CHECK(kernel::AdaptContextProjections(s.st.geometry, s.st.assembly, s.box, s.Box().doc, s.context).moved == 0);
+    }
+    SUBCASE("отмена возвращает прежнее состояние") {
+        CHECK(s.st.RestoreChange(0, s.file, s.context).empty());
+        REQUIRE(s.st.Undo());
+        CHECK(Scene::SketchOf(s.Box()).contextProjections.size() == 4);
+        CHECK(s.RightTop() == Approx(40));
+    }
+    SUBCASE("нечего восстанавливать: деталь без проекций — честная ошибка, изменение остаётся") {
+        // У короба убираем все проекции: восстанавливать нечего.
+        Scene::SketchOf(s.Box()).contextProjections.clear();
+        CHECK_FALSE(s.st.RestoreChange(0, s.file, s.context).empty());
+        CHECK(s.st.changes.size() == 1);
+    }
+    SUBCASE("панель «Эскиз восстановлен»: отмена через неё откатывает и не падает") {
+        CHECK(s.st.RestoreChange(0, s.file, s.context).empty());
+        app::RestoreNotice n;
+        n.active = true;
+        n.scope = &s.asmDoc;
+        n.sketch = Scene::SketchOf(s.Box()).name;
+        n.undoLabel = s.st.UndoLabel();
+        REQUIRE(n.CanUndo());
+        CHECK_NOTHROW(n.Undo());
+        CHECK_FALSE(n.active);
+        CHECK(Scene::SketchOf(s.Box()).contextProjections.size() == 4);
+        CHECK_NOTHROW(n.Undo());   // второй клик по уже пустой панели: ничего, без падения
+        // Честное выключение «Отменить»: шаг восстановления не стоит последним в документе.
+        app::RestoreNotice wrong;
+        wrong.active = true;
+        wrong.scope = &s.Box();
+        wrong.undoLabel = "Восстановление эскиза";
+        CHECK_FALSE(wrong.CanUndo());
+        CHECK_NOTHROW(wrong.Undo());
     }
 }

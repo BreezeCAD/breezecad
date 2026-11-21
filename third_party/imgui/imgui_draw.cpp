@@ -1679,6 +1679,15 @@ void ImDrawList::AddText(ImFont* font, float font_size, const ImVec2& pos, ImU32
         font = _Data->Font;
     if (font_size == 0.0f)
         font_size = _Data->FontSize;
+    if (GImTextShaper != NULL) // BreezeCAD patch
+    {
+        const char* shaped_end = NULL;
+        if (const char* shaped = GImTextShaper(font, font_size, text_begin, text_end, &wrap_width, &shaped_end))
+        {
+            text_begin = shaped;
+            text_end = shaped_end;
+        }
+    }
 
     IM_ASSERT(font->ContainerAtlas->TexID == _CmdHeader.TextureId);  // Use high-level ImGui::PushFont() or low-level ImDrawList::PushTextureId() to change font.
 

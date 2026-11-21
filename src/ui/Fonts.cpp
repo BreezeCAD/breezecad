@@ -3,6 +3,7 @@
 #include "core/I18n.h"
 
 #include "core/Log.h"
+#include "ui/TextShaper.h"
 
 #include <imgui.h>
 
@@ -34,7 +35,18 @@ const ImWchar* GlyphRanges() {
     return ranges;
 }
 
-/// A font with the glyphs of Chinese, Japanese or Korean: the language
+/// Arabic letters and the presentation forms the joined text is made of (core/ArabicText.h).
+const ImWchar* ArabicRanges() {
+    static const ImWchar ranges[] = {
+        0x0600, 0x06FF,   // Arabic
+        0xFB50, 0xFDFF,   // presentation forms A (Persian and Urdu letters)
+        0xFE70, 0xFEFF,   // presentation forms B (the forms of every letter, lam-alef)
+        0,
+    };
+    return ranges;
+}
+
+/// A font with the glyphs of Chinese, Japanese, Korean or Arabic: the language
 /// pack's own (<packs>/<code>.ttf|.otf|.ttc), else the system's. Empty when
 /// there is none (the text then shows "?"). `face`: the font in a collection.
 std::filesystem::path CjkFont(const std::string& code, const std::filesystem::path& packs, int& face) {
@@ -49,10 +61,12 @@ std::filesystem::path CjkFont(const std::string& code, const std::filesystem::pa
     if (code == "zh") candidates = {{fonts / "msyh.ttc", 0}, {fonts / "simsun.ttc", 0}};
     if (code == "ja") candidates = {{fonts / "YuGothM.ttc", 0}, {fonts / "meiryo.ttc", 0}, {fonts / "msgothic.ttc", 0}};
     if (code == "ko") candidates = {{fonts / "malgun.ttf", 0}, {fonts / "gulim.ttc", 0}};
+    if (code == "ar") candidates = {{fonts / "segoeui.ttf", 0}, {fonts / "tahoma.ttf", 0}, {fonts / "arial.ttf", 0}};
 #elif defined(__APPLE__)
     if (code == "zh") candidates = {{"/System/Library/Fonts/PingFang.ttc", 0}, {"/System/Library/Fonts/STHeiti Light.ttc", 0}};
     if (code == "ja") candidates = {{"/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0}, {"/System/Library/Fonts/Hiragino Sans GB.ttc", 0}};
     if (code == "ko") candidates = {{"/System/Library/Fonts/AppleSDGothicNeo.ttc", 0}};
+    if (code == "ar") candidates = {{"/System/Library/Fonts/SFArabic.ttf", 0}, {"/System/Library/Fonts/GeezaPro.ttc", 0}};
 #else
     // Noto Sans CJK: one collection, the face by language (JP 0, KR 1, SC 2).
     const int noto = code == "ja" ? 0 : code == "ko" ? 1 : 2;
@@ -63,6 +77,11 @@ std::filesystem::path CjkFont(const std::string& code, const std::filesystem::pa
         for (const char* wqy : {"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"})
             candidates.push_back({wqy, 0});
 #endif
+    if (code == "ar")
+        for (const char* dir : {"/system/fonts", "/usr/share/fonts/truetype/noto", "/usr/share/fonts/noto", "/usr/share/fonts/opentype/noto",
+                                "/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/TTF"})
+            for (const char* name : {"NotoSansArabic-Regular.ttf", "NotoNaskhArabic-Regular.ttf", "DejaVuSans.ttf"})
+                candidates.push_back({std::filesystem::path(dir) / name, 0});
     for (const auto& [file, f] : candidates)
         if (std::filesystem::exists(file, ec)) {
             face = f;
@@ -89,6 +108,9 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
                  const std::filesystem::path& languagePacks) {
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
     atlas->Clear();
+    // Arabic is joined and put into visual order as it is measured and drawn (ui/TextShaper.h).
+    GImTextShaper = language == "ar" ? &ShapeText : nullptr;
+    ResetTextShaper();
     const auto dir = assetsDir / "fonts";
     const auto regular = dir / "IBMPlexSans-Regular.ttf";
     const auto med = dir / "IBMPlexSans-Medium.ttf";
@@ -105,11 +127,11 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
     mono      = Add(atlas, monoFile, 12.0f, scale);
     monoLarge = Add(atlas, monoFile, 14.0f, scale);
 
-    // Chinese, Japanese, Korean: their glyphs merged into the text fonts
+    // Chinese, Japanese, Korean, Arabic: their glyphs merged into the text fonts
     // (not the numbers' mono ones), at the size and only for that language
     // — a few thousand glyphs each would weigh on a weak computer otherwise.
     loadedLanguage = language;
-    if (language == "zh" || language == "ja" || language == "ko") {
+    if (language == "zh" || language == "ja" || language == "ko" || language == "ar") {
         int face = 0;
         const std::filesystem::path cjk = CjkFont(language, languagePacks, face);
         if (cjk.empty()) {
@@ -121,7 +143,8 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
             ImFontGlyphRangesBuilder builder;
             builder.AddRanges(language == "zh" ? atlas->GetGlyphRangesChineseSimplifiedCommon()
                               : language == "ja" ? atlas->GetGlyphRangesJapanese()
-                                                 : atlas->GetGlyphRangesKorean());
+                              : language == "ko" ? atlas->GetGlyphRangesKorean()
+                                                 : ArabicRanges());
             builder.AddText(i18n::AllTranslatedText().c_str());
             builder.BuildRanges(&built);
             const ImWchar* ranges = built.Data;
@@ -135,7 +158,9 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
                 merge.FontNo = face;
                 merge.OversampleH = merge.OversampleV = 1;
                 merge.DstFont = font;
-                atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale, &merge, ranges);
+                // Noto Sans Arabic is drawn smaller than IBM Plex at the same size.
+                const float glyphScale = language == "ar" ? 1.12f : 1.0f;
+                atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale * glyphScale, &merge, ranges);
             }
             log::Info("Interface font for {}: {}", language, reinterpret_cast<const char*>(path.c_str()));
         }

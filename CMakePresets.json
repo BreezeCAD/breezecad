@@ -130,6 +130,7 @@
   "testPresets": [
     { "name": "linux-debug",   "configurePreset": "linux-debug",   "output": { "outputOnFailure": true } },
     { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } },
+    { "name": "linux-asan",    "configurePreset": "linux-asan",    "output": { "outputOnFailure": true } },
     { "name": "windows-mingw", "configurePreset": "windows-mingw", "output": { "outputOnFailure": true } },
     { "name": "macos",         "configurePreset": "macos",         "output": { "outputOnFailure": true } }
   ]

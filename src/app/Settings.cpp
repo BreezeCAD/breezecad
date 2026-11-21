@@ -47,6 +47,8 @@ Settings FromJson(const nlohmann::json& j) {
     s.theme = theme == "light" ? ThemeChoice::Light : theme == "dark" ? ThemeChoice::Dark : ThemeChoice::System;
     s.animations      = j.value("animations", s.animations);
     s.backgroundRebuild = j.value("backgroundRebuild", s.backgroundRebuild);
+    s.parallelPartLoad  = j.value("parallelPartLoad", s.parallelPartLoad);
+    s.opTimeouts        = j.value("opTimeouts", s.opTimeouts);
     s.showTriad       = j.value("showTriad", s.showTriad);
     s.reopenLast      = j.value("reopenLast", s.reopenLast);
     s.lastNewTemplate = j.value("lastNewTemplate", s.lastNewTemplate);
@@ -254,6 +256,8 @@ nlohmann::json Settings::ToJson() const {
         {"crispEdges", crispEdges},
         {"textureQuality", textureQuality},
         {"backgroundRebuild", backgroundRebuild},
+        {"parallelPartLoad", parallelPartLoad},
+        {"opTimeouts", opTimeouts},
         {"showAllConstraints", showAllConstraints},
         {"sketchRegionFill", sketchRegionFill},
         {"autoProjectEdges", autoProjectEdges},

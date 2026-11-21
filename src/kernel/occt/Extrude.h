@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Expected.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "document/ExtrudeFeature.h"
 
 #include <TopoDS_Face.hxx>

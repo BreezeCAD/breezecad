@@ -381,12 +381,16 @@ void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::
         status = {FeatureState::Error, "Щёлкните замкнутый контур эскиза, который использовать"};
         return;
     }
+    auto _t0 = std::chrono::steady_clock::now();
     Expected<TopoDS_Shape> tool = makeTool(faces, *sketch, profile->second.frame);
+    log::Info("TOOL {}: {:.0f} ms", f.name, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count());
     if (!tool) {
         status = {FeatureState::Error, tool.GetError().message};
         return;
     }
+    auto _t1 = std::chrono::steady_clock::now();
     CombineSolid(f.id, f.operation, *tool, impl, bodies, status);
+    log::Info("COMBINE {}: {:.0f} ms", f.name, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t1).count());
 }
 
 /// Distance from `p` to `shape`, mm (1e300 when it cannot be measured).
@@ -448,6 +452,18 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
     if (edges.empty() && !f.edges.empty()) {
         status = {FeatureState::Error, "Рёбра операции не найдены: модель изменилась слишком сильно"};
         return;
+    }
+    // Молчаливый перескок на похожее ребро запрещён: ссылка, разрешившаяся
+    // неоднозначно, — ошибка, а не ближайший кандидат (FreeCAD берёт уехавшую
+    // ссылку только при единственном совпадении).
+    {
+        std::vector<bool> ambiguous;
+        occt::ResolveEdges(f.edges, target->shape, &ambiguous);
+        for (std::size_t k = 0; k < f.edges.size(); ++k)
+            if (ambiguous[k]) {
+                status = {FeatureState::Error, "Ребро не найдено однозначно: выберите заново"};
+                return;
+            }
     }
     Expected<TopoDS_Shape> result = make(target->shape, edges, kept);
     if (!result) {
@@ -674,10 +690,17 @@ bool ResolvePointPicks(std::vector<Vec3>& points, std::vector<std::optional<doc:
     return true;
 }
 
-/// The edge `ref` on the most recent body that has it.
-std::optional<TopoDS_Edge> FindEdge(const doc::EdgeReference& ref, const std::vector<Body>& bodies) {
-    for (auto it = bodies.rbegin(); it != bodies.rend(); ++it)
-        if (auto e = occt::ResolveEdges({ref}, it->shape).front()) return e;
+/// The edge `ref` on the most recent body that has it. `ambiguous` (when
+/// given) tells that the edge is still there, but on no body the match was
+/// unique — the user must pick it again.
+std::optional<TopoDS_Edge> FindEdge(const doc::EdgeReference& ref, const std::vector<Body>& bodies, bool* ambiguous = nullptr) {
+    bool amb = false;
+    for (auto it = bodies.rbegin(); it != bodies.rend(); ++it) {
+        std::vector<bool> flags;
+        if (auto e = occt::ResolveEdges({ref}, it->shape, &flags).front()) return e;
+        amb = amb || (!flags.empty() && flags[0]);
+    }
+    if (ambiguous) *ambiguous = amb;
     return std::nullopt;
 }
 
@@ -711,8 +734,11 @@ void PlaceWorkPoint(doc::WorkPointFeature& wp, const doc::Document& doc, const s
                 break;
             }
             if (!wp.edge) return fail("Щёлкните круглое ребро или сферу");
-            const auto edge = FindEdge(*wp.edge, bodies);
-            if (!edge) return fail("Ребро не найдено: модель изменилась слишком сильно");
+            bool ambiguous = false;
+            const auto edge = FindEdge(*wp.edge, bodies, &ambiguous);
+            if (!edge)
+                return fail(ambiguous ? "Ребро не найдено однозначно: выберите заново"
+                                      : "Ребро не найдено: модель изменилась слишком сильно");
             const auto c = occt::EdgeCenter(*edge);
             if (!c) return fail("У ребра нет центра: нужна окружность, дуга или эллипс");
             wp.position = c;
@@ -720,8 +746,11 @@ void PlaceWorkPoint(doc::WorkPointFeature& wp, const doc::Document& doc, const s
         }
         case WorkPointMethod::Midpoint: {
             if (!wp.edge) return fail("Щёлкните ребро");
-            const auto edge = FindEdge(*wp.edge, bodies);
-            if (!edge) return fail("Ребро не найдено: модель изменилась слишком сильно");
+            bool ambiguous = false;
+            const auto edge = FindEdge(*wp.edge, bodies, &ambiguous);
+            if (!edge)
+                return fail(ambiguous ? "Ребро не найдено однозначно: выберите заново"
+                                      : "Ребро не найдено: модель изменилась слишком сильно");
             wp.position = occt::EdgeMiddle(*edge);
             break;
         }
@@ -1477,7 +1506,7 @@ void SetUpOcct() {
         BOPAlgo_Options::SetParallelMode(false);
         const Handle(Message_Messenger)& messenger = Message::DefaultMessenger();
         // Range-for works with both OCCT 7.x and 8.x sequence types.
-        for (const auto& printer : messenger->Printers()) printer->SetTraceLevel(Message_Warning);
+        for (const auto& printer : messenger->Printers()) printer->SetTraceLevel(Message_Info);
     });
 }
 

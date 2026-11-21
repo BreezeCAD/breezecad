@@ -17,9 +17,13 @@ namespace bz::kernel::occt {
 doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& body);
 
 /// For each reference, the matching edge of `body`, or nullopt when nothing
-/// resembles it any more.
+/// resembles it any more. Сохранены обе соседние грани — кандидат обязан
+/// показать обе; совпадение не единственно (ближайший кандидат почти не
+/// отличается) — nullopt и true в `ambiguous[i]`: ребро просят выбрать
+/// заново, молчаливый перескок запрещён.
 std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs,
-                                                     const TopoDS_Shape& body);
+                                                     const TopoDS_Shape& body,
+                                                     std::vector<bool>* ambiguous = nullptr);
 
 /// A straight edge as it is on `body` now: a point in its middle and its
 /// unit direction. nullopt when it is gone or not straight.

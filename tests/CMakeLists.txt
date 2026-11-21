@@ -66,6 +66,7 @@ add_executable(bz_tests
     kernel/MeasureTests.cpp
     kernel/ExtrudeToFaceTests.cpp
     kernel/ExtrudeToCurvedTests.cpp
+    kernel/RegressionOpenTests.cpp
     kernel/ModelTests.cpp
     kernel/PatternTests.cpp
     kernel/ProjectionTests.cpp
@@ -138,3 +139,13 @@ else()
 endif()
 bz_set_warnings(bz_tests)
 add_test(NAME bz_tests COMMAND bz_tests)
+
+# Headless-диагностика медленного открытия: каждый файл из
+# tests/data/regression загружается и пересчитывается без отрисовки,
+# печатаются времена операций и топ-20. Не часть bz_tests: запускается
+# вручную (scripts/dev/check.sh) — зависание здесь не должно вешать CI.
+if(NOT ANDROID AND NOT IOS)
+    add_executable(bz_openbench openbench.cpp)
+    target_link_libraries(bz_openbench PRIVATE bz::core bz::document bz::assembly bz::kernel)
+    bz_set_warnings(bz_openbench)
+endif()

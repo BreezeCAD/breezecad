@@ -24,6 +24,7 @@
 #include "core/Profile.h"
 #include "core/PathText.h"
 #include "kernel/TextGeometry.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "render/Viewport.h"
 #include "ui/ViewCube.h"
 #include "platform/Paths.h"
@@ -171,6 +172,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
 
     mySettings = Settings::Load(config / "settings.json");
     if (!mySettings.loadProblem.empty()) myNotes.Error(Tr(mySettings.loadProblem));
+    kernel::occt::SetBooleanBudgetMs(mySettings.opTimeouts ? kernel::occt::kDefaultBooleanBudgetMs : 0.0);
     if (const std::string problem = ApplyLanguage(mySettings); !problem.empty())
         myNotes.Error(Tr(problem));
     // The splash while the rest starts; the main window appears when ready.
@@ -929,6 +931,7 @@ void Application::UpdateDocument(AppContext& app) {
     bool rebuilt = false;
     s->SetMeshQuality(mySettings.graphics);
     s->AllowBackground(mySettings.backgroundRebuild);
+    if (s->assembly) s->assembly->geometry.SetParallelPartLoad(mySettings.parallelPartLoad);
     {
         prof::Scope scope("rebuild");
         rebuilt = s->RebuildIfNeeded();

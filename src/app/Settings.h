@@ -128,6 +128,8 @@ struct Settings {
     bool        previewResult  = true;
     int         textureQuality = 0;   ///< pictures on faces: 0 high, 1 medium, 2 low (TextureLimit)
     bool        backgroundRebuild = true;   ///< long rebuilds on another thread (the window stays responsive)
+    bool        parallelPartLoad  = true;   ///< assembly parts load on their own threads at open
+    bool        opTimeouts        = true;   ///< operations past the time budget are cancelled (the part opens with a note)
     bool        showAllConstraints = false;   ///< sketch: every constraint glyph, or only those of the selection (F8 / F9)
     bool        sketchRegionFill = true;      ///< sketch: tint the closed regions (what would extrude)
     bool        autoProjectEdges = true;      ///< sketch: a drawing click on a model vertex or edge projects it (Inventor's Autoproject)

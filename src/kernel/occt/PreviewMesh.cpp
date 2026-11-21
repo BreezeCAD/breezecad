@@ -2,13 +2,12 @@
 #include "kernel/ChangePreview.h"
 
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepGProp.hxx>
-#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
@@ -41,7 +40,7 @@ void Mesh(const TopoDS_Shape& shape, double deflection, PreviewMesh& out) {
     BRepBndLib::Add(shape, box);
     if (box.IsVoid()) return;
     deflection *= std::sqrt(box.SquareExtent());   // a share of the size: as fine for a screw as for a frame
-    BRepMesh_IncrementalMesh(shape, deflection, false, 0.5, false);
+    occt::ops::Triangulate(shape, deflection, 0.5, false, 4.0);   // what is meshed by then is shown
     for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
         const TopoDS_Face& face = TopoDS::Face(e.Current());
         TopLoc_Location where;
@@ -92,13 +91,14 @@ PreviewMesh ChangedVolumeOf(const Model& before, const Model& after, double defl
     try {
         const TopoDS_Shape was = AllBodies(before), is = AllBodies(after);
         for (const auto& [from, minus] : {std::pair{was, is}, std::pair{is, was}}) {
-            BRepAlgoAPI_Cut cut(from, minus);
-            if (!cut.IsDone() || cut.Shape().IsNull()) continue;
+            // A preview: a quick query, no checks (kernel/occt/Ops.h).
+            const occt::ops::Result cut = occt::ops::Boolean(occt::ops::Kind::Cut, from, minus, occt::ops::Quick());
+            if (!cut.Usable() || cut.shape.IsNull()) continue;
             GProp_GProps props;
-            BRepGProp::VolumeProperties(cut.Shape(), props);
+            BRepGProp::VolumeProperties(cut.shape, props);
             if (props.Mass() < 1e-6) continue;   // the same where it was: nothing to show
             size += props.Mass();
-            Mesh(cut.Shape(), deflection, out);
+            Mesh(cut.shape, deflection, out);
         }
     } catch (const Standard_Failure&) {
         out = {};

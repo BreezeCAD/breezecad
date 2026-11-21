@@ -35,6 +35,7 @@ def reference(b):
     check(close(p["volume_mm3"], V_BASE, 1e-9), f"эталон: объём заготовки {p['volume_mm3']}, по формуле {V_BASE}")
     top = face_at(b, (0, 0, 1), (15, 10, 5))
     b.run("feature.hole", face=top, centers=[[15, 10, 5]], diameter=6, through_all=True)
+    top = face_at(b, (0, 0, 1), (45, 10, 5))   # numbers change after every operation (OCCT 8 orders faces otherwise)
     b.run("feature.hole", face=top, centers=[[45, 10, 5]], diameter=5, type="counterbore", head_diameter=10, head_depth=3,
           through_all=True)
     inner = face_at(b, (0, -1, 0), (30, 20, 20))

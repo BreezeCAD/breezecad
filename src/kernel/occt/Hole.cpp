@@ -1,10 +1,9 @@
 #include "kernel/occt/Hole.h"
 
 #include "kernel/occt/EdgeMatch.h"
-#include "kernel/occt/Extrude.h"   // ApplyBoolean
+#include "kernel/occt/Ops.h"   // ApplyBoolean
 #include "kernel/occt/FaceMatch.h"
 
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -38,12 +37,12 @@ TopoDS_Shape HoleTool(const doc::HoleFeature& f, Vec3 top, Vec3 down, double dep
     TopoDS_Shape tool = BRepPrimAPI_MakeCylinder(start, r, depth + kOvershoot).Shape();
     if (f.type == doc::HoleType::Counterbore) {
         const TopoDS_Shape head = BRepPrimAPI_MakeCylinder(start, f.headDiameter.value / 2, f.headDepth.value + kOvershoot).Shape();
-        tool = BRepAlgoAPI_Fuse(tool, head).Shape();
+        tool = ops::OrThrow(ops::Fuse(tool, head, ops::Tool()));
     } else if (f.type == doc::HoleType::Countersink) {
         // 90° cone: it narrows by its height on each side.
         const double rTop = f.sinkDiameter.value / 2 + kOvershoot;
         const TopoDS_Shape cone = BRepPrimAPI_MakeCone(start, rTop, r, rTop - r).Shape();
-        tool = BRepAlgoAPI_Fuse(tool, cone).Shape();
+        tool = ops::OrThrow(ops::Fuse(tool, cone, ops::Tool()));
     }
     return tool;
 }
@@ -80,11 +79,13 @@ Expected<TopoDS_Shape> HoleTools(const TopoDS_Shape& body, const doc::HoleFeatur
         TopoDS_Shape tools;
         for (Vec2 c : f.centres) {
             const TopoDS_Shape tool = HoleTool(f, frame.ToWorld(c), down, depth);
-            tools = tools.IsNull() ? tool : BRepAlgoAPI_Fuse(tools, tool).Shape();
+            tools = tools.IsNull() ? tool : ops::OrThrow(ops::Fuse(tools, tool, ops::Tool()));
         }
         return tools;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка отверстия: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка отверстия");
     }
 }
 

@@ -265,7 +265,7 @@ Expected<int> MimicSourceChange(const AssemblyModel& geometry, const assembly::A
             doc::EdgeReference found;
             doc::SketchSource source = link.source;
             const Expected<ProjectedCurve> pc = geometry.ProjectSourceEdge(a, target, link, sk->placement.frame, &found, &source);
-            if (!pc || pc->kind == ProjectedCurve::Kind::Ellipse) {
+            if (!pc || pc->kind == ProjectedCurve::Kind::Ellipse || pc->kind == ProjectedCurve::Kind::Spline) {
                 doc = backup.Clone();
                 return Error{"Новый контур не проецируется на плоскость эскиза"};
             }

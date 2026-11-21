@@ -1,11 +1,11 @@
 #include "kernel/occt/SketchGeometry.h"
+#include "kernel/occt/Ops.h"
 
 #include "kernel/occt/Text.h"
 #include "sketch/SplineGeometry.h"
 
 #include <BOPTools_AlgoTools3D.hxx>
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
@@ -17,6 +17,8 @@
 #include <GCPnts_TangentialDeflection.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <IntTools_Context.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
 #include <NCollection_List.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
 #include <Standard_Failure.hxx>
@@ -29,6 +31,7 @@
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Wire.hxx>
+#include <chrono>
 #include <format>
 #include <gp.hxx>
 #include <gp_Ax2.hxx>
@@ -210,6 +213,9 @@ TopoDS_Face DropInnerEdges(const TopoDS_Face& face) {
     return out;
 }
 
+/// Seconds a sketch's regions may take to find (far beyond any real sketch).
+constexpr double kRegionSeconds = 8.0;
+
 bool TouchesBox(const TopoDS_Face& face, const Frame& frame, double limit) {
     for (TopExp_Explorer it(face, TopAbs_VERTEX); it.More(); it.Next()) {
         const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(it.Current()));
@@ -233,7 +239,7 @@ Expected<TopoDS_Wire> BuildPath(const doc::SketchFeature& feature) {
             return Error{"Траектория должна быть одной цепочкой линий и дуг без разветвлений"};
         return TopoDS::Wire(wires->Value(1));
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка траектории: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка траектории");
     }
 }
 
@@ -260,17 +266,17 @@ Expected<SketchProfile> BuildProfile(const doc::SketchFeature& feature) {
         NCollection_List<TopoDS_Shape> objects, tools;
         objects.Append(sheet);
         for (const auto& e : edges) tools.Append(e);
-        BRepAlgoAPI_Splitter splitter;
-        splitter.SetArguments(objects);
-        splitter.SetTools(tools);
-        splitter.Build();
-        if (!splitter.IsDone()) return Error{"Не удалось найти замкнутые контуры эскиза"};
+        const std::string tooLong = std::format("Эскиз слишком сложный: замкнутые контуры не найдены за {:.0f} с ({} кривых) — уберите лишние "
+                                                "проекции или сделайте их вспомогательными",
+                                                kRegionSeconds, edges.size());
+        const Expected<TopoDS_Shape> split = ops::Split(objects, tools, kRegionSeconds, tooLong);
+        if (!split) return split.GetError().message == tooLong ? split.GetError() : Error{"Не удалось найти замкнутые контуры эскиза"};
 
         Handle(IntTools_Context) context = new IntTools_Context();
         std::vector<std::vector<Vec2>> boundary;   // every distinct region edge once
         std::vector<TopoDS_Edge>       seenEdges;
 
-        for (TopExp_Explorer it(splitter.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+        for (TopExp_Explorer it(*split, TopAbs_FACE); it.More(); it.Next()) {
             const TopoDS_Face face = DropInnerEdges(TopoDS::Face(it.Current()));
             if (TouchesBox(face, frame, half * 0.999)) continue;
 
@@ -299,7 +305,7 @@ Expected<SketchProfile> BuildProfile(const doc::SketchFeature& feature) {
 
         for (auto& region : profile.regions) region.automatic = InsideEvenOdd(region.sample, boundary);
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка геометрии эскиза: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка геометрии эскиза");
     }
     return profile;
 }

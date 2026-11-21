@@ -367,6 +367,17 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
             style.statusIcon = "status-warning";
             style.statusText = Tr("Проекция потеряла своё ребро или не сходится с эскизом после изменений выше по дереву");
         }
+        // A heavy operation (BETA-BUGS №7): a clock where no warning is,
+        // so the user sees what every change below it waits for.
+        if (!style.statusIcon && !style.muted)
+            if (const std::optional<double> ms = session.model.CostMs(f.id); ms && *ms > kernel::Model::kHeavyMs) {
+                const double seconds = *ms / 1000.0;
+                style.statusIcon = "status-heavy";
+                style.statusColor = ui.C().textMuted;
+                style.statusText = Trf("Тяжёлая операция: пересчитывается {:.1f} с, и всё, что ниже по дереву, ждёт её при каждом "
+                                       "изменении. Чтобы работать быстрее, перенесите её ближе к концу дерева или подавьте на время",
+                                       seconds);
+            }
         style.hideable = Hideable(session, f);
         style.hidden = f.hidden;
 

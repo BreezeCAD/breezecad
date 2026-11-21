@@ -1,11 +1,9 @@
 #include "kernel/occt/SheetMetal.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Common.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
@@ -99,9 +97,9 @@ TopoDS_Wire MakeWire(const sheet::Loop& loop, double z) {
 }
 
 Expected<TopoDS_Shape> Fuse(const TopoDS_Shape& a, const TopoDS_Shape& b) {
-    BRepAlgoAPI_Fuse fuse(a, b);
-    if (!fuse.IsDone()) return Error{"Не удалось соединить сгиб с листом"};
-    return fuse.Shape();
+    const ops::Result fuse = ops::Boolean(ops::Kind::Fuse, a, b, ops::Tool());
+    if (!fuse.Usable()) return Error{"Не удалось соединить сгиб с листом"};
+    return fuse.shape;
 }
 
 } // namespace
@@ -150,13 +148,7 @@ Expected<TopoDS_Shape> MakeSheetBody(const sheet::Part& part, const sheet::Layou
             // Does the new flange go into what is there already? Touching (its own seam) has no volume.
             if (clashes) {
                 double shared = 0.0;
-                for (const TopoDS_Shape* piece : {&bend, &strip}) {
-                    BRepAlgoAPI_Common common(body, *piece);
-                    if (!common.IsDone()) continue;
-                    GProp_GProps props;
-                    BRepGProp::VolumeProperties(common.Shape(), props);
-                    shared += std::abs(props.Mass());
-                }
+                for (const TopoDS_Shape* piece : {&bend, &strip}) shared += std::abs(ops::SharedVolume(body, *piece));
                 if (shared > 1e-3 * std::max(1.0, s * s * s)) clashes->push_back(static_cast<std::size_t>(&f - layout.flanges.data()));
             }
 
@@ -184,9 +176,9 @@ Expected<TopoDS_Shape> MakeSheetBody(const sheet::Part& part, const sheet::Layou
             back.SetTranslation(vec(f.stripNormal * -0.1));
             const TopoDS_Shape start = BRepBuilderAPI_Transform(face, back, true).Shape();
             const TopoDS_Shape tool = BRepPrimAPI_MakePrism(start, vec(f.stripNormal * (s + 0.2))).Shape();
-            BRepAlgoAPI_Cut cutter(body, tool);
-            if (!cutter.IsDone()) return Error{"Вырез в полке не удался"};
-            body = cutter.Shape();
+            const ops::Result cutter = ops::Boolean(ops::Kind::Cut, body, tool, ops::Tool());
+            if (!cutter.Usable()) return Error{"Вырез в полке не удался"};
+            body = cutter.shape;
         }
         ShapeUpgrade_UnifySameDomain unify(body, true, true, false);
         unify.Build();
@@ -198,7 +190,7 @@ Expected<TopoDS_Shape> MakeSheetBody(const sheet::Part& part, const sheet::Layou
                                                        gp_Dir(frame.xDir.x, frame.xDir.y, frame.xDir.z)));
         return BRepBuilderAPI_Transform(body, place, true).Shape();
     } catch (const Standard_Failure& e) {
-        return Error{std::string("Лист не построился: ") + (e.GetMessageString() ? e.GetMessageString() : "ошибка ядра")};
+        return ops::FromFailure(e, "Лист не построился");
     }
 }
 

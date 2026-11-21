@@ -1,9 +1,8 @@
 #include "kernel/occt/Revolve.h"
 
-#include "kernel/occt/Extrude.h"   // Clean
+#include "kernel/occt/Ops.h"   // Clean, booleans
 
 #include <BRepAdaptor_Curve.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
@@ -158,13 +157,15 @@ Expected<TopoDS_Shape> MakeRevolution(const std::vector<TopoDS_Face>& faces, con
             const TopoDS_Shape start = symmetric ? BRepBuilderAPI_Transform(face, back, true).Shape() : TopoDS_Shape(face);
             BRepPrimAPI_MakeRevol revol(start, turnAxis, angle, true);
             if (!revol.IsDone()) return Error{"Не удалось построить вращение"};
-            result = result.IsNull() ? revol.Shape() : Fuse(result, revol.Shape());
+            result = result.IsNull() ? revol.Shape() : ops::OrThrow(ops::Fuse(result, revol.Shape(), ops::Tool()));
         }
         result = Clean(result);
         if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Вращение дало некорректное тело"};
         return result;
+    } catch (const ops::Failed& failed) {
+        return Error{failed.what()};
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка вращения: {}", failure.GetMessageString())};
+        return ops::FromFailure(failure, "Ошибка вращения");
     }
 }
 

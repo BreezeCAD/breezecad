@@ -592,12 +592,16 @@ Json ProjectEdgeCommand(AppContext& app, const Json& args) {
         case kernel::ProjectedCurve::Kind::Ellipse:
             curve = sk.AddEllipse(ids, point(pc->centre), point(pc->start), point(pc->end));
             break;
+        case kernel::ProjectedCurve::Kind::Spline:
+            curve = kernel::AddProjectedSpline(sk, ids, *pc, point);
+            if (!curve.IsValid()) Fail("Ребро не проецируется на плоскость эскиза");
+            break;
     }
     link.curve = curve;
     f->contextProjections.push_back(link);
     part->doc.MarkChanged(static_cast<std::size_t>(std::max(0, part->doc.IndexOf(f->id))));
     part->CommitInPlaceEdit(std::move(before), Tr("Проецирование из другой детали"));
-    static const char* kKinds[] = {"line", "circle", "arc", "ellipse"};
+    static const char* kKinds[] = {"line", "circle", "arc", "ellipse", "spline"};
     return {{"curve", curve.value}, {"kind", kKinds[static_cast<int>(pc->kind)]}, {"adaptive", link.adaptive},
             {"note", "Кривая следует за ребром компонента-источника, пока деталь в этой сборке."}};
 }

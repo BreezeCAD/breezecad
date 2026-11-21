@@ -17,8 +17,14 @@ struct ThreadSite {
 /// The cylindrical face `ref` refers to on `body`, described.
 Expected<ThreadSite> FindThreadSite(const TopoDS_Shape& body, const doc::CylinderTouch& ref);
 
+/// What a thread was like, besides its tool.
+struct ThreadNotes {
+    double web = 1e300;     ///< mm of material left between two turns of the groove at the surface
+    bool   cached = false;  ///< the tool came from the cache (ToolCache.h)
+};
+
 /// The groove of the thread of `feature` on `body` (what is cut out).
-Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFeature& feature);
+Expected<TopoDS_Shape> ThreadTool(const TopoDS_Shape& body, const doc::ThreadFeature& feature, ThreadNotes* notes = nullptr);
 
 /// A cosmetic thread: the helix drawn on the face, nothing cut.
 Expected<TopoDS_Shape> CosmeticThread(const TopoDS_Shape& body, const doc::ThreadFeature& feature);

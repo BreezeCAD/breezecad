@@ -25,7 +25,7 @@ struct PreviewMesh {
 PreviewMesh MeshOf(const Model& model, double deflection);
 
 /// Material `before` had and `after` has not, and the other way round
-/// (BRepAlgoAPI_Cut both ways), meshed. `volume` (optional) gets its size, mm³.
+/// (a cut both ways, kernel/occt/Ops.h), meshed. `volume` (optional) gets its size, mm³.
 PreviewMesh ChangedVolumeOf(const Model& before, const Model& after, double deflection, double* volume = nullptr);
 
 } // namespace bz::kernel

@@ -1,4 +1,5 @@
 #include "kernel/occt/Fillet.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepAdaptor_Curve.hxx>
@@ -15,6 +16,7 @@
 #include <format>
 
 #include "core/Log.h"
+#include "kernel/occt/EdgeMatch.h"
 #include "core/Math.h"
 #include <BRepGProp.hxx>
 #include <ChFi3d.hxx>
@@ -23,6 +25,8 @@
 #include <ShapeFix_Shape.hxx>
 
 #include <algorithm>
+#include <chrono>
+#include <optional>
 #include <array>
 #include <cmath>
 
@@ -105,7 +109,11 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
     try {
         Builder builder(body);
         for (const TopoDS_Edge& e : edges) add(builder, e);
-        builder.Build();
+        Handle(Deadline) deadline = new Deadline(ops::kBooleanSeconds);
+        builder.Build(Message_ProgressRange(deadline->Start()));
+        if (deadline->Passed())
+            return Error{std::format("«{}» не уложилось в {:.0f} с — выберите меньше рёбер за раз или уменьшите размер", what,
+                                     ops::kBooleanSeconds)};
         if (!builder.IsDone() || builder.Shape().IsNull()) {
             // Where it gave up, when OCCT says: the user sees which corner.
             if constexpr (requires { builder.NbFaultyVertices(); }) {
@@ -133,7 +141,7 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
                 scale += std::abs(v);
             }
         Handle(ShapeFix_Shape) fix = new ShapeFix_Shape(result);
-        fix->Perform();
+        fix->Perform(Message_ProgressRange(deadline->Start()));
         const TopoDS_Shape healed = fix->Shape();
         if (healed.IsNull() || !BRepCheck_Analyzer(healed).IsValid()) return Error{tooBig};
         const double gained = VolumeOf(healed) - VolumeOf(body);
@@ -148,7 +156,7 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
         // OCCT gave up inside, typically where the chosen edge stops against
         // another face: the whole outline of the pocket often builds when
         // one edge of it does not.
-        log::Warn("{}: OCCT failed inside ({})", what, failure.GetMessageString());
+        log::Warn("{}: OCCT failed inside ({})", what, ops::TextOf(failure));
         return Error{std::format("{} Похоже, ребро обрывается у вершины, где OCCT не может закрыть конец: выберите вместе с ним соседние "
                                  "рёбра того же контура (например, весь край паза) или уменьшите размер",
                                  tooBig)};
@@ -191,13 +199,80 @@ TopoDS_Face ReferenceFace(const TopoDS_Edge& edge, const TopTools_IndexedDataMap
 
 } // namespace
 
-Expected<TopoDS_Shape> MakeFillet(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double radius) {
+namespace {
+
+Expected<TopoDS_Shape> FilletOnce(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double radius) {
     return Build<BRepFilletAPI_MakeFillet>(
         body, edges, radius, [radius](BRepFilletAPI_MakeFillet& b, const TopoDS_Edge& e) { b.Add(radius, e); },
         [radius](const TopoDS_Edge&, const EdgeShape& s) {
             return radius * radius * (1.0 / std::tan(s.opening / 2) - (kPi - s.opening) / 2);
         },
         "Сопряжение", "Не удалось построить сопряжение: радиус слишком большой для этих рёбер?");
+}
+
+std::string Where(const doc::EdgeReference& e) { return std::format("({:.2f}; {:.2f}; {:.2f})", e.middle.x, e.middle.y, e.middle.z); }
+
+} // namespace
+
+Expected<TopoDS_Shape> MakeFillet(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double radius, std::string* warning) {
+    // The fallbacks below rebuild the fillet several times: only while that
+    // stays cheap (a rebuild runs on every change further up the tree).
+    const auto started = std::chrono::steady_clock::now();
+    Expected<TopoDS_Shape> all = FilletOnce(body, edges, radius);
+    const double once = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (all || edges.size() < 2) {
+        if (!all && edges.size() == 1 && once * 7 < 1.0) {
+            // One edge: how large a radius it takes (a few tries, only on failure).
+            double lo = 0, hi = radius;
+            for (int i = 0; i < 7; ++i) {
+                const double mid = (lo + hi) / 2;
+                if (FilletOnce(body, edges, mid)) lo = mid;
+                else hi = mid;
+            }
+            if (lo > 1e-3 && lo < radius * 0.98)
+                return Error{std::format("{} Для этого ребра строится радиус до ≈{:.2f} мм.", all.GetError().message, lo)};
+        }
+        return all;
+    }
+    if (once * static_cast<double>(edges.size()) * 2 > 4.0) return all;
+    // The edges one at a time: each is found again on the body rounded so far.
+    std::vector<doc::EdgeReference> refs;
+    for (const TopoDS_Edge& e : edges) refs.push_back(DescribeEdge(e, body));
+    TopoDS_Shape shape = body;
+    std::vector<std::size_t> pending(edges.size());
+    for (std::size_t i = 0; i < pending.size(); ++i) pending[i] = i;
+    for (int pass = 0; pass < 2 && !pending.empty(); ++pass) {   // a second pass: some build once their neighbours are round
+        std::vector<std::size_t> left;
+        for (const std::size_t i : pending) {
+            const std::optional<TopoDS_Edge> e = ResolveEdges({refs[i]}, shape).front();
+            if (!e) {
+                left.push_back(i);
+                continue;
+            }
+            // The edge found again must still be where it was (not a look-alike elsewhere).
+            const doc::EdgeReference now = DescribeEdge(*e, shape);
+            if (now.curve != refs[i].curve || (now.middle - refs[i].middle).Length() > std::max(radius * 2, 0.5)) {
+                left.push_back(i);
+                continue;
+            }
+            if (Expected<TopoDS_Shape> one = FilletOnce(shape, {*e}, radius)) shape = *one;
+            else left.push_back(i);
+        }
+        if (left.size() == pending.size()) break;
+        pending = std::move(left);
+    }
+    if (pending.size() == edges.size()) return all;   // none on its own either: the first message says why
+    if (!pending.empty()) {
+        std::string where;
+        for (const std::size_t i : pending) where += (where.empty() ? "" : ", ") + Where(refs[i]);
+        log::Warn("Сопряжение: {} of {} edges built one by one, not built at {}", edges.size() - pending.size(), edges.size(), where);
+        if (warning)
+            *warning = std::format("Сопряжение построено на {} рёбрах из {}: не строятся рёбра у {} — уменьшите радиус или уберите их из выбора",
+                                   edges.size() - pending.size(), edges.size(), where);
+    } else {
+        log::Info("Сопряжение: built edge by edge ({} edges) where all at once failed", edges.size());
+    }
+    return shape;
 }
 
 Expected<TopoDS_Shape> MakeChamfer(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double distance) {

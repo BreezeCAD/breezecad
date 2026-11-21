@@ -97,6 +97,9 @@ public:
 
     /// Re-creates displayed bodies if the model (or which model) changed.
     void Sync(const kernel::Model& model);
+    /// Faces of the bodies the last Sync meshed that stayed without
+    /// triangles even meshed again on their own (shown as holes; logged).
+    int BareFaces() const;
     /// The next Sync shows the model again from scratch (after a failure
     /// that may have left the view half-way through a change).
     void ForgetSynced();

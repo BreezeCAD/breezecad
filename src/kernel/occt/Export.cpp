@@ -2,6 +2,7 @@
 
 #include "core/PathText.h"
 #include "kernel/occt/ModelImpl.h"
+#include "kernel/occt/Ops.h"
 
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Builder.hxx>
@@ -122,7 +123,7 @@ Status Model::ExportStep(const std::filesystem::path& path) const {
         if (writer.Write(utf8.c_str()) != IFSelect_RetDone) return Error{std::format("Не удалось записать STEP: {}", utf8)};
 #endif
     } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка экспорта STEP: {}", failure.GetMessageString())};
+        return occt::ops::FromFailure(failure, "Ошибка экспорта STEP");
     }
     return Status::Ok();
 }

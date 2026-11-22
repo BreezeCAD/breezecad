@@ -1,0 +1,70 @@
+# Add [asan] to an existing PR title, or open a PR with [asan] in its title.
+# An edit that removes the marker or changes only the description does not run tests.
+name: Linux ASan/UBSan
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [next]
+    types: [opened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-asan-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-asan:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.title, '[asan]') &&
+       (github.event.action == 'opened' ||
+        (github.event.changes.title.from &&
+         !contains(github.event.changes.title.from, '[asan]'))))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libglfw3-dev libgl1-mesa-dev libxi-dev libfreetype-dev libfontconfig1-dev
+      - name: Download the OCCT build used by CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset=bz-occt-linux-x64
+          gh release download dev-deps --pattern "$asset.sha" --dir "$RUNNER_TEMP"
+          expected=$(sha256sum scripts/deps/build-occt.sh | cut -d' ' -f1)
+          if [[ $(<"$RUNNER_TEMP/$asset.sha") != "$expected" ]]; then
+            echo "::error::dev-deps OCCT archive does not match scripts/deps/build-occt.sh"
+            exit 1
+          fi
+          gh release download dev-deps --pattern "$asset.tar.xz" --dir "$RUNNER_TEMP"
+          mkdir -p .deps/occt
+          tar -xJf "$RUNNER_TEMP/$asset.tar.xz" -C .deps/occt
+          cat .deps/occt/occt-build.txt
+      - name: Configure
+        run: cmake --preset linux-asan -DOpenCASCADE_DIR="$PWD/.deps/occt/lib/cmake/opencascade" 2>&1 | tee configure.log
+      - name: Build tests
+        run: cmake --build --preset linux-asan --target bz_tests --parallel 3 2>&1 | tee build.log
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/linux-asan --output-on-failure --timeout 1500 2>&1 | tee test.log
+      - name: Save diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-asan-logs
+          path: |
+            configure.log
+            build.log
+            test.log
+            build/linux-asan/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7

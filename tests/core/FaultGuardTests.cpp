@@ -9,6 +9,7 @@ namespace {
 
 volatile int* volatile gNowhere = nullptr;
 
+__attribute__((no_sanitize("undefined")))   // this fault is injected to test the guard
 void Fault() { *gNowhere = 1; }
 
 // Works under Wine, but on the Windows CI runner the fault is not caught yet:

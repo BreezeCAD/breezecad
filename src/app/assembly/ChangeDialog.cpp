@@ -6,6 +6,7 @@
 #include "app/Session.h"
 #include "app/assembly/InPlace.h"
 #include "app/sketch/SketchEditor.h"
+#include "app/sketch/SketchRepair.h"
 #include "core/Monitor.h"
 #include "core/PathText.h"
 #include "document/SketchFeature.h"
@@ -126,6 +127,12 @@ void SketchErrors(const doc::SketchFeature& sk, std::vector<Vec3>& out) {
         if (const auto p = middle(curve)) out.push_back(at(*p));
 }
 
+/// The variants the window offers for `change`: projections that disagree
+/// can only be let go or edited by hand (no new contour to follow).
+bool Offered(const AssemblyState::SourceChange& change, ChangeChoice c) {
+    return !change.conflict || c == ChangeChoice::Ignore || c == ChangeChoice::Manual;
+}
+
 /// Starts (or keeps) the previews of the change shown.
 void MakePreviews(ChangeDialogState& d, const AssemblyState& st, std::string_view name) {
     const AssemblyState::SourceChange& change = st.changes[d.current];
@@ -134,6 +141,7 @@ void MakePreviews(ChangeDialogState& d, const AssemblyState& st, std::string_vie
     const std::string base = std::format("{}#{}", ToUtf8(change.partFile), d.current);
     for (std::size_t i = 0; i < 4; ++i) {
         const auto choice = static_cast<ChangeChoice>(i);
+        if (!Offered(change, choice)) continue;
         const std::string key = choice == ChangeChoice::Mimic ? base + "#" + d.gap : base;
         Pending& p = d.variants[i];
         if (p.key == key) continue;
@@ -283,9 +291,18 @@ void DrawPreview(ui::Ui& ui, ImDrawList* dl, ImVec2 p0, ImVec2 p1, ChangeDialogS
         } else if (pr.kind == 0) {
             const Color shade{body.r * pr.light, body.g * pr.light, body.b * pr.light, 1.0f};
             dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(shade));
-        } else {
-            dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(sourceTint.WithAlpha(0.06f)));
         }
+    }
+    // The source's faces: a faint tint over everything, in one layer. Sorted in
+    // with the part's triangles it went over some and under others (their
+    // middles are not their depth): wedges across the face. Without
+    // anti-aliased fill: the fringes of its triangles would overlap in lines.
+    {
+        const ImDrawListFlags aa = dl->Flags;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        for (const Prim& pr : prims)
+            if (pr.kind == 2) dl->AddTriangleFilled(pr.a, pr.b, pr.cc, ui::ToU32(sourceTint.WithAlpha(0.06f)));
+        dl->Flags = aa;
     }
     // The source's new contour: blue dashes.
     for (std::size_t i = 0; i + 1 < d.contour.size(); i += 2) {
@@ -356,6 +373,7 @@ void LeadManualEdit(AppContext& app, Session& as) {
     if (st.inPlace != st.manual.component) {
         if (st.inPlace || part != &as) return;   // another part is being edited
         if (!EditInPlace(app, as, st.manual.component)) st.manual = {};
+        else app.Later([] {});   // one more frame: the first sketch opens on it, not on the next mouse move
         return;
     }
     if (!part || part->host != &as || part->mode != EditMode::Model) return;   // a sketch is still open
@@ -381,7 +399,9 @@ const char* ChoiceTitle(ChangeChoice c) {
     }
     return "";
 }
-const char* ChoiceNote(ChangeChoice c) {
+const char* ChoiceNote(ChangeChoice c, bool conflict) {
+    if (conflict && c == ChangeChoice::Ignore) return N_("Эти проекции перестают следовать за рёбрами. Эскиз остаётся как есть");
+    if (conflict && c == ChangeChoice::Manual) return N_("Сразу открыть эскиз и поправить проекции вручную");
     switch (c) {
         case ChangeChoice::Ignore: return N_("Деталь остаётся как есть. Изменившиеся эскизы подсвечены красным");
         case ChangeChoice::Adapt: return N_("Эскизы идут за новым контуром, зависимости сохраняются. Видно, что и где изменится");
@@ -395,6 +415,9 @@ const char* ChoiceNote(ChangeChoice c) {
 
 void DrawChangeDialog(AppContext& app) {
     Session* as = app.Doc();
+    // A part edited in place is active then: its assembly leads the manual edit
+    // (the sketches to open are in the part being edited).
+    if (as && as->host) as = as->host;
     if (!as || !as->assembly) return;
     AssemblyState& st = *as->assembly;
     LeadManualEdit(app, *as);
@@ -406,6 +429,8 @@ void DrawChangeDialog(AppContext& app) {
     if (!app.shell.changeDialog) app.shell.changeDialog = std::make_shared<ChangeDialogState>();
     ChangeDialogState& d = *app.shell.changeDialog;
     d.choices.resize(st.changes.size(), ChangeChoice::Adapt);
+    for (std::size_t k = 0; k < st.changes.size(); ++k)
+        if (!Offered(st.changes[k], d.choices[k])) d.choices[k] = ChangeChoice::Ignore;
     d.current = std::min(d.current, st.changes.size() - 1);
     const std::string name = as->ContextName();
     MakePreviews(d, st, name);
@@ -440,7 +465,10 @@ void DrawChangeDialog(AppContext& app) {
     ui::FittedText(dl, ui.fonts.display, ui.S(18), {textX, o.y + ui.S(22)}, o.x + width - pad - counterW, ui::ToU32(c.text),
                    Tr("Обнаружено изменение, затрагивающее другие детали"));
     const std::string what =
-        change.sourceSketch.empty()
+        change.conflict
+            ? Trf("Проекции рёбер детали «{}» не могут встать на место все сразу: рёбра ставят их общую точку в разные места.",
+                  change.source)
+        : change.sourceSketch.empty()
             ? Trf("Деталь «{}» изменилась. От неё построены детали сборки — выберите, что с ними делать.", change.source)
             : Trf("Деталь «{}»: изменён «{}». От него построены детали сборки — выберите, что с ними делать.", change.source,
                   change.sourceSketch);
@@ -473,8 +501,9 @@ void DrawChangeDialog(AppContext& app) {
     y += ui.S(30);
     for (std::size_t i = 0; i < 4; ++i) {
         const auto ch = static_cast<ChangeChoice>(i);
+        if (!Offered(change, ch)) continue;
         const bool chosen = choice == ch;
-        const std::string note = Tr(ChoiceNote(ch));
+        const std::string note = Tr(ChoiceNote(ch, change.conflict));
         const float noteH = ui.fonts.bodySmall->CalcTextSizeA(ui.S(12), FLT_MAX, lw - ui.S(58), note.c_str()).y;
         const float h = ui.S(30) + noteH;
         ImGui::SetCursorScreenPos({lx - ui.S(4), y});
@@ -509,9 +538,11 @@ void DrawChangeDialog(AppContext& app) {
                 dl->AddText(ui.fonts.bodySmall, ui.S(12), {lx + ui.S(52), y}, ui::ToU32(c.text), row.c_str());
                 y += ui.S(18);
             }
-            ImGui::SetCursorScreenPos({lx + ui.S(48), y + ui.S(2)});
-            ImGui::Checkbox(Tr("Откатить зависимости эскиза до изменения"), &d.rollback);
-            y += ui.S(32);
+            if (!change.conflict) {
+                ImGui::SetCursorScreenPos({lx + ui.S(48), y + ui.S(2)});
+                ImGui::Checkbox(Tr("Откатить зависимости эскиза до изменения"), &d.rollback);
+                y += ui.S(32);
+            }
         }
     }
     ImGui::SetCursorScreenPos({lx, o.y + height - footH - ui.S(40)});
@@ -589,9 +620,45 @@ void DrawChangeDialog(AppContext& app) {
     // --- foot ---------------------------------------------------------------------------
     const float fy = o.y + height - footH / 2;
     const bool last = d.current + 1 >= st.changes.size();
+    const float bh = ui.S(36);
+    // «Вернуть как было»: the affected sketches back as they were (restored
+    // from their beforeBreak where it is kept, their projections unlinked) —
+    // an alternative to the four choices, one undo step like them.
+    float footX = o.x + pad;
+    {
+        const doc::Document* partDoc = st.geometry.PartOf(change.component);
+        bool canRestore = false;
+        if (partDoc)
+            for (const kernel::AffectedSketch& s : change.sketches) {
+                const auto* sk = partDoc->FindAs<doc::SketchFeature>(s.sketch);
+                if (sk && (!sk->projections.empty() || !sk->contextProjections.empty())) {
+                    canRestore = true;
+                    break;
+                }
+            }
+        const char* label = change.sketches.size() > 1 ? Tr("Вернуть все как было") : Tr("Вернуть эскиз как было");
+        const float rw = std::max(ui.S(190), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, label).x + ui.S(30));
+        ImGui::SetCursorScreenPos({footX, fy - bh / 2});
+        if (ui::SecondaryButton(ui, "##change-restore", label, nullptr, {rw, bh}, canRestore)) {
+            const std::string part = change.part, sketchName = change.sketches.front().name;
+            const std::string why = st.RestoreChange(d.current, as->path, name);
+            if (!why.empty()) {
+                app.notes.Error(Tr(why));
+            } else {
+                as->assembly->MarkUnsaved();
+                ShowRestoreNotice(app, *as, sketchName, std::format("«{}»: вернуть как было", part));
+                if (d.current >= st.changes.size()) {
+                    app.shell.changeDialog.reset();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ui::ItemTooltip(ui, Tr("Затронутые эскизы вернутся к последнему рабочему виду; спроецированная геометрия станет независимой от источника"));
+        footX += rw + ui.S(16);
+    }
     if (!last) {
         const std::string next = Trf("Затем — «{}» ({} / {})", st.changes[d.current + 1].part, d.current + 2, st.changes.size());
-        dl->AddText(ui.fonts.bodySmall, ui.S(12), {o.x + pad, fy - ui.S(7)}, ui::ToU32(c.textSecondary), next.c_str());
+        dl->AddText(ui.fonts.bodySmall, ui.S(12), {footX, fy - ui.S(7)}, ui::ToU32(c.textSecondary), next.c_str());
     }
     std::string primary;
     switch (choice) {
@@ -600,7 +667,7 @@ void DrawChangeDialog(AppContext& app) {
         case ChangeChoice::Mimic: primary = last ? Tr("Повторить контур") : Tr("Повторить контур и далее →"); break;
         case ChangeChoice::Manual: primary = Trf("Открыть {}", change.sketches.front().name); break;
     }
-    const float bh = ui.S(36), bw = std::max(ui.S(200), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, primary.c_str()).x + ui.S(40));
+    const float bw = std::max(ui.S(200), ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, primary.c_str()).x + ui.S(40));
     const float pw = ui.S(140);
     ImGui::SetCursorScreenPos({o.x + width - pad - bw - ui.S(10) - pw, fy - bh / 2});
     if (ui::SecondaryButton(ui, "##change-previous", Tr("← Предыдущая"), nullptr, {pw, bh}, d.current > 0)) --d.current;
@@ -610,7 +677,8 @@ void DrawChangeDialog(AppContext& app) {
     const bool go = ui::PrimaryButton(ui, "##change-apply", primary.c_str(), "Enter", {bw, bh}, can);
     if (go && can) {
         if (d.sameForAll)
-            for (std::size_t k = d.current; k < d.choices.size(); ++k) d.choices[k] = choice;
+            for (std::size_t k = d.current; k < d.choices.size(); ++k)
+                if (Offered(st.changes[k], choice)) d.choices[k] = choice;
         if (!last && !d.sameForAll && choice != ChangeChoice::Manual) {
             ++d.current;   // the next part; all are applied with the last one
         } else {
@@ -625,7 +693,7 @@ void DrawChangeDialog(AppContext& app) {
             std::string failed;
             for (; left > 0 && k < st.changes.size() && k < choices.size(); --left) {
                 const ChangeChoice ch = choices[k];
-                const std::string why = ch == ChangeChoice::Manual && manual ? std::string("-") : st.ResolveChange(k, ch, gap, d.rollback, file, name);
+                const std::string why = ch == ChangeChoice::Manual && manual ? std::string("-") : st.ResolveChange(k, ch, gap, d.rollback && !st.changes[k].conflict, file, name);
                 if (!why.empty()) {
                     if (why != "-") failed = why;
                     ++k;   // stays in the list

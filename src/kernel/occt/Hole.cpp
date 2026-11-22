@@ -57,6 +57,12 @@ Status CheckSizes(const doc::HoleFeature& f) {
         return Error{"Цековка должна быть шире отверстия и иметь глубину"};
     if (f.type == doc::HoleType::Countersink && f.sinkDiameter.value <= f.diameter.value)
         return Error{"Зенковка должна быть шире отверстия"};
+    // A blind hole shallower than its head: the head's cone or step went past
+    // the bottom and the bottom came out wrong (#26).
+    if (!f.throughAll && f.type == doc::HoleType::Counterbore && f.headDepth.value >= f.depth.value)
+        return Error{"Цековка глубже отверстия: увеличьте глубину отверстия или уменьшите цековку"};
+    if (!f.throughAll && f.type == doc::HoleType::Countersink && (f.sinkDiameter.value - f.diameter.value) / 2 >= f.depth.value)
+        return Error{"Зенковка глубже отверстия: увеличьте глубину отверстия или уменьшите зенковку"};
     return Status::Ok();
 }
 
@@ -88,7 +94,7 @@ Expected<TopoDS_Shape> DrillHoles(const TopoDS_Shape& body, const doc::HoleFeatu
     return ApplyBoolean(body, *tools, doc::BooleanOp::Cut);
 }
 
-std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature) {
+std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature, const Frame& previousPlane) {
     std::size_t lost = 0;
     const Frame plane = doc::PlaneFrame(feature.face);
     for (doc::HoleAxis& axis : feature.concentric) {
@@ -96,7 +102,8 @@ std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature) {
         std::optional<std::pair<Vec3, Vec3>> line;
         try {
             if (axis.edge) {
-                line = ResolveCircle(*axis.edge, body);
+                const Frame* contextPlane = IsEdgeInPlane(*axis.edge, previousPlane) ? &plane : nullptr;
+                line = ResolveCircle(*axis.edge, body, contextPlane);
             } else if (axis.cylinder) {
                 if (const auto now = ResolveCylinder(body, *axis.cylinder)) {
                     axis.cylinder->axisPoint = now->axisPoint;

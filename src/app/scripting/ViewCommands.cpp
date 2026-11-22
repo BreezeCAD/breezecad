@@ -69,7 +69,7 @@ Json CameraJson(const render::CameraState& c) {
 /// it later): its bodies and their appearance.
 Session& SyncedView(AppContext& app) {
     Session& s = Active(app);
-    s.RebuildNow();
+    Rebuild(s);
     app.viewport.Sync(s.model);
     app.viewport.SetLook(s.doc.look, &s, s.doc.LookRevision());
     app.viewport.SetDisplayStyle(app.shell.displayStyle);
@@ -93,6 +93,27 @@ Json Snapshot(AppContext& app, const Json& args) {
     void* png = tdefl_write_image_to_png_file_in_memory(image->rgba.data(), image->width, image->height, 4, &size);
     if (!png) Fail("Не удалось сжать изображение в PNG");
     Json out = {{"image_png_base64", Base64(png, size)}, {"width", image->width}, {"height", image->height}, {"camera", CameraJson(camera)}};
+    mz_free(png);
+    return out;
+}
+
+/// «Кадр» (view.render): the picture the "Сделать кадр" panel saves, with the
+/// window's camera; for modules and assistants.
+Json RenderPhoto(AppContext& app, const Json& args) {
+    SyncedView(app);
+    render::Viewport::PhotoOptions o;
+    static const std::vector<std::string> kBackgrounds = {"studio", "dark", "transparent"};
+    o.background = static_cast<render::Viewport::PhotoOptions::Background>(Choice(args, "background", kBackgrounds, 0));
+    o.width  = std::clamp(Integer(args, "width", 1920), 64, 4096);
+    o.height = std::clamp(Integer(args, "height", 1080), 64, 4096);
+    o.floor = Flag(args, "floor", true);
+    o.edges = Flag(args, "edges", true);
+    const auto image = app.viewport.Photo(o);
+    if (!image) Fail("Не удалось получить изображение: графика ещё не готова (окно программы свёрнуто?)");
+    std::size_t size = 0;
+    void* png = tdefl_write_image_to_png_file_in_memory(image->rgba.data(), image->width, image->height, 4, &size);
+    if (!png) Fail("Не удалось сжать изображение в PNG");
+    Json out = {{"image_png_base64", Base64(png, size)}, {"width", image->width}, {"height", image->height}};
     mz_free(png);
     return out;
 }
@@ -155,7 +176,7 @@ Json Appearances(AppContext& app, const Json&) {
 
 Json SetAppearance(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const AppearanceLibrary library = UserLibrary();
     std::optional<doc::Appearance> chosen;
     if (Has(args, "appearance")) {
@@ -293,6 +314,18 @@ Json LibrarySavePart(AppContext& app, const Json& args) {
             {"note", "Изделие в моей библиотеке: library.make_part с этим standard."}};
 }
 
+/// Removes an item of the user's library (one library.save_part made).
+Json LibraryRemovePart(AppContext& app, const Json& args) {
+    const std::string id = Text(args, "standard");
+    if (!doc::parts::FindStandard(id)) Fail(std::format("Нет изделия «{}» (список — library.list)", id));
+    if (const Status ok = doc::parts::RemoveUserItem(StandardPackDir() / std::string(doc::parts::kUserPackFile), id); !ok)
+        Fail(ok.GetError().message);
+    LoadStandardPacks(app);
+    app.shell.library.chosen = {};
+    std::erase_if(app.shell.library.recent, [&](const auto& r) { return r.standard == id; });
+    return {{"removed", id}};
+}
+
 /// Adds a pack of standard parts (.bzlib) to the user's library and reloads the packs.
 Json LibraryAddPack(AppContext& app, const Json& args) {
     const std::string path = Text(args, "path");
@@ -318,11 +351,7 @@ Json LibraryMake(AppContext& app, const Json& args) {
     request.length     = Number(args, "length", 0.0);
     request.realThread = Flag(args, "real_thread", false);
     request.appearance = Text(args, "appearance", "");
-    if (const auto in = args.find("inputs"); in != args.end() && in->is_object())
-        for (const auto& [name, value] : in->items()) {
-            if (!value.is_number()) Fail(std::format("inputs.{} — число, мм", name));
-            request.inputs.emplace_back(name, value.get<double>());
-        }
+    StandardInputs(args, request);
     Expected<doc::parts::Made> made = doc::parts::MakePart(request);
     if (!made) Fail(Tr(made.GetError().message));
     Session& s = app.workspace.NewPart();
@@ -330,7 +359,7 @@ Json LibraryMake(AppContext& app, const Json& args) {
     s.doc = std::move(made->doc);
     s.doc.units.length = static_cast<LengthUnit>(app.settings.newPartLength);
     s.history.MarkUnsaved();
-    s.RebuildNow();
+    Rebuild(s);
     Json out = {{"designation", s.untitledName},
                 {"envelope_mm", {made->envelope.x, made->envelope.y, made->envelope.z}},
                 {"open_documents", app.workspace.sessions.size()},
@@ -349,6 +378,16 @@ Json ViewArgs(Json p) {
 
 } // namespace
 
+void StandardInputs(const Json& args, doc::parts::Request& request) {
+    const auto in = args.find("inputs");
+    if (in == args.end()) return;
+    if (!in->is_object()) Fail("«inputs» — объект {\"имя\": мм}");
+    for (const auto& [name, value] : in->items()) {
+        if (!value.is_number()) Fail(std::format("inputs.{} — число, мм", name));
+        request.inputs.emplace_back(name, value.get<double>());
+    }
+}
+
 void AddViewCommands(Commands& out) {
     out.push_back({"view.snapshot",
                    "Картинка модели активного документа (PNG) — посмотреть, что получилось. Модель вписывается в кадр с "
@@ -357,6 +396,15 @@ void AddViewCommands(Commands& out) {
                                     {"height", IntegerArg("Высота, пикселей (по умолчанию 768).")},
                                     {"current_camera", BoolArg("Снять как сейчас на экране (без view/direction).")}})),
                    false, &Snapshot});
+    out.push_back({"view.render",
+                   "«Кадр»: красивая картинка модели (PNG) с камерой окна — фон студии, тень на полу, рёбра; как кнопка "
+                   "«Сделать кадр» на вкладке «Вид». transparent — PNG с прозрачным фоном (без пола).",
+                   Schema({{"width", IntegerArg("Ширина, пикселей (64–4096, по умолчанию 1920).")},
+                           {"height", IntegerArg("Высота, пикселей (по умолчанию 1080).")},
+                           {"background", EnumArg("Фон: studio (по умолчанию), dark, transparent.", {"studio", "dark", "transparent"})},
+                           {"floor", BoolArg("Пол с тенью (по умолчанию да).")},
+                           {"edges", BoolArg("Рёбра (по умолчанию да).")}}),
+                   false, &RenderPhoto});
     out.push_back({"view.set",
                    "Камера и отображение в окне программы: view/direction — повернуть и вписать модель; fit — вписать, не "
                    "поворачивая; style — shaded, shaded_with_edges, wireframe, hidden_lines, transparent.",
@@ -407,6 +455,10 @@ void AddViewCommands(Commands& out) {
                                      {"description", "Строки: значения переменных в порядке variables, мм."}}}},
                           {"title", "variables"}),
                    true, &LibrarySavePart});
+    out.push_back({"library.remove_part",
+                   "Удаляет изделие из моей библиотеки (сделанное library.save_part); изделия пакетов и встроенные не удаляются.",
+                   Schema({{"standard", StringArg("id изделия (из library.save_part или library.list).")}}, {"standard"}), true,
+                   &LibraryRemovePart});
     out.push_back({"library.add_pack",
                    "Добавляет в библиотеку пакет стандартных изделий (файл .bzlib: таблицы размеров и рецепт построения — "
                    "docs/ADR/0006-standard-part-packs.md). Файл проверяется и копируется в папку библиотеки пользователя.",

@@ -86,7 +86,7 @@ constexpr std::array<SketchToolInfo, 34> kTools{{
     {SketchTool::Point, N_("Точка"), "sk-point", N_("Укажите положение точки")},
     {SketchTool::Spline, N_("Сплайн"), "sk-spline", N_("Щёлкайте точки сплайна. Правый щелчок или Enter — закончить, щелчок по первой точке — замкнуть")},
     {SketchTool::Text, N_("Текст"), "sk-text", N_("Введите текст слева и щёлкните, где он начнётся; щелчок по надписи заменит её текст")},
-    {SketchTool::Project, N_("Проецировать"), "sk-project", N_("Щёлкните ребро модели или грань (весь её контур) — проекция появится в эскизе и будет следовать за моделью")},
+    {SketchTool::Project, N_("Проецировать"), "sk-project", N_("Щёлкните ребро, грань, вершину, рабочую геометрию, начало координат или кривую другого эскиза — проекция появится в эскизе и будет следовать за моделью. Режимы «Сечение» и «Развёртка» — в панели")},
     {SketchTool::Trim, N_("Обрезка"), "sk-trim", N_("Щёлкните лишний кусок кривой — он удалится до ближайших пересечений")},
     {SketchTool::Extend, N_("Удлинение"), "sk-extend", N_("Щёлкните отрезок у конца — он дотянется до ближайшей кривой")},
     {SketchTool::Offset, N_("Эквидистанта"), "sk-offset", N_("Задайте расстояние и щёлкните контур — копия встанет с той стороны, где курсор")},
@@ -185,6 +185,7 @@ void SketchEditor::CreateAndEdit(AppContext& app, Session& session, const doc::S
     feature->name = session.doc.UniqueFeatureName(Tr("Эскиз"));
     feature->placement = placement;
     feature->sketch.EnsureOrigin(session.doc.Ids());
+    if (app.settings.projectOriginOnCreate) ProjectPartOrigin(session, *feature);
     const ObjectId id = feature->id;
     session.Execute(doc::AddFeature(std::move(feature), session.doc.EndMarker()));
     Edit(app, session, id);
@@ -496,6 +497,11 @@ void SketchEditor::Frame(AppContext& app, Session& session, const ViewportFrame&
         }
     }
 
+    // «Проецировать геометрию»: work geometry, the origin and the other
+    // sketches shown and found under the cursor (every frame, hovered or not).
+    if (myTool == SketchTool::Project) DrawProjectTargets(app, session, view);
+    else myProjectHot = {};
+
     myClickUsed = false;
     if (myEditDimension) HandleInlineEdit(app, session, view);
     // Enter (or a click of the wheel) after typing a size puts the point the
@@ -690,12 +696,32 @@ void SketchEditor::HandleSelect(AppContext& app, Session& session, const SketchV
     (void)view;
 }
 
+void SketchEditor::SelectAll(AppContext& app, Session& session) {
+    doc::SketchFeature* f = Active(session);
+    if (!f) return;
+    switch (myTool) {
+        case SketchTool::Select:
+        case SketchTool::Move:
+        case SketchTool::Rotate:
+        case SketchTool::Copy:
+        case SketchTool::Scale:
+        case SketchTool::Mirror:
+        case SketchTool::PatternRect:
+        case SketchTool::PatternCircular: break;
+        default: SetTool(app, session, SketchTool::Select); break;
+    }
+    mySelection.clear();
+    for (const ObjectId id : f->sketch.Entities()) mySelection.insert(id);
+    log::Info("Sketch: all chosen, {}", mySelection.size());
+}
+
 void SketchEditor::StartInlineEdit(const sketch::Constraint& c) {
     myEditDimension = c.id;
     myEditText = c.parameter.expression;
     myEditFocus = true;
     myEditTyped = false;
     myCaretFrames = 0;
+    myPlacedBefore.reset();
 }
 
 void SketchEditor::HandleInlineEdit(AppContext& app, Session& session, const SketchView& view) {
@@ -812,6 +838,13 @@ void SketchEditor::HandleInlineEdit(AppContext& app, Session& session, const Ske
     }
     f->sketch = std::move(trial);
     session.doc.MarkChanged(static_cast<std::size_t>(session.doc.IndexOf(f->id)));
+    // A dimension placed just now (nothing done since): placing it and its
+    // value are one step, one Ctrl+Z takes the dimension back.
+    if (myPlacedBefore && session.history.GetMark() == myPlacedMark && myPlacedMark.first == myPlacedAt.first) {
+        session.history.RollBack(myPlacedAt);
+        before = std::move(myPlacedBefore);
+    }
+    myPlacedBefore.reset();
     session.CommitInPlaceEdit(std::move(before), Trf("Размер {}", c->parameter.name));
     myEditDimension = {};
     KeepSketchInView(app, session);

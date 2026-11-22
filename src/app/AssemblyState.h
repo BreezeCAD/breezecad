@@ -85,6 +85,11 @@ public:
         /// moved, to be judged and tuned) until Применить / Готово keep it
         /// or Отмена / Esc take it back.
         ObjectId                preview;
+        /// Применить found the trial not holding (it contradicts constraints
+        /// already there) or adding nothing: what to say in the panel, and the
+        /// user's choice to keep it anyway (Inventor refuses such a constraint).
+        std::string             conflict;
+        bool                    force = false;
     } creating;
 
     /// AutoDrop: a screw from the library waits for a click on a hole's rim.
@@ -128,6 +133,18 @@ public:
     /// Remembers the assembly as it is, before a change (one undo step).
     void Checkpoint(std::string label);
     bool Undo();
+    /// A part edited in place (or changed by the change dialog) as one step:
+    /// the assembly and the part as they were before it. Undo brings both back
+    /// together, redo both forward — not the part's edit with old positions.
+    void RecordPartEdit(std::string label, std::string assemblyBefore, const std::filesystem::path& file, std::string partBefore);
+    /// The assembly as JSON now (what RecordPartEdit takes as "before").
+    std::string Snapshot() const;
+    /// The part edited in place as it was when the edit began (ReturnToAssembly
+    /// records it as one step if it changed).
+    struct InPlaceStart {
+        std::filesystem::path file;
+        std::string           assembly, part;
+    } inPlaceStart;
     /// Undo that leaves nothing to redo: a trial (a constraint previewed) taken back.
     bool Discard();
     bool Redo();
@@ -199,6 +216,10 @@ public:
         std::string                         sourceSketch;   ///< its sketch that changed
         std::vector<kernel::AffectedSketch> sketches;
         kernel::SourcePrints                now;            ///< the sources as they are now
+        /// Not a changed sketch: projected curves that cannot all stand on
+        /// their edges (the edges put a shared point in two places). Only
+        /// «Игнорировать» (they stop following) or «Ручное редактирование».
+        bool                                conflict = false;
     };
     std::vector<SourceChange> changes;
     /// «Ручное редактирование»: the sketches of a part to open one by one.
@@ -214,6 +235,12 @@ public:
     /// done; the change then stays.
     std::string ResolveChange(std::size_t index, kernel::ChangeChoice choice, double gap, bool rollback,
                               const std::filesystem::path& file, std::string_view contextName);
+    /// «Вернуть как было»: every affected sketch of `changes[index]` is
+    /// restored (SketchFeature::RestoreBeforeBreak — back to `beforeBreak`
+    /// where it has one, its projections unlinked) and the change is taken off
+    /// the list: one undo step, like ResolveChange. An error message (Russian)
+    /// when no sketch of it can be restored; the change then stays.
+    std::string RestoreChange(std::size_t index, const std::filesystem::path& file, std::string_view contextName);
     /// The document `choice` would make of the part of `changes[index]`, for
     /// the preview: a copy, nothing of the assembly changes.
     Expected<doc::Document> TryChange(std::size_t index, kernel::ChangeChoice choice, double gap, std::string_view contextName) const;
@@ -227,8 +254,10 @@ public:
 private:
     struct Step {
         std::string json, label;
-        /// Parts that followed their sources because of this step, as they
-        /// were before: undo puts them back too (the sketches with them).
+        /// Parts that changed with this step, as they are to be put back when
+        /// it is applied (before it on the undo list, after it on the redo
+        /// list): their sketches with them — solving again where the sources
+        /// are back would not bring the free geometry back where it was.
         std::vector<std::pair<std::filesystem::path, std::string>> partsBefore;
         std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now();
     };
@@ -256,6 +285,14 @@ private:
     /// Applies a choice to `doc` (the part of `change`).
     Expected<int> Apply(const SourceChange& change, kernel::ChangeChoice choice, double gap, doc::Document& doc,
                         std::string_view contextName) const;
+    /// The tail of ResolveChange/RestoreChange: `copy` (the part with the
+    /// choice or the restore applied, `before` its JSON before it) becomes the
+    /// part's edit as one undo step, the change is taken off the list and the
+    /// geometry is updated. `choice` Manual also fills `manual`. Empty on
+    /// success.
+    std::string FinishChange(std::size_t index, doc::Document& copy, const std::string& before, std::string_view label,
+                             kernel::ChangeChoice choice, bool rollback, const std::filesystem::path& file,
+                             std::string_view contextName);
     /// Whether a part has projections from here, and from where: looked at once per version of it.
     const ContextInfo& ContextOf(const std::string& key, ObjectId component, const doc::Document& part, std::string_view name);
     /// Parts with projections follow their sources; true when one changed.
@@ -271,6 +308,8 @@ private:
     std::array<std::uint64_t, 3>   myContextKey{~std::uint64_t{0}, 0, 0};
 
     void Restore(const std::string& json);
+    /// The parts of `parts` as they are now (for the other list), then put as in `parts`.
+    std::vector<std::pair<std::filesystem::path, std::string>> SwapParts(const std::vector<std::pair<std::filesystem::path, std::string>>& parts);
 };
 
 } // namespace bz::app

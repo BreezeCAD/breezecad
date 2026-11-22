@@ -7,6 +7,7 @@
 #include "core/PathText.h"
 #include "assembly/Solver.h"
 #include "document/BzcFile.h"
+#include "document/SketchFeature.h"
 #include "core/Monitor.h"
 #include "core/Profile.h"
 
@@ -208,25 +209,44 @@ void AssemblyState::RollBack(const Mark& mark) {
     ForgetAdaptState();
 }
 
-bool AssemblyState::Undo() {
-    if (myUndo.empty()) return false;
-    myRedo.push_back({assembly::AssemblyToJson(assembly), myUndo.back().label, {}});
-    Restore(myUndo.back().json);
-    // The parts that followed because of that step, as they were (their
-    // sketches too: solving them again where the sources are back would not
-    // bring the free geometry back where it was).
-    for (const auto& [file, json] : myUndo.back().partsBefore) {
+std::vector<std::pair<std::filesystem::path, std::string>>
+AssemblyState::SwapParts(const std::vector<std::pair<std::filesystem::path, std::string>>& parts) {
+    std::vector<std::pair<std::filesystem::path, std::string>> now;
+    for (const auto& [file, json] : parts) {
         PartEdit* edit = EditOf(file);
         if (!edit || !edit->session) continue;
         Expected<doc::Document> was = doc::DocumentFromJson(json);
         if (!was) continue;
+        now.emplace_back(file, doc::DocumentToJson(edit->session->doc));
         edit->session->doc = std::move(*was);
         edit->session->doc.MarkChanged(0);
         edit->session->RebuildNow();
         edit->session->history.MarkUnsaved();
     }
-    if (!myUndo.back().partsBefore.empty()) ForgetAdaptState();
+    if (!parts.empty()) ForgetAdaptState();
+    return now;
+}
+
+std::string AssemblyState::Snapshot() const { return assembly::AssemblyToJson(assembly); }
+
+void AssemblyState::RecordPartEdit(std::string label, std::string assemblyBefore, const std::filesystem::path& file,
+                                   std::string partBefore) {
+    mon::Action("assembly", label);
+    myUndo.push_back({std::move(assemblyBefore), std::move(label), {{file, std::move(partBefore)}}});
+    if (myUndo.size() > kMaxUndo) myUndo.erase(myUndo.begin());
+    myRedo.clear();
+    myAdaptRounds = 0;
+    myAdaptStopped = false;
+}
+
+bool AssemblyState::Undo() {
+    if (myUndo.empty()) return false;
+    Step step = std::move(myUndo.back());
     myUndo.pop_back();
+    Step redo{assembly::AssemblyToJson(assembly), step.label, {}};
+    Restore(step.json);
+    redo.partsBefore = SwapParts(step.partsBefore);   // redo puts them as they are now
+    myRedo.push_back(std::move(redo));
     myAdaptRounds = 0;
     myAdaptStopped = false;
     return true;
@@ -240,9 +260,14 @@ bool AssemblyState::Discard() {
 
 bool AssemblyState::Redo() {
     if (myRedo.empty()) return false;
-    myUndo.push_back({assembly::AssemblyToJson(assembly), myRedo.back().label, {}});
-    Restore(myRedo.back().json);
+    Step step = std::move(myRedo.back());
     myRedo.pop_back();
+    Step undo{assembly::AssemblyToJson(assembly), step.label, {}};
+    Restore(step.json);
+    undo.partsBefore = SwapParts(step.partsBefore);
+    myUndo.push_back(std::move(undo));
+    myAdaptRounds = 0;
+    myAdaptStopped = false;
     return true;
 }
 
@@ -356,7 +381,7 @@ bool AssemblyState::Adapt(const std::filesystem::path& file, std::string_view na
             before = doc::DocumentToJson(copy);
             r = kernel::AdaptContextProjections(geometry, assembly, c.id, copy, name);
             learnt = kernel::SourcePrintsOf(geometry, copy, name);   // its sources learnt, even if it stays on disk
-            if (r.changed() || r.lost > 0) {
+            if (r.changed() || r.lost > 0 || r.conflicting > 0) {
                 auto session = std::make_unique<Session>();
                 session->doc = std::move(copy);
                 session->path = partFile;
@@ -371,6 +396,18 @@ bool AssemblyState::Adapt(const std::filesystem::path& file, std::string_view na
         if (r.lost > 0)
             problems.push_back(std::format("{}: {} рёбер других деталей не найдено — их проекции остались на месте",
                                            c.name, r.lost));
+        if (r.conflicting > 0 && (inPlace || r.conflicts.empty()))
+            problems.push_back(std::format("{}: {} проецированных кривых не могут встать по рёбрам сразу — у них общая точка, "
+                                           "которую рёбра ставят в разные места. Эскиз оставлен как был, кривые отмечены красным",
+                                           c.name, r.conflicting));
+        else if (r.conflicting > 0) {
+            // The author decides, in the window: let them go or edit the sketch.
+            SourceChange change{partFile, c.id, PartName(c.name), {}, {}, std::move(r.conflicts), {}, true};
+            if (const assembly::Component* from = assembly.FindComponent(change.sketches.front().sourceComponent))
+                change.source = PartName(from->name);
+            mon::Action("assembly", std::format("спорящие проекции: {} ({} кривых)", c.name, r.conflicting));
+            changes.push_back(std::move(change));
+        }
         if (r.changed() && edit) {
             RememberPartBefore(partFile, std::move(before));
             // The part changed: it is written with the assembly at the next save.
@@ -437,7 +474,39 @@ std::string AssemblyState::ResolveChange(std::size_t index, kernel::ChangeChoice
 
     static constexpr std::array<const char*, 4> kLabels{"Игнорировать изменения", "Автоматическое адаптирование",
                                                          "Мимикрирование с зазором", "Ручное редактирование"};
-    Checkpoint(std::format("{}: {}", change.part, kLabels[static_cast<std::size_t>(choice)]));
+    return FinishChange(index, copy, before, std::format("{}: {}", change.part, kLabels[static_cast<std::size_t>(choice)]),
+                        choice, rollback, file, contextName);
+}
+
+std::string AssemblyState::RestoreChange(std::size_t index, const std::filesystem::path& file, std::string_view contextName) {
+    if (index >= changes.size()) return "Нет такого изменения";
+    const SourceChange change = changes[index];
+    const doc::Document* part = geometry.PartOf(change.component);
+    if (!part) return "Деталь не найдена";
+    doc::Document copy = part->Clone();
+    const std::string before = doc::DocumentToJson(copy);
+    int first = -1;
+    for (const kernel::AffectedSketch& hit : change.sketches) {
+        const auto* sk = copy.FindAs<doc::SketchFeature>(hit.sketch);
+        if (!sk) continue;
+        std::unique_ptr<doc::Feature> edited = sk->Clone();
+        auto* restored = static_cast<doc::SketchFeature*>(edited.get());
+        if (!restored->RestoreBeforeBreak(copy.Ids())) continue;
+        const int at = copy.IndexOf(hit.sketch);
+        copy.Replace(std::move(edited));
+        first = first < 0 ? at : std::min(first, at);
+    }
+    if (first < 0) return "Восстанавливать нечего: ни в одном эскизе нет проекций";
+    copy.MarkChanged(static_cast<std::size_t>(first));
+    return FinishChange(index, copy, before, std::format("«{}»: вернуть как было", change.part), kernel::ChangeChoice::Ignore,
+                        false, file, contextName);
+}
+
+std::string AssemblyState::FinishChange(std::size_t index, doc::Document& copy, const std::string& before, std::string_view label,
+                                        kernel::ChangeChoice choice, bool rollback, const std::filesystem::path& file,
+                                        std::string_view contextName) {
+    const SourceChange change = changes[index];
+    Checkpoint(std::string(label));
     PartEdit* edit = EditOf(change.partFile);
     if (edit && edit->session) {
         edit->session->doc = std::move(copy);
@@ -476,7 +545,11 @@ std::vector<AssemblyState::Issue> AssemblyState::Issues() const {
     }
     for (const assembly::Constraint& c : assembly.constraints) {
         if (c.suppressed) continue;
-        if (c.state == assembly::ConstraintState::Failed)
+        if (c.lostReference)
+            out.push_back({Issue::Kind::FailedConstraint, c.id, c.name,
+                           "Потеряна ссылка: грани или кромки, на которую она наложена, в детали больше нет. "
+                           "Укажите её заново (ПКМ → Переопределить) или удалите зависимость"});
+        else if (c.state == assembly::ConstraintState::Failed)
             out.push_back({Issue::Kind::FailedConstraint, c.id, c.name, "Зависимость не выполняется: детали нельзя поставить так, как она требует"});
         else if (c.state == assembly::ConstraintState::Redundant)
             out.push_back({Issue::Kind::RedundantConstraint, c.id, c.name, "Лишняя зависимость: повторяет то, что уже задают другие"});

@@ -1424,7 +1424,6 @@
     "Подшипники": "Lager",
     "Позиция в спецификации": "Position in der Stückliste",
     "Поиск": "Suche",
-    "Поиск в дереве": "Im Modellbaum suchen",
     "Поиск команд": "Befehlssuche",
     "Поиск команды": "Befehl suchen",
     "Пока нет: создайте свой цвет или картинку.": "Noch keine: Erstellen Sie eine eigene Farbe oder ein Bild.",
@@ -1897,7 +1896,6 @@
     "Та деталь сама следует за этой: выдавливание до её грани замкнуло бы их друг на друга": "Jenes Teil folgt bereits diesem: Extrusion bis zu seiner Fläche würde sie im Kreis aneinander binden",
     "Так же для всех затронутых деталей": "Ebenso für alle betroffenen Bauteile",
     "Такого изделия нет в моей библиотеке": "Dieses Teil ist nicht in meiner Bibliothek",
-    "Такое ребро пока не проецируется: только отрезки, окружности и дуги": "Eine solche Kante wird noch nicht projiziert: nur Linien, Kreise und Bögen",
     "Такой размер противоречит другим ограничениям эскиза": "Dieses Maß widerspricht anderen Skizzenabhängigkeiten",
     "Тап 2 пальцами": "Tippen mit 2 Fingern",
     "Тап 3 пальцами": "Tippen mit 3 Fingern",
@@ -2234,8 +2232,6 @@
     "Щёлкните ребро листа": "Klicken Sie auf eine Blechkante",
     "Щёлкните ребро листа или дальнее ребро полки, введите высоту и угол. Enter — готово, Esc — отмена": "Klicken Sie auf eine Blechkante oder die hintere Kante eines Schenkels, geben Sie Höhe und Winkel ein. Enter – fertig, Esc – abbrechen",
     "Щёлкните ребро листа, на котором сделать отбортовку": "Klicken Sie auf die Blechkante, an der die Lasche entstehen soll",
-    "Щёлкните ребро модели или грань (весь её контур) — проекция появится в эскизе и будет следовать за моделью": "Klicken Sie auf eine Modellkante oder Fläche (ihre gesamte Kontur) – die Projektion erscheint in der Skizze und folgt dem Modell",
-    "Щёлкните ребро модели или грань — её контур станет обычной закреплённой геометрией эскиза, за моделью не следует": "Klicken Sie auf eine Modellkante oder Fläche – ihre Kontur wird zu normaler fixierter Skizzengeometrie und folgt dem Modell nicht",
     "Щёлкните ребро на модели, чтобы добавить его; повторный щелчок убирает.": "Klicken Sie am Modell auf eine Kante, um sie hinzuzufügen; ein erneuter Klick entfernt sie.",
     "Щёлкните ребро. Enter — готово, Esc — отмена": "Klicken Sie auf eine Kante. Enter – fertig, Esc – abbrechen",
     "Щёлкните ребро: точка встанет посередине его длины.": "Klicken Sie auf eine Kante: Der Punkt liegt in der Mitte ihrer Länge.",
@@ -2371,7 +2367,7 @@
     "мм от нового контура": "mm von der neuen Kontur",
     "мобильный": "mobil",
     "модуль собран для интерфейса модулей версии {}, а эта программа — {}": "Das Modul wurde für Modulschnittstelle Version {} erstellt, dieses Programm hat {}",
-    "мс": "ms",
+    "к/с": "fps",
     "наружная": "außen",
     "насквозь": "durch alle",
     "не выбрана": "nicht gewählt",
@@ -2476,6 +2472,10 @@
     "шаг — объект с одним ключом: sketch, extrude или revolve": "Schritt – Objekt mit einem Schlüssel: sketch, extrude oder revolve",
     "шестигранник под ключ": "Innensechskant",
     "← Предыдущая": "← Zurück",
-    "← тяни вдоль края →": "← am Rand entlang ziehen →"
+    "← тяни вдоль края →": "← am Rand entlang ziehen →",
+    "Предпросмотр результата": "Ergebnisvorschau",
+    "Синий призрак — что добавится, красный — что уйдёт. Снимите флажок, чтобы видеть тело до операции": "Blauer Geist — was hinzukommt, roter — was entfernt wird. Häkchen entfernen, um den Körper vor der Operation zu sehen",
+    "Чёткие грани": "Klare Kanten",
+    "Рёбра детали тёмной линией поверх живого вида: тени и объём остаются.": "Bauteilkanten als dunkle Linie über der Live-Ansicht: Schatten und Tiefe bleiben."
   }
 }

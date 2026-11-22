@@ -76,6 +76,7 @@ struct Maps {
 Maps Collect(const Model& model) {
     Maps maps;
     for (const Body& body : model.GetImpl().bodies) {
+        if (body.mesh) continue;   // triangles only: no faces or edges to name
         TopTools_IndexedMapOfShape faces, edges;
         TopExp::MapShapes(body.shape, TopAbs_FACE, faces);
         TopExp::MapShapes(body.shape, TopAbs_EDGE, edges);
@@ -226,6 +227,7 @@ Topology DescribeTopology(const Model& model) {
         }
         // Which faces meet at each edge.
         for (const Body& body : model.GetImpl().bodies) {
+            if (body.mesh) continue;
             TopTools_IndexedDataMapOfShapeListOfShape ancestors;
             TopExp::MapShapesAndAncestors(body.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
             for (int i = 1; i <= ancestors.Extent(); ++i) {

@@ -44,6 +44,7 @@ struct ThemeColors {
     Color success;
     Color warning;
     Color danger;
+    Color opIntersect;       ///< badge of an intersecting operation in the tree
 
     // viewport
     Color viewportTop;
@@ -52,6 +53,9 @@ struct ThemeColors {
     Color bodyEdges;
     Color hoverHighlight;
     Color selection;
+    Color previewAdd;        ///< operation preview ghost: material added (or kept by an intersection)
+    Color previewCut;        ///< operation preview ghost: material removed
+    Color floorShadow;       ///< «Живой вид»: the shadow on the floor at its darkest (alpha: how dark)
 
     // sketch overlay
     Color sketchFree;        ///< under-defined geometry
@@ -79,6 +83,10 @@ struct ThemeColors {
     Color cubeStroke;
     Color cubeInner;         ///< bevel lines
     Color cubeText;
+    Color sheetDesk;         ///< around a drawing's sheet
+    Color sheetPaper;        ///< the sheet itself: paper, in either theme
+    Color sheetInk;          ///< lines and texts on the sheet
+    Color sheetShadow;       ///< the sheet's shadow on the desk
     Color floatingButton;    ///< buttons floating over the viewport
     Color floatingBorder;
     Color floatingInk;

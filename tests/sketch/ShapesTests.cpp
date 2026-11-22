@@ -3,7 +3,9 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 using namespace bz;
 using namespace bz::sketch;
@@ -159,4 +161,18 @@ TEST_CASE("scaling a sketch leaves projected model geometry where the model put 
     CHECK((sk.PositionOf(pb) - Vec2{30, 0}).Length() == doctest::Approx(0.0));
     CHECK(sk.RadiusOf(hole) == doctest::Approx(4.0));
     CHECK((sk.PositionOf(free) - Vec2{20, 20}).Length() == doctest::Approx(0.0));
+}
+
+TEST_CASE("select all: every point and curve, not the origin nor the constraints") {
+    Sketch sk;
+    IdGenerator ids;
+    const ObjectId origin = sk.EnsureOrigin(ids);
+    const RectangleIds r = AddCornerRectangle(sk, ids, sk.AddPoint(ids, {0, 0}), sk.AddPoint(ids, {10, 5}));
+    const ObjectId circle = sk.AddCircle(ids, sk.AddPoint(ids, {20, 0}), 3);
+    const std::vector<ObjectId> all = sk.Entities();
+    CHECK(all.size() == 4 + 4 + 1 + 1);   // corners, sides, the circle's centre, the circle
+    CHECK(std::find(all.begin(), all.end(), origin) == all.end());
+    CHECK(std::find(all.begin(), all.end(), circle) != all.end());
+    for (const ObjectId side : r.sides) CHECK(std::find(all.begin(), all.end(), side) != all.end());
+    for (const Constraint& c : sk.constraints) CHECK(std::find(all.begin(), all.end(), c.id) == all.end());
 }

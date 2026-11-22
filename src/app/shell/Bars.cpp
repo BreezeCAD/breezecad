@@ -1,21 +1,49 @@
 // Bottom bars: open documents as tabs and the information line.
 
+#include "app/testing/UiProbe.h"
+#include "app/Import.h"
 #include "app/Format.h"
 #include "app/Operations.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "app/sketch/SketchRepair.h"
+#include "app/mobile/TouchText.h"
 #include "core/I18n.h"
+#include "core/Monitor.h"
 #include "kernel/Model.h"
 #include "document/SketchFeature.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
 
 #include <cmath>
+#include <cstdio>
 #include <format>
 
 namespace bz::app {
+
+std::string FormatPolarStep(double step) {
+    char text[16];
+    std::snprintf(text, sizeof text, "%g", step);
+    return text;
+}
+
+void DrawPolarStepMenu(ui::Ui& ui, Settings& settings) {
+    // Polar tracking, as in AutoCAD (the same steps): a line keeps to
+    // multiples of the angle. "Орто" goes first when both are on.
+    if (!ui::BeginSubmenu(ui, Tr("Полярное отслеживание"), {})) return;
+    if (ui::MenuItem(ui, Tr("Выключено"), nullptr, {}, settings.polarStep <= 0)) settings.polarStep = 0;
+    for (const double step : kPolarSteps) {
+        const std::string label = FormatPolarStep(step) + "\xC2\xB0";
+        if (ui::MenuItem(ui, label.c_str(), nullptr, {}, std::abs(settings.polarStep - step) < 1e-6)) {
+            settings.polarStep = step;
+            settings.orthoMode = false;   // the two do not work together
+        }
+    }
+    ImGui::EndMenu();
+}
+
 
 void DrawProjectTabs(AppContext& app, ImVec2 pos, float width) {
     ui::Ui& ui = app.ui;
@@ -48,6 +76,7 @@ void DrawProjectTabs(AppContext& app, ImVec2 pos, float width) {
         // and while the cross is held.
         ImGui::SetNextItemAllowOverlap();
         const bool clicked = ImGui::InvisibleButton("##doc-tab", {w, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        probe::Name("doc", title);
         const bool hovered =
             ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         if (clicked && ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) {
@@ -103,14 +132,20 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     Session* s = app.Doc();
     if (!s || app.workspace.ShowsHome()) {
         text(Tr("Главная страница"), c.text, ui.fonts.medium);
-        text(Tr("Создайте документ (Ctrl+N) или откройте его (Ctrl+O)"), c.textSecondary);
+        const bool fingers = app.shell.mobile.touchScreen && !app.shell.mobile.hardKeyboard;
+        const std::string home = Tr("Создайте документ (Ctrl+N) или откройте его (Ctrl+O)");
+        text(fingers ? mobile::TouchHint(home) : home, c.textSecondary);
         EndArea();
         return;
     }
 
     // Mode and what to do next.
     std::string mode = Tr(app.Doc() && app.Doc()->assembly ? "Сборка" : "Деталь"), hint;
-    if (const OperationEditor* operation = app.ops.Active()) {
+    if (s->drawing) {
+        mode = Tr("Чертёж");
+        hint = Trf("{} · колесо — масштаб, перетаскивание — сдвиг листа, двойной щелчок по основной надписи — заполнить",
+                   DrawingSheetCaption(*s->drawing));
+    } else if (const OperationEditor* operation = app.ops.Active()) {
         mode = operation->Title();
         hint = operation->Hint();
     } else if (s->mode == EditMode::Sketch) {
@@ -123,7 +158,11 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
         const MouseNavigation& m = app.settings.mouse;
         hint = Trf("{} — вращение, {} — сдвиг, прокрутка — масштаб, двойной щелчок в дереве — редактировать",
                    GestureText(m.orbit), GestureText(m.pan));
+        if (app.shell.mobile.touchScreen)
+            hint = Tr("Один палец — вращение, два — сдвиг, разведите пальцы — масштаб, двойное касание в дереве — редактировать");
     }
+    // Fingers and no keyboard: no keys in the hints, taps instead of clicks.
+    if (app.shell.mobile.touchScreen && !app.shell.mobile.hardKeyboard) hint = mobile::TouchHint(std::move(hint));
     text(mode, c.text, ui.fonts.medium);
 
     // Right side first (it must stay visible), then the hint takes the rest.
@@ -139,7 +178,15 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
     const ObjectId editing = operation ? operation->EditedFeature() : ObjectId{};
     int errors = 0;
     for (const auto& f : s->doc.Features()) errors += f->status.state == doc::FeatureState::Error && f->id != editing ? 1 : 0;
-    if (s->Rebuilding()) {
+    if (app.ops.photo.Rendering()) {
+        // «Кадр» made over a few frames: how far, and how to stop it.
+        rightText(Tr("Отмена — Esc"), c.textSecondary);
+        rightText(Trf("Кадр — {}%", static_cast<int>(app.ops.photo.Progress(app) * 100)), c.accent);
+    } else if (const std::optional<double> importing = ImportProgressOf(*s)) {
+        // «Импорт» on another thread: how far, and how to stop it.
+        rightText(Tr("Отмена — Esc"), c.textSecondary);
+        rightText(Trf("Импорт — {}%", static_cast<int>(*importing * 100)), c.accent);
+    } else if (s->Rebuilding()) {
         // A rebuild under way in slices: a bar with how far it is.
         const kernel::Model::Progress p = s->RebuildProgress();
         const float barW = ui.S(90), barH = ui.S(6);
@@ -161,6 +208,23 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
         right -= ui.S(8) + lw;
         dl->AddText(font, fs, {right, ty}, ui::ToU32(c.textSecondary), label.c_str());
         right -= ui.S(18);
+        // Which operation it is at, and how many there are: a long rebuild
+        // is seen to move (and which operation is the slow one).
+        if (const mon::WorkState work = mon::CurrentWork(); work.active && !work.step.empty()) {
+            std::string at = Trf("«{}»", work.step);
+            if (p.total > 1) at += " · " + Trf("{} из {}", std::min(p.done + 1, p.total), p.total);
+            rightText(at, c.textSecondary);
+        }
+        // A module's command waits for it: the window is locked, this stops it.
+        if (app.shell.waiting.locked) {
+            const std::string cancel = Tr("Отменить (Esc)");
+            const float cw = font->CalcTextSizeA(fs, FLT_MAX, 0, cancel.c_str()).x;
+            right -= cw;
+            dl->AddText(font, fs, {right, ty}, ui::ToU32(c.accent), cancel.c_str());
+            app.shell.waiting.cancelMin = {right - ui.S(6), pos.y};
+            app.shell.waiting.cancelMax = {right + cw + ui.S(6), pos.y + h};
+            right -= ui.S(18);
+        }
     } else {
         rightText(errors ? Trf("Ошибок: {}", errors) : Tr("Готово"), errors ? c.danger : c.success);
     }
@@ -195,7 +259,10 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
             dl->AddText(ui.fonts.mono, fs, {right, ty}, ui::ToU32(c.textSecondary), coords.c_str());
             right -= ui.S(18);
         }
-        const std::string snaps = (app.settings.orthoMode ? std::string(Tr("Орто")) + "  \xC2\xB7  " : std::string()) + Trf("Привязки: {}", app.settings.pointSnap && app.settings.gridSnap ? Tr("точки, сетка")
+        const std::string polar = !app.settings.orthoMode && app.settings.polarStep > 0
+                                      ? Trf("Полярное {}°", FormatPolarStep(app.settings.polarStep)) + "  \xC2\xB7  "
+                                      : std::string();
+        const std::string snaps = polar + (app.settings.orthoMode ? std::string(Tr("Орто")) + "  \xC2\xB7  " : std::string()) + Trf("Привязки: {}", app.settings.pointSnap && app.settings.gridSnap ? Tr("точки, сетка")
                                                        : app.settings.pointSnap                       ? Tr("точки")
                                                        : app.settings.gridSnap                        ? Tr("сетка")
                                                                                                       : Tr("выкл"));
@@ -211,6 +278,7 @@ void DrawStatusBar(AppContext& app, ImVec2 pos, float width) {
                 app.settings.pointSnap = !app.settings.pointSnap;
             if (ui::MenuItem(ui, Tr("Привязка к сетке"), nullptr, {}, app.settings.gridSnap)) app.settings.gridSnap = !app.settings.gridSnap;
             if (ui::MenuItem(ui, Tr("Ортогональный режим"), "F8", {}, app.settings.orthoMode)) app.settings.orthoMode = !app.settings.orthoMode;
+            DrawPolarStepMenu(ui, app.settings);
             ImGui::EndPopup();
         }
     }

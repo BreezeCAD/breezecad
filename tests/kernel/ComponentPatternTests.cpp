@@ -9,6 +9,9 @@
 
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::assembly;
 using doctest::Approx;
@@ -250,3 +253,5 @@ TEST_CASE("Component pattern: 500 x 500 is refused (the limit is on the instance
     c.count = 100000;
     CHECK_FALSE(kernel::ApplyPattern(model, a, a.AddPattern(c).id));
 }
+
+TEST_SUITE_END();

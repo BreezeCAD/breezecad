@@ -48,6 +48,9 @@ void StartConstraint(AppContext& app, assembly::ConstraintType type);
 /// "Массив": repeats the chosen component with the standard parts tied to
 /// it — into the holes like the one it sits in, otherwise in a row.
 void StartPattern(AppContext& app);
+/// Parts made by the library ("Стандартные изделия" next to the assembly):
+/// they come along with the component a pattern repeats; other parts do not.
+bool IsStandardPart(const assembly::Component& c);
 bool CanPattern(AppContext& app);
 
 /// The panel of the constraint being made (over the tree meanwhile: the

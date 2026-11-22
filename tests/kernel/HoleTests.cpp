@@ -3,7 +3,12 @@
 #include "document/HoleFeature.h"
 #include "kernel/Model.h"
 
+#include <nlohmann/json.hpp>
+
 #include <doctest.h>
+
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
 
 using namespace bz;
 using namespace bz::test;
@@ -125,13 +130,14 @@ namespace {
 struct Boss {
     doc::Document       d;
     doc::SketchFeature* bossSketch = nullptr;
+    doc::ExtrudeFeature* bossExtrude = nullptr;
     Boss() {
         auto& plate = AddSketch(d);
         AddRect(d, plate, {-60, -40}, {60, 40});
         AddExtrude(d, plate.id, "10");
         bossSketch = &AddSketch(d);
         AddCircle(d, *bossSketch, {20, 10}, 5);
-        AddExtrude(d, bossSketch->id, "30", doc::BooleanOp::Join);
+        bossExtrude = &AddExtrude(d, bossSketch->id, "30", doc::BooleanOp::Join);
     }
     /// A Ø4 hole into the boss top, its centre typed off the axis on purpose.
     doc::HoleFeature& AddHole() {
@@ -188,6 +194,14 @@ TEST_CASE("a hole coaxial with a round edge sits on its axis and follows it") {
     // Drilled where the boss is: the volume lost is the Ø4×8 hole.
     const double boss = 120.0 * 80.0 * 10.0 + kPi * 25.0 * 20.0;
     CHECK(model.Volume() == doctest::Approx(boss - kPi * 4.0 * 8.0).epsilon(1e-4));
+
+    b.bossExtrude->distance.expression = "40";
+    b.d.MarkChanged(static_cast<std::size_t>(b.d.IndexOf(b.bossExtrude->id)));
+    model.Rebuild(b.d);
+    REQUIRE(hole.status.state == FeatureState::Ok);
+    CHECK(hole.face.point.z == doctest::Approx(40.0));
+    REQUIRE(hole.concentric[0].edge);
+    CHECK(hole.concentric[0].edge->middle.z == doctest::Approx(40.0));
 }
 
 TEST_CASE("a hole coaxial with a cylindrical face follows it; a lost reference is an error") {
@@ -239,3 +253,71 @@ TEST_CASE("coaxial centres: saved, read back, and dropped with their centre") {
     CHECK(hole.concentric[0].centre == 0);
     CHECK(hole.AxisOf(0) == &hole.concentric[0]);
 }
+
+TEST_CASE("a blind hole shallower than its counterbore or countersink is refused (#26)") {
+    Plate p;
+    auto& hole = p.AddHole(HoleType::Countersink, false);   // sink 16 on 10: cone 3 deep
+    hole.depth.expression = "2";
+    kernel::Model model;
+    model.Rebuild(p.d);
+    CHECK(hole.status.state == FeatureState::Error);
+    hole.depth.expression = "4";
+    p.d.MarkChanged(2);
+    model.Rebuild(p.d);
+    CHECK(hole.status.state == FeatureState::Ok);
+    hole.type = HoleType::Counterbore;   // head 5 deep
+    p.d.MarkChanged(2);
+    model.Rebuild(p.d);
+    CHECK(hole.status.state == FeatureState::Error);
+    hole.throughAll = true;
+    p.d.MarkChanged(2);
+    model.Rebuild(p.d);
+    CHECK(hole.status.state == FeatureState::Ok);
+}
+
+TEST_CASE("holes from a sketch: at its circles' centres, following the sketch") {
+    Plate p;
+    // A sketch on the plate's top face plane (z = 30) with two circles and a construction one.
+    auto& sk = AddSketch(p.d);
+    sk.placement.frame.origin = {0, 0, 30};
+    AddCircle(p.d, sk, {-30, 0}, 4);
+    AddCircle(p.d, sk, {30, 10}, 4);
+    sk.sketch.AddCircle(p.d.Ids(), sk.sketch.AddPoint(p.d.Ids(), {0, 20}), 3, true);
+    auto h = std::make_unique<doc::HoleFeature>();
+    h->id = p.d.Ids().Next();
+    h->name = "Отверстие";
+    h->sketch = sk.id;
+    h->throughAll = true;
+    h->diameter.expression = "10";
+    auto& hole = *h;
+    p.d.Insert(std::move(h), p.d.FeatureCount());
+    CHECK(hole.Dependencies() == std::vector<ObjectId>{sk.id});
+
+    kernel::Model model;
+    model.Rebuild(p.d);
+    REQUIRE(hole.status.state == FeatureState::Ok);
+    CHECK(hole.centres.size() == 2);   // the construction circle is not a hole
+    CHECK(Cut(model) == doctest::Approx(2 * kPi * 25 * 30).epsilon(1e-4));
+
+    // The same sketch on the bottom plane (z = 0, facing into the plate) drills from the bottom.
+    sk.placement.frame.origin = {0, 0, 0};
+    p.d.MarkChanged(static_cast<std::size_t>(p.d.IndexOf(sk.id)));
+    model.Rebuild(p.d);
+    REQUIRE(hole.status.state == FeatureState::Ok);
+    CHECK(hole.face.normal.z == doctest::Approx(-1));
+    hole.throughAll = false;
+    hole.depth.expression = "10";
+    p.d.MarkChanged(static_cast<std::size_t>(p.d.IndexOf(hole.id)));
+    model.Rebuild(p.d);
+    REQUIRE(hole.status.state == FeatureState::Ok);
+    CHECK(Cut(model) == doctest::Approx(2 * kPi * 25 * 10).epsilon(1e-4));
+
+    // Saved and read back.
+    nlohmann::json j;
+    hole.SaveFields(j);
+    doc::HoleFeature back;
+    REQUIRE(back.LoadFields(j));
+    CHECK(back.sketch == sk.id);
+}
+
+TEST_SUITE_END();

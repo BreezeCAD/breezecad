@@ -439,3 +439,59 @@ TEST_CASE("arc angle dimension drives the sweep, past half a turn too") {
         sk.Remove(id);
     }
 }
+
+TEST_CASE("dragging the free end of a line held at an angle slides it along the angle") {
+    // Found by the bench: two lines from the origin, the first horizontal,
+    // 30° between them; dragging the end of the slanted one did nothing.
+    Sketch sk;
+    IdGenerator ids;
+    const ObjectId o = sk.EnsureOrigin(ids);
+    const ObjectId b = sk.AddPoint(ids, {30, 0});
+    const ObjectId c = sk.AddPoint(ids, {20, 20});
+    const ObjectId base = sk.AddLine(ids, o, b);
+    const ObjectId slope = sk.AddLine(ids, o, c);
+    sk.AddConstraint(ids, Geo(ConstraintType::Horizontal, base));
+    sk.AddConstraint(ids, Dim(ConstraintType::Angle, kPi / 6, base, slope));
+    REQUIRE(Solve(sk).converged);
+    const Vec2 was = sk.PositionOf(c);
+    const SolveResult res = Solve(sk, {.drags = {Drag{c, was + Vec2{10, 2}}}});
+    REQUIRE(res.converged);
+    const Vec2 now = sk.PositionOf(c);
+    CHECK(now.Length() > was.Length() + 5);
+    CHECK(std::atan2(now.y, now.x) == doctest::Approx(kPi / 6).epsilon(1e-6));
+}
+
+// sketch.add (MCP) on a closed outline drawn along the axes: each side held
+// horizontal or vertical and dimensioned, unless the sketch holds it already
+// (stabilization plan, stage 2). The result is fully defined but for where it
+// stands, and nothing is redundant: the last sides are held by the others.
+TEST_CASE("a closed outline drawn along the axes gets H/V and only the dimensions it needs") {
+    Sketch sk;
+    IdGenerator ids;
+    const std::array<ObjectId, 4> p{sk.AddPoint(ids, {0, 0}), sk.AddPoint(ids, {30, 0}), sk.AddPoint(ids, {30, 20}),
+                                    sk.AddPoint(ids, {0, 20})};
+    int dims = 0, held = 0;
+    std::array<ObjectId, 4> l{};
+    for (std::size_t i = 0; i < 4; ++i) l[i] = sk.AddLine(ids, p[i], p[(i + 1) % 4]);
+    for (std::size_t i = 0; i < 4; ++i) {   // directions first...
+        const Vec2 a = sk.PositionOf(p[i]), b = sk.PositionOf(p[(i + 1) % 4]);
+        const Constraint along = Geo(std::abs(a.y - b.y) < 1e-9 ? ConstraintType::Horizontal : ConstraintType::Vertical, l[i]);
+        if (!IsRedundant(sk, along)) {
+            sk.AddConstraint(ids, along);
+            ++held;
+        }
+    }
+    for (std::size_t i = 0; i < 4; ++i) {   // ...then only the sizes it still needs
+        const Vec2 a = sk.PositionOf(p[i]), b = sk.PositionOf(p[(i + 1) % 4]);
+        const Constraint length = Dim(ConstraintType::Length, (b - a).Length(), l[i]);
+        if (!IsRedundant(sk, length)) {
+            sk.AddConstraint(ids, length);
+            ++dims;
+        }
+    }
+    CHECK(held == 4);   // a rectangle stays one when a size changes
+    CHECK(dims == 2);   // width and height
+    const SolveResult r = Solve(sk);
+    CHECK(r.converged);
+    CHECK(r.degreesOfFreedom == 2);   // only where it stands
+}

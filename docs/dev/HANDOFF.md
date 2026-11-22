@@ -1,5 +1,8 @@
 # HANDOFF — читать первым (и чаще всего — единственным)
 
+> Основное для каждой сессии — в `CLAUDE.md` (подгружается сам). Этот файл
+> целиком не читать: `grep -n` по нужному разделу.
+
 Цель: закрыть объём за 2–5 сессий с минимумом токенов, оставить ресурс на
 бета-тест, ревью структуры и багфикс. WORKLOG.md — только история, его не
 читать целиком (при нужде `grep`).
@@ -23,9 +26,9 @@ cmake --preset linux-debug && cmake --build --preset linux-debug -- -k 0 2>&1 | 
 Сборки Windows и macOS — только CI (MSYS2 + OCCT 8; Homebrew + OCCT 7.9 на `macos-15`, arm64).
 `next-build` — шесть файлов: `BreezeCAD-{windows,linux,macos}` и `BreezeCAD-beta-{windows,linux,macos}`
 (.zip, Linux — .tar.gz), например
-https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-windows.zip
+https://github.com/BreezeCAD/breezecad/releases/download/next-build/BreezeCAD-windows.zip
 (обновляется сам, когда на `next` зелёные все джобы; см. раздел 3в). Статус: `gh run list --branch next --limit 2`;
-причина падения: `gh api repos/MikeVerx/breezecad/check-runs/<job id>/annotations`
+причина падения: `gh api repos/BreezeCAD/breezecad/check-runs/<job id>/annotations`
 (логи `--log-failed` недоступны — 403).
 
 ## 1. Правила (автор)
@@ -55,7 +58,7 @@ https://github.com/MikeVerx/breezecad/releases/download/next-build/BreezeCAD-win
   до конца не доходит. docs/translations не собираются. Если джобы падают за ~6 с — это
   биллинг («recent account payments have failed…»), не код: сказать автору.
 - Логи и артефакты прогона из сессии не скачать (их хранилище закрыто прокси) — читать
-  аннотации: `gh api repos/MikeVerx/breezecad/check-runs/<job id>/annotations`. Шаги пишут туда
+  аннотации: `gh api repos/BreezeCAD/breezecad/check-runs/<job id>/annotations`. Шаги пишут туда
   `::notice` (версии, размер пакета, glibc, итог запуска), `scripts/ci-annotate.sh` — ошибки и
   хвост лога. Аннотация обрезается до 4 КБ, на шаг — до 10 штук.
 - Подагентов не запускать без нужды.
@@ -282,7 +285,7 @@ WORKLOG 2026-10-11). Остаток пункта:
   параметры, МЦХ, эскиз: create/add/constrain/remove/get, выдавливание, вращение, экспорт,
   undo), модуль `modules/mcp` (HTTP 127.0.0.1:47321 + ключ) и мост `bz-mcp-bridge` (stdio,
   Claude Desktop). `enabledByDefault: false` в манифесте. Проверено вживую на Xvfb: фланец
-  через мост, экспорт STEP/STL. Тесты: `tests/modules/McpProtocolTests.cpp`, ModuleTests.
+  через мост, экспорт STEP/STL. Тесты: в репозитории модуля (с 2026-11-08 модуль — `BreezeCAD/bz-module-mcp`, ADR-0010), ModuleTests.
   Резьба (`feature.thread`, цилиндр по оси+диаметру) — СДЕЛАНА.
   **Полный набор команд СДЕЛАН 2026-10-12** (65 инструментов): грани/рёбра по номерам
   (`part.faces/edges/measure`, `kernel/Topology.h`), любая операция по полям

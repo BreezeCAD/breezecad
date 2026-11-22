@@ -12,7 +12,7 @@ TEST_CASE("the Создать window: folders and templates from the document ki
     CHECK(groups[1].name == "Сборки");
     CHECK(groups[2].name == "Чертежи");
     CHECK(groups[0].Available());
-    CHECK_FALSE(groups[2].Available());   // drawings: "позже"
+    CHECK(groups[2].Available());   // drawings (ADR-0012)
     REQUIRE(groups[0].templates.size() == 2);
     CHECK(groups[0].templates[0].length == LengthUnit::Millimeter);
     CHECK(groups[0].templates[1].length == LengthUnit::Inch);
@@ -23,7 +23,7 @@ TEST_CASE("the Создать window starts on the last template, else a part in
     const auto groups = NewDocumentGroups(doc::DocumentTypeRegistry::Default());
     CHECK(InitialTemplate(groups, "assembly", LengthUnit::Millimeter)->id == "assembly");
     CHECK(InitialTemplate(groups, "", LengthUnit::Inch)->id == "part.inch");
-    CHECK(InitialTemplate(groups, "drawing", LengthUnit::Millimeter)->id == "part.mm");   // not available
+    CHECK(InitialTemplate(groups, "drawing", LengthUnit::Millimeter)->id == "drawing");
     CHECK(InitialTemplate(groups, "gone.module", LengthUnit::Centimeter)->id == "part.mm");
 }
 

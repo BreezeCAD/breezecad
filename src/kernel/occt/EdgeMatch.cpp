@@ -1,5 +1,7 @@
 #include "kernel/occt/EdgeMatch.h"
 
+#include "core/Log.h"
+
 #include <BRepAdaptor_Curve.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -26,6 +28,11 @@ using doc::FaceSignature;
 using doc::SurfaceKind;
 
 constexpr double kParallel = 0.999;   // |cos| for "same direction"
+// Отрыв от второго кандидата, баллы. Два кандидата с теми же гранями и
+// радиусом различаются только близостью (диапазон 1.0 ≈ диагональ габарита);
+// при разрыве меньше этого ссылки на старое место нет — совпадение не
+// единственно. Как в FreeCAD: уехавшую ссылку берём только когда она одна.
+constexpr double kMinSeparation = 0.1;
 
 Vec3 ToVec(const gp_XYZ& v) { return {v.X(), v.Y(), v.Z()}; }
 
@@ -142,6 +149,32 @@ double Score(const EdgeReference& ref, const EdgeReference& candidate, double si
     return faces * 100.0 + radius * 10.0 + nearness;
 }
 
+/// Сколько узнаваемых граней сохранено в ссылке. Нераспознанная (Other —
+/// свободная ячейка или B-spline поверхность) не требуется: она совпадала
+/// с чем угодно ещё при сохранении.
+int RecognizableFaces(const EdgeReference& ref) {
+    int n = 0;
+    for (const FaceSignature& f : ref.faces)
+        if (f.kind != SurfaceKind::Other) ++n;
+    return n;
+}
+
+/// Сколько узнаваемых граней ссылки показал кандидат.
+int MatchedFaces(const EdgeReference& ref, const EdgeReference& candidate) {
+    int matched = 0;
+    bool used[2] = {false, false};
+    for (const FaceSignature& want : ref.faces) {
+        if (want.kind == SurfaceKind::Other) continue;
+        for (int i = 0; i < 2; ++i)
+            if (!used[i] && SameFace(want, candidate.faces[static_cast<std::size_t>(i)])) {
+                used[i] = true;
+                ++matched;
+                break;
+            }
+    }
+    return matched;
+}
+
 } // namespace
 
 doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& body) {
@@ -150,7 +183,17 @@ doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& bod
     return Describe(edge, edgeFaces);
 }
 
-std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs, const TopoDS_Shape& body) {
+bool IsEdgeInPlane(const EdgeReference& edge, const Frame& plane) {
+    constexpr double kPlaneDistance = 1e-5;   // mm
+    constexpr double kPlaneAngle = 1e-6;      // sine of the angle away from coplanarity
+    if (std::abs((edge.middle - plane.origin).Dot(plane.normal)) > kPlaneDistance) return false;
+    if (edge.curve == CurveKind::Line) return std::abs(edge.direction.Dot(plane.normal)) <= kPlaneAngle;
+    if (edge.curve == CurveKind::Circle) return edge.direction.Cross(plane.normal).Length() <= kPlaneAngle;
+    return false;
+}
+
+std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs, const TopoDS_Shape& body,
+                                                     std::vector<bool>* ambiguous, const Frame* contextPlane) {
     TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
     TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
 
@@ -163,20 +206,45 @@ std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::Edge
     for (int i = 1; i <= edgeFaces.Extent(); ++i) {
         const TopoDS_Edge& e = TopoDS::Edge(edgeFaces.FindKey(i));
         if (BRep_Tool::Degenerated(e)) continue;   // the pole of a sphere or cone
-        candidates.emplace_back(e, Describe(e, edgeFaces, &faceIndex, &cache));
-        box.Include(candidates.back().second.middle);
+        EdgeReference signature = Describe(e, edgeFaces, &faceIndex, &cache);
+        box.Include(signature.middle);
+        if (contextPlane && !IsEdgeInPlane(signature, *contextPlane)) continue;
+        candidates.emplace_back(e, signature);
     }
     const double size = box.IsEmpty() ? 1.0 : std::max((box.max - box.min).Length(), 1.0);
 
     std::vector<std::optional<TopoDS_Edge>> found;
-    for (const EdgeReference& ref : refs) {
-        double best = -1;
+    if (ambiguous) ambiguous->assign(refs.size(), false);
+    for (std::size_t r = 0; r < refs.size(); ++r) {
+        const EdgeReference& ref = refs[r];
+        // Сохранены обе соседние грани — кандидат обязан показать обе:
+        // похожее ребро между одной из них — уже другая геометрия.
+        const int wanted = RecognizableFaces(ref);
+        double best = -1, second = -1;
         std::optional<TopoDS_Edge> match;
-        for (const auto& [edge, sig] : candidates)
-            if (const double s = Score(ref, sig, size); s > best) {
+        Vec3 took;
+        for (const auto& [edge, sig] : candidates) {
+            if (wanted > 0 && MatchedFaces(ref, sig) < wanted) continue;
+            const double s = Score(ref, sig, size);
+            if (s < 0) continue;
+            if (s > best) {
+                second = best;
                 best = s;
                 match = edge;
+                took = sig.middle;
+            } else if (s > second) {
+                second = s;
             }
+        }
+        if (match && second > best - kMinSeparation) {
+            // Совпадение не единственно: молчаливый перескок запрещён —
+            // ребро просят выбрать заново (как FreeCAD).
+            if (ambiguous) (*ambiguous)[r] = true;
+            log::Warn("refs: ребро у ({:.3f}, {:.3f}, {:.3f}) найдено неоднозначно — ближайшее на {:.4f} мм, "
+                      "следующее кандидат отстаёт на {:.4f}; выберите заново",
+                      ref.middle.x, ref.middle.y, ref.middle.z, (took - ref.middle).Length(), best - second);
+            match.reset();
+        }
         found.push_back(match);
     }
     return found;
@@ -192,8 +260,9 @@ std::optional<std::pair<Vec3, Vec3>> ResolveLine(const doc::EdgeReference& ref, 
     return std::make_pair(Vec3{mid.X(), mid.Y(), mid.Z()}, Vec3{d.X(), d.Y(), d.Z()});
 }
 
-std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body) {
-    const auto found = ResolveEdges({ref}, body);
+std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body,
+                                                    const Frame* contextPlane) {
+    const auto found = ResolveEdges({ref}, body, nullptr, contextPlane);
     if (found.empty() || !found.front()) return std::nullopt;
     const BRepAdaptor_Curve curve(*found.front());
     if (curve.GetType() != GeomAbs_Circle) return std::nullopt;

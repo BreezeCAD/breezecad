@@ -152,6 +152,11 @@ struct Made {
 /// Builds the part. Errors name an unknown standard, size or length.
 Expected<Made> MakePart(const Request& request);
 
+/// A made part (built in mm, its sizes plain numbers) switched to `unit`
+/// keeping its size: the numbers get "mm" written, as the part's own unit
+/// change does. Set the unit only, and a 40 mm bolt became 40 in long.
+void SetLengthUnit(Document& doc, LengthUnit unit);
+
 /// "Болт М10×40 ГОСТ 7798-70"; empty for an unknown request.
 std::string Designation(const Request& request);
 

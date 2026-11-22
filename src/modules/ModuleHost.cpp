@@ -4,6 +4,9 @@
 #include "core/Version.h"
 #include "kernel/AssemblyReadApi.h"
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <vector>
@@ -116,6 +119,95 @@ int32_t Execute(const char* request, const char** reply) {
 
 const char* ConfigDir() { return gConfigDir.c_str(); }
 
+// --- module windows -----------------------------------------------------------
+
+std::string               gCalling;   ///< the module running now (SetCallingModule)
+std::vector<ModuleAction> gActions;
+std::vector<ModulePanel>  gPanels;
+std::uint64_t             gUiRevision = 0;
+
+/// Ids: letters, digits, '.', '_', '-'; 1..64 characters.
+bool GoodId(const std::string& id) {
+    if (id.empty() || id.size() > 64) return false;
+    return std::all_of(id.begin(), id.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    });
+}
+
+std::string Text(const nlohmann::json& j, const char* key) {
+    const auto it = j.find(key);
+    return it != j.end() && it->is_string() ? it->get<std::string>() : std::string{};
+}
+
+/// Parsed object, or null when `text` is not a JSON object.
+nlohmann::json Object(const char* text) {
+    if (!text) return nullptr;
+    nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+    return j.is_object() ? j : nlohmann::json(nullptr);
+}
+
+int32_t AddAction(const char* json) {
+    if (gCalling.empty()) return BZ_EFAIL;
+    const nlohmann::json j = Object(json);
+    if (j.is_null()) return BZ_EARGUMENT;
+    ModuleAction a;
+    a.module  = gCalling;
+    a.id      = Text(j, "id");
+    a.label   = Text(j, "label");
+    a.tooltip = Text(j, "tooltip");
+    a.icon    = Text(j, "icon");
+    a.menu    = Text(j, "menu");
+    if (const auto r = j.find("ribbon"); r != j.end() && r->is_object()) {
+        a.ribbonTab   = Text(*r, "tab");
+        a.ribbonGroup = Text(*r, "group");
+    }
+    if (!GoodId(a.id) || a.label.empty()) return BZ_EARGUMENT;
+    const auto same = std::find_if(gActions.begin(), gActions.end(),
+                                   [&](const ModuleAction& o) { return o.module == a.module && o.id == a.id; });
+    if (same != gActions.end()) {
+        a.enabled = same->enabled;
+        *same     = std::move(a);
+    } else {
+        gActions.push_back(std::move(a));
+    }
+    ++gUiRevision;
+    return BZ_OK;
+}
+
+int32_t EnableAction(const char* id, int32_t enabled) {
+    if (!id) return BZ_EARGUMENT;
+    for (ModuleAction& a : gActions)
+        if (a.module == gCalling && a.id == id) {
+            if (a.enabled != (enabled != 0)) ++gUiRevision;
+            a.enabled = enabled != 0;
+            return BZ_OK;
+        }
+    return BZ_ENOTFOUND;
+}
+
+int32_t ShowPanel(const char* json) {
+    if (gCalling.empty()) return BZ_EFAIL;
+    const nlohmann::json j = Object(json);
+    if (j.is_null()) return BZ_EARGUMENT;
+    ModulePanel p{gCalling, Text(j, "id"), j.dump()};
+    if (!GoodId(p.id)) return BZ_EARGUMENT;
+    const auto same = std::find_if(gPanels.begin(), gPanels.end(),
+                                   [&](const ModulePanel& o) { return o.module == p.module && o.id == p.id; });
+    if (same != gPanels.end()) *same = std::move(p);
+    else gPanels.push_back(std::move(p));
+    ++gUiRevision;
+    return BZ_OK;
+}
+
+int32_t ClosePanel(const char* id) {
+    if (!id) return BZ_EARGUMENT;
+    const auto before = gPanels.size();
+    std::erase_if(gPanels, [&](const ModulePanel& p) { return p.module == gCalling && p.id == id; });
+    if (gPanels.size() == before) return BZ_ENOTFOUND;
+    ++gUiRevision;
+    return BZ_OK;
+}
+
 const BzHostApi kHost{
     BZ_MODULE_ABI_VERSION,
     sizeof(BzHostApi),
@@ -128,6 +220,10 @@ const BzHostApi kHost{
     &RequestMain,
     &Execute,
     &ConfigDir,
+    &AddAction,
+    &EnableAction,
+    &ShowPanel,
+    &ClosePanel,
 };
 
 } // namespace
@@ -146,6 +242,27 @@ void SetActiveAssembly(const kernel::AssemblyReader* reader) {
     gReader          = reader;
     gComponentsFresh = false;
     gComponents.clear();
+}
+
+void SetCallingModule(std::string id) { gCalling = std::move(id); }
+
+const std::vector<ModuleAction>& ModuleActions() { return gActions; }
+
+const std::vector<ModulePanel>& ModulePanels() { return gPanels; }
+
+std::uint64_t ModuleUiRevision() { return gUiRevision; }
+
+void DropPanel(const std::string& module, const std::string& id) {
+    const auto before = gPanels.size();
+    std::erase_if(gPanels, [&](const ModulePanel& p) { return p.module == module && p.id == id; });
+    if (gPanels.size() != before) ++gUiRevision;
+}
+
+void ForgetModule(const std::string& module) {
+    const auto before = gActions.size() + gPanels.size();
+    std::erase_if(gActions, [&](const ModuleAction& a) { return a.module == module; });
+    std::erase_if(gPanels, [&](const ModulePanel& p) { return p.module == module; });
+    if (gActions.size() + gPanels.size() != before) ++gUiRevision;
 }
 
 } // namespace bz::modules

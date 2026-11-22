@@ -95,6 +95,9 @@ private:
 
     ObjectId                      myFeature;
     bool                          myIsNew = false;
+    /// Opened by «Применить» for the next one: «Готово» with nothing picked
+    /// then just closes it (as Inventor's OK), instead of an error.
+    bool                          myNextAfterApply = false;
     std::unique_ptr<doc::Feature> myOriginal;   ///< editing: the version to restore on Cancel
 };
 

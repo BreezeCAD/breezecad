@@ -6,6 +6,7 @@
 #include "core/PathText.h"
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
+#include "app/testing/UiProbe.h"
 #include "app/assembly/AssemblyIssues.h"
 #include "app/Format.h"
 #include "app/Operations.h"
@@ -33,6 +34,8 @@
 #include "app/assembly/InPlace.h"
 #include "app/sketch/SketchRepair.h"
 #include "assembly/AssemblyFile.h"
+#include "app/Import.h"
+#include "document/ImportFeature.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
 
@@ -51,6 +54,8 @@ struct RowStyle {
     bool        selected = false;
     bool        muted = false;
     const char* icon = "";
+    /// A small mark on the icon: what the operation does to the body.
+    enum class Badge : unsigned char { None, Cut, Intersect, NewBody } badge = Badge::None;
     std::string meta;
     const char* statusIcon = nullptr;
     std::optional<Color> statusColor;   ///< for a one-colour icon (a lock); none: as drawn
@@ -58,6 +63,72 @@ struct RowStyle {
     bool        hideable = false;   ///< has an eye at the right: hide or show it
     bool        hidden = false;
 };
+
+/// The operation's mark at the corner of a tree icon: a token-coloured dot
+/// with a white sign, ringed in the row's colour so it reads over the icon.
+void DrawBadge(ui::Ui& ui, ImDrawList* dl, ImVec2 centre, RowStyle::Badge badge, bool muted, const Color& ring) {
+    const ui::ThemeColors& c = ui.C();
+    Color fill = badge == RowStyle::Badge::Cut ? c.danger : badge == RowStyle::Badge::Intersect ? c.opIntersect : c.success;
+    Color ink = c.textOnAccent;
+    if (muted) fill.a = ink.a = 0.45f;
+    const float r = ui.S(4.6f);
+    dl->AddCircleFilled(centre, r + ui.S(1.2f), ui::ToU32(ring));
+    dl->AddCircleFilled(centre, r, ui::ToU32(fill));
+    const float a = r * 0.55f, t = ui.S(1.3f);
+    const ImU32 ic = ui::ToU32(ink);
+    switch (badge) {
+        case RowStyle::Badge::Cut: dl->AddLine({centre.x - a, centre.y}, {centre.x + a, centre.y}, ic, t); break;
+        case RowStyle::Badge::NewBody:
+            dl->AddLine({centre.x - a, centre.y}, {centre.x + a, centre.y}, ic, t);
+            dl->AddLine({centre.x, centre.y - a}, {centre.x, centre.y + a}, ic, t);
+            break;
+        case RowStyle::Badge::Intersect:   // ∩
+            dl->PathArcTo({centre.x, centre.y}, a * 0.9f, 3.14159265f, 6.2831853f, 8);
+            dl->PathStroke(ic, 0, t);
+            dl->AddLine({centre.x - a * 0.9f, centre.y}, {centre.x - a * 0.9f, centre.y + a}, ic, t);
+            dl->AddLine({centre.x + a * 0.9f, centre.y}, {centre.x + a * 0.9f, centre.y + a}, ic, t);
+            break;
+        case RowStyle::Badge::None: break;
+    }
+}
+
+/// The mark of an operation that turns a sketch into a solid. Joining is the
+/// usual case and gets none; the first solid is the body, so not "new".
+RowStyle::Badge OperationBadge(const doc::Feature& f, ObjectId firstSolid) {
+    doc::BooleanOp operation;
+    if (const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(&f); op && !dynamic_cast<const doc::SheetMetalFeature*>(&f))
+        operation = op->operation;
+    else if (const auto* loft = dynamic_cast<const doc::LoftFeature*>(&f))
+        operation = loft->operation;
+    else
+        return RowStyle::Badge::None;
+    switch (operation) {
+        case doc::BooleanOp::Cut:       return RowStyle::Badge::Cut;
+        case doc::BooleanOp::Intersect: return RowStyle::Badge::Intersect;
+        case doc::BooleanOp::NewBody:   return f.id == firstSolid ? RowStyle::Badge::None : RowStyle::Badge::NewBody;
+        case doc::BooleanOp::Join:      break;
+    }
+    return RowStyle::Badge::None;
+}
+
+/// Does a feature belong to the kind the tree is filtered to?
+bool OfKind(const doc::Feature& f, ShellState::TreeKind kind) {
+    using K = ShellState::TreeKind;
+    const auto* sketch = dynamic_cast<const doc::SketchFeature*>(&f);
+    const bool work = dynamic_cast<const doc::WorkPlaneFeature*>(&f) || dynamic_cast<const doc::WorkAxisFeature*>(&f) ||
+                      dynamic_cast<const doc::WorkPointFeature*>(&f);
+    switch (kind) {
+        case K::All:          return true;
+        case K::Operations:   return !sketch && !work;
+        case K::Sketches:     return sketch != nullptr;
+        case K::WorkGeometry: return work;
+        case K::Problems:
+            // Not "not computed" (below the end marker) nor "suppressed": those are the user's choice.
+            return f.status.state == doc::FeatureState::Error || f.status.state == doc::FeatureState::Warning ||
+                   (sketch && sketch->HasBrokenProjections());
+    }
+    return true;
+}
 
 /// Draws a tree row; returns its interaction.
 struct RowResult {
@@ -78,6 +149,7 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
     r.clicked = ImGui::InvisibleButton("##row", {width, h}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    probe::Name("tree", name);
     r.hovered = ImGui::IsItemHovered();
     r.doubleClicked = r.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     ImGui::PopID();
@@ -119,7 +191,10 @@ RowResult Row(AppContext& app, const char* id, const std::string& name, const Ro
     }
     x += ui.S(14);
     if (*style.icon) {
-        ui.icons.Draw(dl, style.icon, {x, p.y + (h - ui.S(16)) / 2}, ui.S(16), {1, 1, 1, style.muted ? 0.45f : 1.0f});
+        const float iy = p.y + (h - ui.S(16)) / 2;
+        ui.icons.Draw(dl, style.icon, {x, iy}, ui.S(16), {1, 1, 1, style.muted ? 0.45f : 1.0f});
+        if (style.badge != RowStyle::Badge::None)
+            DrawBadge(ui, dl, {x + ui.S(13), iy + ui.S(13)}, style.badge, style.muted, style.selected ? c.selectedRow : r.hovered ? c.hoverRow : c.panel);
         x += ui.S(22);
     }
 
@@ -195,6 +270,9 @@ std::string FeatureMeta(const doc::Feature& f, const doc::Document& d) {
     }
     if (const auto* sk = dynamic_cast<const doc::SketchFeature*>(&f); sk && sk->analysis.degreesOfFreedom > 0)
         return "\xE2\x89\x88" + std::to_string(sk->analysis.degreesOfFreedom);   // ≈N: not fully defined
+    if (const auto* imp = dynamic_cast<const doc::ImportFeature*>(&f))   // STEP · 3, STL
+        return imp->kind == doc::ImportKind::Mesh || imp->bodyCount <= 1 ? imp->sourceFormat
+                                                                         : imp->sourceFormat + " \xC2\xB7 " + std::to_string(imp->bodyCount);
     return {};
 }
 
@@ -264,25 +342,72 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
     const ui::ThemeColors& c = ui.C();
     doc::Document& d = session.doc;
 
-    // Header with a name filter.
+    using Kind = ShellState::TreeKind;
+    Kind& kind = app.shell.treeKind;
+    // Problems at a glance: the «Проблемы N» chip lists only them.
+    int problems = 0;
+    for (const auto& f : d.Features()) problems += OfKind(*f, Kind::Problems) ? 1 : 0;
+    if (problems == 0 && kind == Kind::Problems) kind = Kind::All;
+
+    // Header; the name filter's magnifier is at the right.
+    const float headerH = ui.S(40);
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float h = ui.S(40);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddText(ui.fonts.strong, ui.S(13), {p.x + ui.S(14), p.y + (h - ui.S(13)) / 2 - ui.S(1)}, ui::ToU32(c.text),
+        dl->AddText(ui.fonts.strong, ui.S(13), {p.x + ui.S(14), p.y + (headerH - ui.S(13)) / 2 - ui.S(1)}, ui::ToU32(c.text),
                     Tr("Дерево построения"));
-        dl->AddLine({p.x, p.y + h - 1}, {p.x + width, p.y + h - 1}, ui::ToU32(c.dividerSoft));
         ImGui::SetCursorScreenPos({p.x + width - ui.S(38), p.y + ui.S(7)});
-        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск в дереве"), true, app.shell.treeSearch)) {
+        if (ui::IconButton(ui, "##tree-search", "ui-search", 26, 15, Tr("Поиск по дереву"), true, app.shell.treeSearch)) {
             app.shell.treeSearch = !app.shell.treeSearch;
             app.shell.treeFilter.clear();
         }
-        ImGui::SetCursorScreenPos({p.x, p.y + h});
-        if (app.shell.treeSearch) {
-            ImGui::SetCursorScreenPos({p.x + ui.S(8), p.y + h + ui.S(6)});
-            ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
-            ImGui::Dummy({0, ui.S(4)});
+        ImGui::SetCursorScreenPos({p.x, p.y + headerH});
+    }
+    if (app.shell.treeSearch) {
+        ui::TextField(ui, "##filter", app.shell.treeFilter, width - ui.S(16), Tr("Имя операции"), ImGui::IsWindowAppearing());
+        ImGui::Dummy({0, ui.S(4)});
+    }
+    // Kind chips, always at hand (макет design/tree-header): «Всё · Тела · Эскизы · Раб. · Проблемы N».
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float chipH = app.shell.mobile.phone ? ui.S(28) : ui.S(24);
+        const float gap = ui.S(4), padX = ui.S(10);
+        const Kind  kinds[] = {Kind::All, Kind::Operations, Kind::Sketches, Kind::WorkGeometry, Kind::Problems};
+        const std::string labels[] = {Tr("Всё"), Tr("Тела"), Tr("Эскизы"), Tr("Раб."),
+                                      problems > 0 ? Trf("Проблемы {}", problems) : std::string()};
+        // One row: on a narrow panel the text shrinks a little (as the segmented did).
+        float fs = ui.S(12);
+        const float avail = width - ui.S(16);
+        const auto rowWidth = [&] {
+            float w = 0;
+            for (const auto& l : labels)
+                if (!l.empty()) w += ui.fonts.medium->CalcTextSizeA(fs, FLT_MAX, 0, l.c_str()).x + 2 * padX + gap;
+            return w > gap ? w - gap : 0;
+        };
+        if (rowWidth() > avail) fs = std::max(ui.S(9), fs * avail / rowWidth());
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        float cx = start.x + ui.S(8);
+        for (int i = 0; i < 5; ++i) {
+            if (labels[i].empty()) continue;
+            const bool on = kind == kinds[i];
+            const float cw = ui.fonts.medium->CalcTextSizeA(fs, FLT_MAX, 0, labels[i].c_str()).x + 2 * padX;
+            ImGui::SetCursorScreenPos({cx, start.y});
+            ImGui::PushID(i);
+            if (ImGui::InvisibleButton("chip", {cw, chipH})) kind = on ? Kind::All : kinds[i];
+            ImGui::PopID();
+            const bool hover = ImGui::IsItemHovered();
+            if (on)
+                dl->AddRectFilled({cx, start.y}, {cx + cw, start.y + chipH}, ui::ToU32(c.accentSoft), chipH / 2);
+            else if (hover)
+                dl->AddRectFilled({cx, start.y}, {cx + cw, start.y + chipH}, ui::ToU32(c.hover), chipH / 2);
+            dl->AddText(ui.fonts.medium, fs, {cx + padX, start.y + (chipH - fs) / 2},
+                        ui::ToU32(on ? c.accentHover : hover ? c.text : c.textSecondary), labels[i].c_str());
+            cx += cw + gap;
         }
+        // The divider under the chips (was under the header alone).
+        const float rowsY = start.y + chipH + ui.S(6);
+        dl->AddLine({start.x, rowsY - 1}, {start.x + width, rowsY - 1}, ui::ToU32(c.dividerSoft));
+        ImGui::SetCursorScreenPos({start.x, rowsY});
     }
 
     const float rowW = width - ui.S(12);
@@ -338,6 +463,15 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         if (const auto* op = dynamic_cast<const doc::SketchSolidFeature*>(f.get()))
             if (!consumedBy.count(op->sketch)) consumedBy[op->sketch] = op->id;
 
+    // The first solid makes the part's body: "new body" is marked only after it.
+    ObjectId firstSolid{};
+    for (const auto& f : d.Features())
+        if ((dynamic_cast<const doc::SketchSolidFeature*>(f.get()) && !dynamic_cast<const doc::SheetMetalFeature*>(f.get())) ||
+            dynamic_cast<const doc::LoftFeature*>(f.get())) {
+            firstSolid = f->id;
+            break;
+        }
+
     const std::string& filter = app.shell.treeFilter;
     const auto draw = [&](const doc::Feature& f, std::size_t index, int depth, bool hasChildren) {
         if (!filter.empty() && f.name.find(filter) == std::string::npos) return false;
@@ -346,6 +480,7 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         style.caret = hasChildren;
         style.open = app.shell.expanded.count(f.id) > 0;
         style.icon = FeatureIcon(f);
+        style.badge = OperationBadge(f, firstSolid);
         style.selected = session.selectedFeature == f.id || (session.mode == EditMode::Sketch && session.activeSketch == f.id);
         style.muted = !d.IsActive(index) || f.suppressed;
         style.meta = FeatureMeta(f, d);
@@ -449,23 +584,29 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
         }
     };
 
-    if (d.EndMarker() == 0) marker();
-    for (std::size_t i = 0; i < d.FeatureCount(); ++i) {
-        const doc::Feature& f = *d.Features()[i];
-        const auto consumer = consumedBy.find(f.id);
-        const bool nested = consumer != consumedBy.end() && d.IndexOf(consumer->second) > static_cast<int>(i);
-        if (!nested) {
-            // Children: sketches this operation consumes.
-            std::vector<std::size_t> children;
-            for (std::size_t j = 0; j < d.FeatureCount(); ++j) {
-                const auto it = consumedBy.find(d.Features()[j]->id);
-                if (it != consumedBy.end() && it->second == f.id && j < i) children.push_back(j);
+    if (app.shell.treeKind != ShellState::TreeKind::All) {
+        // One kind: a flat list, nested sketches included, no end marker.
+        for (std::size_t i = 0; i < d.FeatureCount(); ++i)
+            if (const doc::Feature& f = *d.Features()[i]; OfKind(f, app.shell.treeKind)) draw(f, i, 1, false);
+    } else {
+        if (d.EndMarker() == 0) marker();
+        for (std::size_t i = 0; i < d.FeatureCount(); ++i) {
+            const doc::Feature& f = *d.Features()[i];
+            const auto consumer = consumedBy.find(f.id);
+            const bool nested = consumer != consumedBy.end() && d.IndexOf(consumer->second) > static_cast<int>(i);
+            if (!nested) {
+                // Children: sketches this operation consumes.
+                std::vector<std::size_t> children;
+                for (std::size_t j = 0; j < d.FeatureCount(); ++j) {
+                    const auto it = consumedBy.find(d.Features()[j]->id);
+                    if (it != consumedBy.end() && it->second == f.id && j < i) children.push_back(j);
+                }
+                const bool open = draw(f, i, 1, !children.empty());
+                if (open)
+                    for (std::size_t j : children) draw(*d.Features()[j], j, 2, false);
             }
-            const bool open = draw(f, i, 1, !children.empty());
-            if (open)
-                for (std::size_t j : children) draw(*d.Features()[j], j, 2, false);
+            if (i + 1 == d.EndMarker()) marker();
         }
-        if (i + 1 == d.EndMarker()) marker();
     }
 
     if (d.FeatureCount() == 0) {
@@ -481,6 +622,8 @@ void DrawTreePanel(AppContext& app, Session& session, float width) {
     }
     ImGui::PopStyleVar();
     ImGui::EndGroup();
+    // An imported body chosen in the tree: where it came from, «Обновить из файла».
+    if (session.selectedFeature) DrawImportProperties(app, session, session.selectedFeature, width);
 }
 
 // --- assembly -------------------------------------------------------------------
@@ -715,11 +858,17 @@ void DrawAssemblyTree(AppContext& app, Session& session, float width) {
             const ObjectId other = con->first.component == id ? con->second.component : con->first.component;
             if (const assembly::Component* o = a.FindComponent(other)) cs.meta = o->name;
             ImGui::PushID(static_cast<int>(con->id.value));
-            if (Row(app, "##in-comp", con->name, cs, rowW).clicked) {
+            const RowResult rc = Row(app, "##in-comp", con->name, cs, rowW);
+            if (rc.clicked) {
                 const ObjectId cid = con->id;
                 if (st.creating.active && assembly::IsTransmission(st.creating.constraint.type))
                     app.Later([&app, &session, cid] { TakeJointPick(app, session, cid); });
                 else st.selected = cid;
+            }
+            // As in Inventor: a double click opens the constraint to edit (its value, offset, flip).
+            if (rc.doubleClicked && !st.creating.active) {
+                st.selected = con->id;
+                app.shell.leftTab = LeftTab::Properties;
             }
             ImGui::PopID();
         }
@@ -800,6 +949,10 @@ void DrawAssemblyTree(AppContext& app, Session& session, float width) {
                     app.Later([&app, &session, cid] { TakeJointPick(app, session, cid); });
                 else st.selected = cid;
             }
+            if (r.doubleClicked && !st.creating.active) {   // as in Inventor: open it to edit
+                st.selected = con.id;
+                app.shell.leftTab = LeftTab::Properties;
+            }
             {
                 ui::MenuStyle menu(ui);
                 if (ImGui::BeginPopupContextItem("##con-menu")) {
@@ -852,6 +1005,7 @@ const char* FeatureIcon(const doc::Feature& f) {
     if (dynamic_cast<const doc::SheetMetalFeature*>(&f)) return "tree-sheet";
     if (dynamic_cast<const doc::FlangeFeature*>(&f)) return "tree-flange";
     if (dynamic_cast<const doc::SheetCutFeature*>(&f)) return "tree-sheet-cut";
+    if (const auto* imp = dynamic_cast<const doc::ImportFeature*>(&f)) return imp->kind == doc::ImportKind::Mesh ? "tree-mesh" : "tree-import";
     return "tree-unknown";
 }
 

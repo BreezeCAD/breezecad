@@ -5,6 +5,8 @@
 #include "core/Log.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <gp_Pnt2d.hxx>
 #include <Geom_ConicalSurface.hxx>
@@ -30,20 +32,31 @@
 #include <BRepGProp_Face.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <GProp_GProps.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
 #include <LocOpe_DPrism.hxx>
+#include <Precision.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Lin.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <atomic>
+#include <cstdlib>
+#include <future>
+#include <thread>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Wire.hxx>
 #include <format>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <vector>
 
 namespace bz::kernel::occt {
 namespace {
@@ -54,9 +67,48 @@ bool IsEmpty(const TopoDS_Shape& shape) {
     return !it.More();
 }
 
+TopoDS_Shape Sweep(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper);
+
+/// A face with holes, drafted: LocOpe_DPrism drops the holes (the solid came
+/// out filled), so the outline and every hole are swept on their own and the
+/// holes cut out. The holes are drafted the other way, so the material
+/// narrows (or widens) the same way everywhere, as in Inventor.
+TopoDS_Shape SweepWithHoles(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper) {
+    const TopoDS_Wire outer = BRepTools::OuterWire(face);
+    const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+    const auto alone = [&](const TopoDS_Wire& wire) {
+        BRepBuilderAPI_MakeFace make(surface, wire, Standard_True);
+        if (!make.IsDone()) throw Standard_Failure("a contour of the profile cannot be made a face");
+        TopoDS_Face f = make.Face();
+        // A hole's wire runs the other way round: turn it into a face of its own.
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(f, props);
+        if (props.Mass() < 0) f = TopoDS::Face(make.Face().Reversed());
+        BRepGProp::SurfaceProperties(f, props);
+        if (props.Mass() < 0) {
+            BRepBuilderAPI_MakeFace again(surface, TopoDS::Wire(wire.Reversed()), Standard_True);
+            if (!again.IsDone()) throw Standard_Failure("a contour of the profile cannot be made a face");
+            f = again.Face();
+        }
+        return f;
+    };
+    TopoDS_Shape solid = Sweep(alone(outer), dir, length, taper);
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) {
+        const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+        if (wire.IsSame(outer)) continue;
+        BRepAlgoAPI_Cut cut(solid, Sweep(alone(wire), dir, length, -taper));
+        if (!cut.IsDone()) throw Standard_Failure("a hole of the profile cannot be cut");
+        solid = cut.Shape();
+    }
+    return solid;
+}
+
 /// One face swept along `dir` by `length`, optionally with a draft angle.
 TopoDS_Shape Sweep(const TopoDS_Face& face, const gp_Vec& dir, double length, double taper) {
     if (std::abs(taper) < 1e-9) return BRepPrimAPI_MakePrism(face, dir * length).Shape();
+    int wires = 0;
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) ++wires;
+    if (wires > 1) return SweepWithHoles(face, dir, length, taper);
 
     // LocOpe_DPrism sweeps along the face normal; orient the face so its
     // normal points where we want to go. Positive taper narrows the solid.
@@ -71,7 +123,21 @@ TopoDS_Shape Sweep(const TopoDS_Face& face, const gp_Vec& dir, double length, do
     // LocOpe_DPrism measures its height along the slanted side, not along
     // the normal: ask for the slant that ends `length` above the face.
     LocOpe_DPrism prism(oriented, length / std::cos(taper), taper);
-    return prism.Shape();
+    TopoDS_Shape solid = prism.Shape();
+    if (solid.IsNull()) return solid;
+    // LocOpe_DPrism goes where the face's surface looks, whichever way the
+    // face itself is turned: a «reversed» extrusion with a taper was built
+    // on the wrong side of the sketch — inside the body, so a join added
+    // nothing and said "ok" (BETA-BUGS №6). Built there, it is mirrored in
+    // the sketch plane: the same solid on the side asked for.
+    GProp_GProps volume;
+    BRepGProp::VolumeProperties(solid, volume);
+    if (gp_Vec(p, volume.CentreOfMass()).Dot(dir) < 0) {
+        gp_Trsf mirror;
+        mirror.SetMirror(gp_Ax2(p, gp_Dir(dir)));
+        solid = BRepBuilderAPI_Transform(solid, mirror, true).Shape();
+    }
+    return solid;
 }
 
 /// A point inside `face`, nudged `offset` along `dir` (into the solid swept from it).
@@ -171,6 +237,9 @@ Expected<TopoDS_Shape> MakeExtrusion(const std::vector<TopoDS_Face>& faces, cons
                                      const Frame& frame, double throughAllLength, const std::optional<Frame>& target,
                                      const std::optional<TopoDS_Face>& untilFace) {
     if (faces.empty()) return Error{"Нет замкнутого контура для выдавливания"};
+    // At ±90° the side walls lie in the sketch plane; past it the prism turns
+    // inside out (95° made a body far bigger than the profile, 180° a plain one).
+    if (std::abs(f.taper.value) >= kPi / 2 - 1e-9) return Error{"Уклон должен быть больше −90° и меньше 90°"};
     if (f.extent == doc::ExtentType::ToPlane && untilFace) {
         // Up to a curved face: far enough towards it, then cut off by it.
         // Towards the place where the face was picked (as it is now): the
@@ -278,85 +347,494 @@ Expected<TopoDS_Shape> MakeExtrusion(const std::vector<TopoDS_Face>& faces, cons
 
 namespace {
 
-/// `Op` (Fuse, Cut, Common) of `a` and `b`. On the calling thread, as every
-/// boolean (SetUpOcct in Model.cpp turns OCCT's parallel mode off).
+/// A face of a cut's tool and a point just under it, inside the tool.
+struct Watched {
+    TopoDS_Face face;
+    gp_Pnt      under;
+};
+
+/// What a boolean gave, and for a cut what became of it.
+struct Ran {
+    TopoDS_Shape shape;
+    bool         touched = true;   ///< a face of the first argument was changed or removed
+    int          gone = 0;         ///< watched tool faces that left nothing in the result
+};
+
+/// `Op` (Fuse, Cut, Common) of `a` and `tools`. On the calling thread, as
+/// every boolean (SetUpOcct in Model.cpp turns OCCT's parallel mode off).
+/// `fuzzy` > 0: with that tolerance, mm — surfaces that only touch (a
+/// cylinder ending on another's generatrix, a profile corner exactly on a
+/// wall) are then treated as meeting; the arguments are left as they were
+/// (a failed boolean changes their tolerances otherwise).
+// >0 — мы на потоке параллельной загрузки деталей: вложенный параллелизм
+// булевых выключаем, чтобы пулы OCCT не перемножались.
+std::atomic<int> gSerialDepth{0};
+
+// Эта сборка OCCT 7.8.1 не принимает внешний индикатор прогресса
+// (SetProgressIndicator отсутствует) — прервать зависшую булеву изнутри
+// нельзя. Поэтому при включённом бюджете булева уходит на отдельный поток
+// со сторожем: по таймауту поток отцепляется (единственная честная цена
+// зависания внутри OCCT — его утечка), операция возвращает ошибку и деталь
+// открывается с пометкой, а не висит.
 template <class Op>
-TopoDS_Shape RunBoolean(const TopoDS_Shape& a, const TopoDS_Shape& b) {
-    TopTools_ListOfShape arguments, tools;
+Ran RunBooleanImpl(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch) {
+    TopTools_ListOfShape arguments;
     arguments.Append(a);
-    tools.Append(b);
     Op op;
     op.SetArguments(arguments);
     op.SetTools(tools);
+    op.SetUseOBB(true);
+#if defined(_WIN32)
+    // Windows FaultGuard only catches faults on the guarded thread. Keep
+    // the boolean on that thread rather than spawning unguarded OCCT workers.
+    op.SetRunParallel(false);
+#else
+    // Параллельная пара сборок пересечений; на потоках параллельной загрузки
+    // деталей вложенный параллелизм выключен, чтобы пулы OCCT не перемножались.
+    op.SetRunParallel(gSerialDepth.load(std::memory_order_relaxed) == 0);
+#endif
+    if (fuzzy > 0) {
+        op.SetFuzzyValue(fuzzy);
+        op.SetNonDestructive(true);
+    }
     op.Build();
-    return op.Shape();   // throws StdFail_NotDone when it failed
+    if (op.HasErrors()) throw Standard_Failure("the boolean operation reported errors");
+    Ran ran;
+    ran.shape = op.Shape();   // throws StdFail_NotDone when it failed
+    if (watch) {
+        ran.touched = false;
+        for (TopExp_Explorer e(a, TopAbs_FACE); e.More() && !ran.touched; e.Next())
+            ran.touched = op.IsDeleted(e.Current()) || !op.Modified(e.Current()).IsEmpty();
+        for (const Watched& w : *watch) ran.gone += op.IsDeleted(w.face) ? 1 : 0;
+    }
+    return ran;
 }
+
+template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch);
+
+template <class Op>
+Ran RunBoolean(const TopoDS_Shape& a, const TopoDS_Shape& b, double fuzzy = 0.0, const std::vector<Watched>* watch = nullptr) {
+    TopTools_ListOfShape tools;
+    tools.Append(b);
+    return RunBooleanGuarded<Op>(a, tools, fuzzy, watch);
+}
+
+/// Булева с бюджетом времени: копии аргументов уходят на свой поток, родитель
+/// ждёт не дольше бюджета. Таймаут — ошибка, поток отцеплён (завис в OCCT).
+template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch) {
+    const double budgetMs = BooleanBudgetMs();
+    if (budgetMs <= 0) return RunBooleanImpl<Op>(a, tools, fuzzy, watch);
+    const TopTools_ListOfShape toolCopy = tools;
+    const std::vector<Watched> watchCopy = watch ? *watch : std::vector<Watched>{};
+    auto promised = std::make_shared<std::promise<Ran>>();
+    std::future<Ran> future = promised->get_future();
+    std::thread([promised, a, toolCopy, fuzzy, watchCopy] {
+        std::string fault;
+        const bool survived = guard::RunGuarded(
+            [&] {
+                try {
+                    promised->set_value_at_thread_exit(
+                        RunBooleanImpl<Op>(a, toolCopy, fuzzy, watchCopy.empty() ? nullptr : &watchCopy));
+                } catch (...) {
+                    promised->set_exception_at_thread_exit(std::current_exception());
+                }
+            },
+            &fault);
+        if (!survived)
+            promised->set_exception_at_thread_exit(std::make_exception_ptr(Standard_Failure("сбой внутри булевой операции")));
+    }).detach();
+    if (future.wait_for(std::chrono::milliseconds(static_cast<long long>(budgetMs))) != std::future_status::ready)
+        throw BooleanBudgetExceeded{};
+    return future.get();
+}
+
+template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopoDS_Shape& b, double fuzzy, const std::vector<Watched>* watch) {
+    TopTools_ListOfShape tools;
+    tools.Append(b);
+    return RunBooleanGuarded<Op>(a, tools, fuzzy, watch);
+}
+
+/// The tolerances a boolean is tried with, in turn: exact first, then the
+/// touching-surfaces ones (BETA-BUGS №5, №7). Доли диагонали габарита
+/// целевого тела: на детали ~100 мм даёт прежние 0.1 мкм и 10 мкм, а на
+/// микродетали фиксированный допуск не съест стенки.
+void FuzzyStepsFor(const TopoDS_Shape& target, double steps[3]) {
+    Bnd_Box box;
+    BRepBndLib::Add(target, box);
+    const double d = box.IsVoid() ? 100.0 : std::sqrt(box.SquareExtent());
+    steps[0] = 0.0;
+    steps[1] = 1e-6 * d;
+    steps[2] = 1e-4 * d;
+}
+
+// Бюджет времени одной булевой, мс. 0 — выключен (как раньше): включается
+// из настроек приложения, в тестах — переменной BZ_BOOLEAN_BUDGET_MS.
+namespace {
+std::atomic<double> gBudgetMs{[] {
+    const char* v = std::getenv("BZ_BOOLEAN_BUDGET_MS");
+    return v ? std::atof(v) : 0.0;
+}()};
+} // namespace
+
+} // namespace — конец внутренних инструментов; внешний API объявлен в Extrude.h
+
+void SetBooleanBudgetMs(const double ms) { gBudgetMs.store(ms > 0 ? ms : 0.0, std::memory_order_relaxed); }
+double BooleanBudgetMs() { return gBudgetMs.load(std::memory_order_relaxed); }
+
+void PushBooleansSerial() { gSerialDepth.fetch_add(1, std::memory_order_relaxed); }
+void PopBooleansSerial() { gSerialDepth.fetch_sub(1, std::memory_order_relaxed); }
+
+namespace {
+
+// Больше граней в тело не сливаем: слияние на очень больших телах —
+// историческое место зависаний; цена пропуска — лишние грани, а не ошибка.
+constexpr int kCleanFaceLimit = 500;
+
+const char* const kNothingLeft = "После операции не осталось материала";
 
 /// What every boolean result goes through: not empty, cleaned, valid.
 Expected<TopoDS_Shape> FinishBoolean(const TopoDS_Shape& raw, doc::BooleanOp op) {
+    auto _t0 = std::chrono::steady_clock::now();
     if (IsEmpty(raw)) {
-        return Error{op == doc::BooleanOp::Intersect ? "Пересечение пустое: тела не перекрываются"
-                                                     : "После операции не осталось материала"};
+        return Error{op == doc::BooleanOp::Intersect ? "Пересечение пустое: тела не перекрываются" : kNothingLeft};
     }
     const TopoDS_Shape result = Clean(raw);
+    { int n = 0; for (TopExp_Explorer e(raw, TopAbs_FACE); e.More(); e.Next()) ++n;
+      log::Info("FINISH clean: {:.0f} ms faces={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count(), n); }
+    log::Info("FINISH check: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count());
     if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Результат операции некорректен"};
     return result;
 }
 
+/// Whether points are in the material of a shape: rays from the point cross
+/// its surface an odd number of times. Not BRepClass3d_SolidClassifier: it
+/// faults inside on some points in OCCT 7.9.3 / 8 of MSYS2 (see Thread.cpp).
+/// Three skew rays, the majority: one through an edge can miscount.
+class MaterialProbe {
+public:
+    explicit MaterialProbe(const TopoDS_Shape& shape) { myRays.Load(shape, 1e-7); }
+    bool Inside(const gp_Pnt& p) {
+        static const gp_Dir kDirs[] = {gp_Dir(0.7, 0.2, 0.3), gp_Dir(-0.3, -0.6, 0.7), gp_Dir(0.4, 0.5, -0.75)};
+        int inside = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (i == 2 && inside != 1) break;   // the first two agree
+            myRays.Perform(gp_Lin(p, kDirs[i]), 0, Precision::Infinite());
+            if (myRays.IsDone() && myRays.NbPnt() % 2 == 1) ++inside;
+        }
+        return inside >= 2;
+    }
+
+private:
+    IntCurvesFace_ShapeIntersector myRays;
+};
+
+double VolumeOf(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape, props);
+    return props.Mass();
+}
+
+/// A tool with more faces than this is a swept one (a «Пружина», a thread,
+/// a sweep along a path): the kind whose cut can come out incomplete.
+constexpr int kSweptToolFaces = 24;
+
+int FaceCount(const TopoDS_Shape& shape) {
+    int n = 0;
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) ++n;
+    return n;
+}
+
+/// Faces of a cut's `tool` that must leave something in the result: those
+/// with the tool's material under them inside `target`. A cut removes that
+/// material, so what is left of such a face becomes a wall of the cut; a
+/// face that left nothing was not cut along. Not every face when there are
+/// hundreds (a coil): some fifty of them, spread over the tool.
+std::vector<Watched> FacesToWatch(const TopoDS_Shape& target, const TopoDS_Shape& tool) {
+    std::vector<TopoDS_Face> faces;
+    for (TopExp_Explorer e(tool, TopAbs_FACE); e.More(); e.Next()) faces.push_back(TopoDS::Face(e.Current()));
+    if (faces.empty()) return {};
+    constexpr std::size_t kWanted = 48;
+    const std::size_t count = std::min(faces.size(), kWanted);
+    MaterialProbe material(target);
+    std::vector<Watched> watched;
+    for (std::size_t k = 0; k < count; ++k) {
+        // A stride that shares no factor with the faces of one section: every
+        // n-th face of a sweep is the same side of its profile.
+        const TopoDS_Face& face = faces[faces.size() <= kWanted ? k : (k * 7919) % faces.size()];
+        BRepGProp_Face surface(face);   // its normal looks out of the solid
+        double u1, u2, v1, v2;
+        surface.Bounds(u1, u2, v1, v2);
+        if (!std::isfinite(u1) || !std::isfinite(u2) || !std::isfinite(v1) || !std::isfinite(v2)) continue;
+        static constexpr double kAt[][2] = {{0.5, 0.5}, {0.27, 0.31}, {0.73, 0.69}};
+        for (const auto& at : kAt) {
+            const double u = u1 + (u2 - u1) * at[0], v = v1 + (v2 - v1) * at[1];
+            if (BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-7).State() != TopAbs_IN) continue;
+            gp_Pnt on;
+            gp_Vec normal;
+            surface.Normal(u, v, on, normal);
+            if (normal.Magnitude() < 1e-12) continue;
+            const gp_Pnt under = on.Translated(normal.Normalized() * -0.005);
+            if (material.Inside(under)) watched.push_back({face, under});
+            break;
+        }
+    }
+    return watched;
+}
+
+/// A cut that left nothing of more than this share of the faces it had to
+/// cut along is not a complete cut.
+constexpr double kUncutLimit = 0.2;
+
 } // namespace
 
-TopoDS_Shape Fuse(const TopoDS_Shape& a, const TopoDS_Shape& b) { return RunBoolean<BRepAlgoAPI_Fuse>(a, b); }
+TopoDS_Shape Fuse(const TopoDS_Shape& a, const TopoDS_Shape& b) { return RunBoolean<BRepAlgoAPI_Fuse>(a, b).shape; }
 
-Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Shape& tool, doc::BooleanOp op) {
-    try {
-        TopoDS_Shape result;
-        switch (op) {
-            case doc::BooleanOp::NewBody:   return tool;
-            case doc::BooleanOp::Join:      result = RunBoolean<BRepAlgoAPI_Fuse>(target, tool); break;
-            case doc::BooleanOp::Cut:       result = RunBoolean<BRepAlgoAPI_Cut>(target, tool); break;
-            case doc::BooleanOp::Intersect: result = RunBoolean<BRepAlgoAPI_Common>(target, tool); break;
+Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Shape& tool, doc::BooleanOp op, BooleanNote* note) {
+    if (op == doc::BooleanOp::NewBody) return tool;
+    BooleanNote local;
+    BooleanNote& said = note ? *note : local;
+    said = {};
+    const bool cut = op == doc::BooleanOp::Cut;
+    // A cut is checked by what it did, not only by the shape being valid:
+    // OCCT can return a valid body that lost no material — or, with a swept
+    // tool (a «Пружина», a thread), a groove cut along a part of the tool
+    // only — when the tool's corners lie exactly on the body's surface
+    // (BETA-BUGS №5). Whether material went: the volume. Whether all of a
+    // swept tool cut: faces of the tool that had to become walls of the cut
+    // (FacesToWatch). An ordinary tool is never judged by its faces: one
+    // ending in a cavity of the body leaves no wall there, rightly.
+    const double before = cut ? VolumeOf(target) : 0.0;
+    const double noise = std::max(1e-6, before * 1e-9);
+    std::vector<Watched> watch;
+    if (cut && FaceCount(tool) > kSweptToolFaces) watch = FacesToWatch(target, tool);
+    std::optional<TopoDS_Shape> first;   // the exact cut, kept when no other is complete either
+    bool                        missed = false;   // a valid cut came back without removing anything
+    bool                        firstPartial = false;
+    Error                       last{"Ошибка булевой операции"};
+    double                      fuzzySteps[3];
+    FuzzyStepsFor(target, fuzzySteps);
+    for (double fuzzy : fuzzySteps) {
+        said.retried = fuzzy > 0;
+        auto _tb = std::chrono::steady_clock::now();
+        try {
+            Ran ran;
+            switch (op) {
+                case doc::BooleanOp::Join:      ran = RunBooleanGuarded<BRepAlgoAPI_Fuse>(target, tool, fuzzy, nullptr); break;
+                case doc::BooleanOp::Cut:       ran = RunBooleanGuarded<BRepAlgoAPI_Cut>(target, tool, fuzzy, watch.empty() ? nullptr : &watch); break;
+                case doc::BooleanOp::Intersect: ran = RunBooleanGuarded<BRepAlgoAPI_Common>(target, tool, fuzzy, nullptr); break;
+                case doc::BooleanOp::NewBody:   break;
+            }
+            log::Info("BOP fuzzy={} build: {:.0f} ms", fuzzy, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count());
+            if (IsEmpty(ran.shape)) return FinishBoolean(ran.shape, op);   // nothing left is an answer, not a failure
+            _tb = std::chrono::steady_clock::now();
+            Expected<TopoDS_Shape> result = FinishBoolean(ran.shape, op);
+            if (!result) {
+                last = result.GetError();
+                continue;   // not valid: once more, with a tolerance
+            }
+            log::Info("BOP finish: {:.0f} ms ok={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count(), result.HasValue());
+            if (!cut) return result;
+            const bool removed = VolumeOf(*result) < before - noise;
+            // One face of a few is a ray gone wrong, not a groove left uncut.
+            const bool partial = removed && ran.gone >= 2 && ran.gone > kUncutLimit * static_cast<double>(watch.size());
+            if (removed && !partial) return result;
+            missed = missed || !removed;
+            if (!first && removed) {
+                first = *result;
+                firstPartial = partial;
+            }
+        } catch (const BooleanBudgetExceeded&) {
+            return Error{"Булева операция прервана по бюджету времени"};
+        } catch (const Standard_Failure& failure) {
+            last = Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
         }
-        return FinishBoolean(result, op);
-    } catch (const Standard_Failure& failure) {
-        return Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
     }
+    if (first) {   // material went, but not all of it, however it was tried
+        said.retried = false;
+        said.partial = firstPartial;
+        return *first;
+    }
+    // A valid cut that removed nothing at any tolerance: it missed the body.
+    if (missed) {
+        said.touched = false;
+        return target;
+    }
+    return last;
 }
 
 Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const std::vector<TopoDS_Shape>& tools, doc::BooleanOp op) {
     if (tools.empty()) return target;
     if (op != doc::BooleanOp::Join && op != doc::BooleanOp::Cut) return Error{"Копировать можно только добавление и вырезание"};
     try {
-        TopTools_ListOfShape arguments, toolList;
-        arguments.Append(target);
+        TopTools_ListOfShape toolList;
         for (const TopoDS_Shape& t : tools) toolList.Append(t);
-        TopoDS_Shape result;
-        if (op == doc::BooleanOp::Join) {
-            BRepAlgoAPI_Fuse fuse;
-            fuse.SetArguments(arguments);
-            fuse.SetTools(toolList);
-            fuse.Build();
-            if (!fuse.IsDone()) return Error{"Ошибка булевой операции"};
-            result = fuse.Shape();
-        } else {
-            BRepAlgoAPI_Cut cut;
-            cut.SetArguments(arguments);
-            cut.SetTools(toolList);
-            cut.Build();
-            if (!cut.IsDone()) return Error{"Ошибка булевой операции"};
-            result = cut.Shape();
+        // As a single tool: exact first, then with a tolerance for surfaces
+        // that only touch.
+        Error last{"Ошибка булевой операции"};
+        double fuzzySteps[3];
+        FuzzyStepsFor(target, fuzzySteps);
+        for (double fuzzy : fuzzySteps) {
+            try {
+                const TopoDS_Shape raw = op == doc::BooleanOp::Join ? RunBooleanGuarded<BRepAlgoAPI_Fuse>(target, toolList, fuzzy, nullptr).shape
+                                                                    : RunBooleanGuarded<BRepAlgoAPI_Cut>(target, toolList, fuzzy, nullptr).shape;
+                Expected<TopoDS_Shape> result = FinishBoolean(raw, op);
+                if (result || IsEmpty(raw)) return result;
+                last = result.GetError();
+            } catch (const BooleanBudgetExceeded&) {
+                return Error{"Булева операция прервана по бюджету времени"};
+            } catch (const Standard_Failure& failure) {
+                last = Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
+            }
         }
-        return FinishBoolean(result, op);
+        return last;
     } catch (const Standard_Failure& failure) {
         return Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
     }
 }
 
+namespace {
+
+/// Whether `edge` lies between two faces of one and the same cylinder: a
+/// line drawn on it by an earlier operation, not an edge of the shape.
+bool SameCylinderOnBothSides(const TopoDS_Shape& edge, const TopTools_IndexedDataMapOfShapeListOfShape& edgeFaces) {
+    std::vector<TopoDS_Face> two;
+    for (const TopoDS_Shape& f : edgeFaces.FindFromKey(edge))
+        if (std::ranges::none_of(two, [&](const TopoDS_Face& t) { return t.IsSame(f); })) two.push_back(TopoDS::Face(f));
+    if (two.size() != 2) return false;
+    const BRepAdaptor_Surface a(two[0]), b(two[1]);
+    if (a.GetType() != GeomAbs_Cylinder || b.GetType() != GeomAbs_Cylinder) return false;
+    const gp_Cylinder ca = a.Cylinder(), cb = b.Cylinder();
+    return std::abs(ca.Radius() - cb.Radius()) < 1e-6 && ca.Axis().IsParallel(cb.Axis(), 1e-6) &&
+           gp_Lin(ca.Axis()).Distance(cb.Location()) < 1e-6;
+}
+
+} // namespace
+
+std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape& after, const TopoDS_Shape& tool) {
+    constexpr double kNarrow = 0.05;   // mm: narrower than anything printed or milled on purpose
+    Bnd_Box around;
+    BRepBndLib::Add(tool, around);
+    if (around.IsVoid()) return std::nullopt;
+    around.Enlarge(0.1);
+    // Narrow faces near the tool, as points: those of `after` that `before`
+    // had too are not this operation's.
+    // Also a step a hair high between two flat faces looking the same way
+    // (a pocket 6.15 deep under a wall at 6.12): the strip between them can
+    // be merged into a larger face of the same surface, and is not narrow.
+    struct Flat {
+        gp_Pln  plane;
+        Bnd_Box box;
+        gp_Pnt  centre;
+    };
+    const auto narrow = [&](const TopoDS_Shape& shape) {
+        std::vector<gp_Pnt> found;
+        std::vector<Flat>   flats;
+        for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+            Bnd_Box box;
+            BRepBndLib::Add(e.Current(), box);
+            if (box.IsVoid() || around.IsOut(box)) continue;
+            const TopoDS_Face& face = TopoDS::Face(e.Current());
+            const BRepAdaptor_Surface surface(face);
+            if (surface.GetType() == GeomAbs_Plane) {
+                gp_Pln plane = surface.Plane();
+                if (face.Orientation() == TopAbs_REVERSED) plane.SetAxis(plane.Axis().Reversed());
+                GProp_GProps props;
+                BRepGProp::SurfaceProperties(face, props);
+                for (const Flat& other : flats) {
+                    if (!plane.Axis().Direction().IsEqual(other.plane.Axis().Direction(), 1e-6)) continue;
+                    const double gap = other.plane.Distance(plane.Location());
+                    if (gap < 1e-5 || gap >= kNarrow) continue;
+                    Bnd_Box a = box, b = other.box;
+                    a.Enlarge(kNarrow);
+                    if (!a.IsOut(b)) found.push_back(props.CentreOfMass());
+                }
+                flats.push_back({plane, box, props.CentreOfMass()});
+            }
+            // A strip at most this wide fits its box this way: the box's
+            // smallest side across a flat face, or area against the outline.
+            GProp_GProps area, outline;
+            BRepGProp::SurfaceProperties(e.Current(), area);
+            if (area.Mass() <= 1e-9) continue;
+            BRepGProp::LinearProperties(e.Current(), outline);
+            if (outline.Mass() <= 1e-9) continue;
+            const double width = 2 * area.Mass() / outline.Mass();
+            if (width < kNarrow) found.push_back(area.CentreOfMass());
+        }
+        return found;
+    };
+    const std::vector<gp_Pnt> had = narrow(before);
+    for (const gp_Pnt& p : narrow(after))
+        if (std::ranges::none_of(had, [&](const gp_Pnt& q) { return q.Distance(p) < 1e-4; })) return Vec3{p.X(), p.Y(), p.Z()};
+    return std::nullopt;
+}
+
+namespace {
+
+/// Рёбра, у которых только одна грань: дыры в оболочке тела. Шов (ребро,
+/// встречающееся в одной грани дважды) и вырожденное ребро (полюс конуса)
+/// дырами не считаются.
+int OpenEdges(const TopoDS_Shape& shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    int open = 0;
+    for (int i = 1; i <= edgeFaces.Extent(); ++i) {
+        const TopoDS_Edge& edge = TopoDS::Edge(edgeFaces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge) || edgeFaces(i).Extent() != 1) continue;
+        if (BRep_Tool::IsClosed(edge, TopoDS::Face(edgeFaces(i).First()))) continue;   // шов
+        ++open;
+    }
+    return open;
+}
+
+int SolidCount(const TopoDS_Shape& shape) {
+    int n = 0;
+    for (TopExp_Explorer e(shape, TopAbs_SOLID); e.More(); e.Next()) ++n;
+    return n;
+}
+
+/// Почему слияние граней сделало `after` хуже `before`, или nullptr, если
+/// всё в порядке. Слияние только убирает линии между кусками одной
+/// поверхности: число тел, объём и замкнутость оболочки должны сохраниться
+/// (refine у FreeCAD проверяется так же; на OCCT встречалось тело,
+/// вывернутое наизнанку).
+const char* CleanBrokeShape(const TopoDS_Shape& before, const TopoDS_Shape& after) {
+    if (after.IsNull()) return "не дало результата";
+    if (SolidCount(after) != SolidCount(before)) return "изменило число тел";
+    const double v0 = VolumeOf(before), v1 = VolumeOf(after);
+    // Та же геометрия, другие грани: интегралы объёма отличаются только
+    // округлением — намного меньше 1e-5 от объёма тела.
+    if (std::abs(v1 - v0) > 1e-5 * std::max(std::abs(v0), 1.0)) return "изменило объём";
+    if (OpenEdges(after) > OpenEdges(before)) return "открыло оболочку";
+    return nullptr;
+}
+
+} // namespace
+
 TopoDS_Shape Clean(const TopoDS_Shape& input) {
+    auto _tc = std::chrono::steady_clock::now();
+    int cleanFaces = 0;
+    for (TopExp_Explorer e(input, TopAbs_FACE); e.More(); e.Next()) ++cleanFaces;
+    if (cleanFaces > kCleanFaceLimit) {
+        log::Warn("Clean: {} граней — слияние пропущено (защита от зависания)", cleanFaces);
+        return input;
+    }
     // One cylinder made twice (a fillet and the extruded arc projected from
     // it) is given one surface first: with two frames of opposite hands
     // UnifySameDomain never finished, and the line between them stayed.
     const TopoDS_Shape shape = ShareCylinders(input);
+    log::Info("CLEAN share: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     auto* unify = new ShapeUpgrade_UnifySameDomain(shape, true, true, true);
+    // Faces of a real part are "one plane" only up to the sketch solver's
+    // residual and the transforms of a part drawn in an assembly. The
+    // default angular tolerance (1e-12 rad) left such faces apart, with a
+    // seam no fillet could cross (a tower stacked from projected sketches:
+    // 6e-12 rad). 1e-9 rad takes those in; faces further apart (1e-7 mm over
+    // 60 mm) merged into a face the fillet then failed on, so they stay
+    // apart as before. The linear tolerance stays OCCT's 1e-7 mm.
+    unify->SetAngularTolerance(1e-9);
     // Curved faces next to free-form ones (a cylinder cut by a thread
     // groove), or bounded by an intersection curve of two curved surfaces (a
     // tube cut by a ring across it), are left as they are: merging them can
@@ -376,20 +854,41 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
             touches = intersection(e.Current());
             for (const TopoDS_Shape& other : edgeFaces.FindFromKey(e.Current())) touches = touches || freeform(other);
         }
+        // Such a face keeps its intersection curves and its edges against
+        // free-form faces — what makes merging slow. A straight or round
+        // edge between two pieces of the same cylinder (a hole cut by a
+        // pocket drawn from the hole's own projected arc) is let go: kept,
+        // it stayed on the model as a line nothing could be rounded across.
         if (touches)
-            for (TopExp_Explorer e(f.Current(), TopAbs_EDGE); e.More(); e.Next()) unify->KeepShape(e.Current());
+            for (TopExp_Explorer e(f.Current(), TopAbs_EDGE); e.More(); e.Next()) {
+                bool slow = intersection(e.Current()) || freeform(f.Current());
+                for (const TopoDS_Shape& other : edgeFaces.FindFromKey(e.Current())) slow = slow || freeform(other);
+                if (slow || !SameCylinderOnBothSides(e.Current(), edgeFaces)) unify->KeepShape(e.Current());
+            }
     }
     // UnifySameDomain itself faults on some shapes (OCCT 7.8: a revolve of a
     // profile made of hundreds of short lines — SIGSEGV in IntUnifyFaces).
     // Cleaning is a nicety: on a fault the shape goes on as the boolean or
     // sweep made it. The half-built object is left alone (leaked), its state
     // after the jump is not to be trusted even by its destructor.
+    log::Info("CLEAN prep: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     TopoDS_Shape result;
     if (!guard::RunGuarded([&] { unify->Build(); result = unify->Shape(); })) {
         log::Warn("Clean: OCCT fault in UnifySameDomain, the shape is left as it is");
         return input;
     }
     delete unify;
+    // Сама проверка не должна стоить дороже слияния: если сделать её нельзя —
+    // тело идёт дальше слитым, как до появления проверки. Слияние, сломавшее
+    // тело, откатывается: исходное тело надёжнее слитого, но невалидного.
+    try {
+        if (const char* why = CleanBrokeShape(shape, result)) {
+            log::Warn("Clean: слияние граней {} — тело оставлено как было", why);
+            return input;
+        }
+    } catch (const Standard_Failure&) {
+    }
+    log::Info("CLEAN unify-build: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     return result;
 }
 

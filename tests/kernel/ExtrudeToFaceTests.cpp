@@ -6,6 +6,9 @@
 #include <cmath>
 #include <vector>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::BooleanOp;
@@ -120,3 +123,5 @@ TEST_CASE("extrude up to a cone, a torus and a sphere picked on the seam") {
         CHECK(built[0] == doctest::Approx(built[1]));   // the same post wherever the face was picked
     }
 }
+
+TEST_SUITE_END();

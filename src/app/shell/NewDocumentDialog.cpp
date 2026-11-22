@@ -7,6 +7,7 @@
 #include "app/NewTemplates.h"
 #include "app/Operations.h"
 #include "app/assembly/AssemblyUi.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "ui/Widgets.h"
@@ -34,6 +35,8 @@ void CreateFromTemplate(AppContext& app, const NewTemplate& t) {
     if (!t.available) return;
     if (t.type == doc::kAssemblyType) {
         NewAssembly(app);
+    } else if (t.type == doc::kDrawingType) {
+        NewDrawing(app);
     } else if (t.type == doc::kPartType) {
         NewDocument(app);
         if (Session* s = app.Doc(); s && t.length) s->doc.units.length = *t.length;

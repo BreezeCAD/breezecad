@@ -12,6 +12,9 @@
 #include <string>
 #include <tuple>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::doc::parts;
 using doc::FeatureState;
@@ -55,6 +58,21 @@ TEST_CASE("every standard part builds: smallest, middle and largest size") {
         }
 }
 
+TEST_CASE("a standard part in a part set to inches keeps its size") {
+    // Audit: new parts in inches made a M10x40 bolt 40 inches long.
+    Expected<Made> mm = MakePart({"iso4017", "M10", 40});
+    Expected<Made> inch = MakePart({"iso4017", "M10", 40});
+    REQUIRE(mm);
+    REQUIRE(inch);
+    SetLengthUnit(inch->doc, LengthUnit::Inch);
+    CHECK(inch->doc.units.length == LengthUnit::Inch);
+    kernel::Model a, b;
+    a.Rebuild(mm->doc);
+    b.Rebuild(inch->doc);
+    REQUIRE(a.Volume() > 0);
+    CHECK(b.Volume() == doctest::Approx(a.Volume()).epsilon(1e-9));
+}
+
 TEST_CASE("standard part sizes match the tables") {
     // ISO 4017 M10x40: s = 16, k = 6.4.
     Expected<Made> bolt = MakePart({"iso4017", "M10", 40});
@@ -74,6 +92,15 @@ TEST_CASE("standard part sizes match the tables") {
     REQUIRE(bearing);
     CHECK(bearing->envelope.x == doctest::Approx(47));
     CHECK(bearing->envelope.z == doctest::Approx(14));
+    // ГОСТ 17473-80 М8×20: головка D = 13, k = 5,6 (табл. 1).
+    Expected<Made> pan = MakePart({"gost17473", "М8", 20});
+    REQUIRE(pan);
+    CHECK(pan->envelope.x == doctest::Approx(13));
+    CHECK(pan->envelope.z == doctest::Approx(25.6));
+    // ISO 7040 M10: гайка нормальной высоты, h max = 11,9 (не 10, как низкая DIN 985).
+    Expected<Made> lock = MakePart({"iso7040", "M10", 0});
+    REQUIRE(lock);
+    CHECK(lock->envelope.z == doctest::Approx(11.9));
 }
 
 TEST_CASE("a standard part stays parametric: the length variable drives the model") {
@@ -387,3 +414,5 @@ TEST_CASE("the user's library: a part saved with its variables as a table") {
     ClearPacks();
     fs::remove_all(dir);
 }
+
+TEST_SUITE_END();

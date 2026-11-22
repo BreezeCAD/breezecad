@@ -4,7 +4,9 @@
 #include "core/I18n.h"
 #include "ui/Widgets.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 
 namespace bz::app {
 namespace {
@@ -30,6 +32,15 @@ std::optional<Frame> SectionFrame(const Session& session, const ShellState::Sect
     return f;
 }
 
+void FaceSectionToViewer(ShellState::Section& section, const Vec3& viewDirection) {
+    const int plane = std::clamp(section.plane, 0, 2);
+    const Vec3 axis = plane == 0 ? Vec3{0, 0, 1} : plane == 1 ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+    // The normal points to the half cut away: towards the eye, against the view direction.
+    // Looking along the plane (edge on), either side shows the cut as a line: keep the choice.
+    const double along = axis.Dot(viewDirection);
+    if (std::abs(along) > 1e-6) section.flipped = along > 0;
+}
+
 void DrawSectionBar(AppContext& app, Session& session, const ViewportFrame& vf) {
     ShellState::Section& s = app.shell.section;
     const auto frame = SectionFrame(session, s);
@@ -49,7 +60,10 @@ void DrawSectionBar(AppContext& app, Session& session, const ViewportFrame& vf) 
     const float y = p.y + (height - ui.S(34)) / 2;
     ImGui::SetCursorScreenPos({x, y});
     const int chosen = ui::Segmented(ui, "section-plane", kPlaneLabels, s.plane, 3, segment);
-    if (chosen != s.plane) s.plane = chosen;
+    if (chosen != s.plane) {
+        s.plane = chosen;
+        FaceSectionToViewer(s, app.viewport.Projection().direction);
+    }
     x += segment + gap;
 
     ImGui::SetCursorScreenPos({x, p.y + (height - ui.S(28)) / 2});

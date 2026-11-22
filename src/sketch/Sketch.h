@@ -191,6 +191,8 @@ public:
     const Constraint* FindConstraint(ObjectId id) const;
     Constraint*       FindConstraint(ObjectId id);
     const Point*      Origin() const;
+    /// Every point (not the origin) and every curve and text: "выделить всё".
+    std::vector<ObjectId> Entities() const;
 
     /// Position of a point; {0,0} when the id is unknown.
     Vec2 PositionOf(ObjectId pointId) const;

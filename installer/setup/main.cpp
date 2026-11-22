@@ -1323,7 +1323,7 @@ void PageDone() {
     Bar(true, [] {}, [&] {
         if (Button(finish, Kind::Primary)) {
             if (W.runAfter) Launch(W.choices.dir);
-            if (W.newsAfter && m) OpenUrl(L"https://github.com/MikeVerx/breezecad/releases/tag/" + Wide(m->tag));
+            if (W.newsAfter && m) OpenUrl(L"https://github.com/BreezeCAD/breezecad/releases/tag/" + Wide(m->tag));
             W.quit = true;
         }
     }, ButtonWidth(finish, true));

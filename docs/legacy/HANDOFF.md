@@ -62,7 +62,7 @@ generative design, синхронное моделирование, IGES, имп
 
 ## 4. Что читать с GitHub (если файлов нет локально)
 
-Публичный репо: **https://github.com/MikeVerx/breezecad**
+Публичный репо: **https://github.com/BreezeCAD/breezecad**
 
 - `docs/RULES.md`
 - `docs/PROJECT_STATE.md`

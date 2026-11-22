@@ -29,6 +29,7 @@ struct LoadReport {
 struct BzcArchive {
     std::string documentType = "part";   ///< files without it are parts
     int         formatVersion = 0;
+    std::string kernel;   ///< the geometry kernel that wrote it ("OpenCASCADE 8.0.1"); empty in files before 0.2.6
     std::string documentJson;
     std::map<std::string, std::vector<std::uint8_t>> pictures;   ///< by name, without "pictures/"
 };
@@ -36,8 +37,11 @@ struct BzcArchive {
 /// Reads the container; does not look inside the document.
 Expected<BzcArchive> ReadBzcArchive(const std::filesystem::path& path);
 /// Writes the container atomically (temporary file, then rename).
+/// `kernel`: the geometry kernel of the program that writes ("OpenCASCADE
+/// 8.0.1"), for manifest.json — document/ does not know OCCT, the caller
+/// passes it as it passes `generator`. Empty: no "kernel" in the manifest.
 Status WriteBzcArchive(const std::filesystem::path& path, std::string_view documentType, std::string_view generator,
-                       const std::string& documentJson,
+                       std::string_view kernel, const std::string& documentJson,
                        const std::map<std::string, std::vector<std::uint8_t>>& pictures = {},
                        std::span<const std::uint8_t> preview = {});
 /// The picture of the model kept in the file (PNG with transparency) for the
@@ -49,7 +53,7 @@ Expected<std::string> ReadDocumentType(const std::filesystem::path& path);
 /// Writes the document atomically: a temporary file is written next to the
 /// target and renamed over it, so a crash never leaves a half-written file.
 Status SaveBzc(const Document& doc, const std::filesystem::path& path, std::string_view generator,
-               std::span<const std::uint8_t> preview = {});
+               std::string_view kernel = {}, std::span<const std::uint8_t> preview = {});
 
 Expected<Document> LoadBzc(const std::filesystem::path& path, LoadReport* report = nullptr);
 

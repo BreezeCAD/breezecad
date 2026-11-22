@@ -95,6 +95,22 @@ public class BreezeActivity extends NativeActivity {
         // ("fg" with a dead pid) and cry crash before the program writes its own.
         Watchdog.writeState(this, "fg " + android.os.Process.myPid());
         Watchdog.start(this);
+        passLink(getIntent());
+    }
+
+    // A "breezecad://handoff?…" QR code scanned with the camera opens the
+    // program with it (the manifest's intent-filter): «Продолжить на устройстве».
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        passLink(intent);
+    }
+
+    private static void passLink(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
+        Uri data = intent.getData();
+        if (data != null && "breezecad".equals(data.getScheme())) nativeLink(data.toString());
     }
 
     @Override
@@ -566,4 +582,5 @@ public class BreezeActivity extends NativeActivity {
                                     float[] ime, float corner, boolean hardKeyboard);
     static native void nativeText(String text, int keyCode);
     static native void nativePicked(int kind, String uri, String name);
+    static native void nativeLink(String link);
 }

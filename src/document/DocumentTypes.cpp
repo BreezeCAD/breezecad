@@ -12,8 +12,9 @@ DocumentTypeRegistry& DocumentTypeRegistry::Default() {
         // content says what it is, so a renamed file still opens.
         r.Register({.id = std::string(kAssemblyType), .title = "Сборка", .untitledBase = "Сборка", .extension = ".bza",
                     .group = "Сборки", .icon = "assembly"});
-        r.Register({.id = std::string(kDrawingType), .title = "Чертёж", .untitledBase = "Чертёж",
-                    .canCreate = false, .canOpen = false, .group = "Чертежи", .icon = "doc-drawing"});
+        // ADR-0012: its own extension; the same container as parts and assemblies.
+        r.Register({.id = std::string(kDrawingType), .title = "Чертёж", .untitledBase = "Чертёж", .extension = ".bzd",
+                    .group = "Чертежи", .icon = "doc-drawing"});
         return r;
     }();
     return registry;

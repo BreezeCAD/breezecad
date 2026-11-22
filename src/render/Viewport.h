@@ -46,7 +46,10 @@ struct ViewportColors {
     Color hover            = Color::Hex(0x38A9E8);
     Color selection        = Color::Hex(0x1D4ED8);
     Color interference     = Color::Hex(0xE5484D);
+    Color previewAdd       = Color::Hex(0x3B82F6);   ///< operation ghost: added or kept material
+    Color previewCut       = Color::Hex(0xE5484D);   ///< operation ghost: removed material
     bool  radialBackground = false;   ///< backgroundTop in the middle, backgroundBottom at the edges
+    Color floorShadow      = Color::Hex(0x1F2937).WithAlpha(0.4f);   ///< «Живой вид»: the shadow under the bodies, at its darkest
 };
 
 /// A translucent square drawn in the scene, hidden where the body is in
@@ -61,7 +64,10 @@ struct PlaneQuad {
 };
 
 /// What BeginPickingOriginal makes pickable.
-enum class PickTarget : unsigned char { Edges, Faces, EdgesAndFaces, Vertices };
+/// What can be picked on the bodies before an operation. All: vertices, edges
+/// and faces («Проецировать геометрию»: the nearest wins); VerticesAndEdges:
+/// the same without faces (drawing a sketch with edges projected by themselves).
+enum class PickTarget : unsigned char { Edges, Faces, EdgesAndFaces, Vertices, All, VerticesAndEdges };
 
 /// What lies under the cursor.
 struct PickResult {
@@ -110,12 +116,24 @@ public:
     /// Graphics quality: 0 high (smooth edges, fine round faces), 1
     /// balanced, 2 for weak computers (no smoothing, coarse round faces).
     void SetQuality(int level);
+    /// "Живой вид": shadows from the key light on a floor under the bodies,
+    /// per-pixel lighting and a silhouette outline. Costs a shadow pass: off
+    /// on weak computers and phones by default (Settings::liveView).
+    void SetLive(bool on);
+    bool IsLive() const;
+    /// «Чёткие грани»: in the live view the edges of the bodies are thicker,
+    /// and the plain shaded style draws them too (Settings::crispEdges).
+    void SetCrispEdges(bool on);
     void SetHoveredBody(ObjectId body);
     /// Bodies not drawn (and not picked): those of operations the user hid.
     /// The model keeps them; only the view leaves them out.
     void SetHiddenBodies(std::vector<ObjectId> bodies);
     /// Both references point at the same face of the shown body `body`.
     bool SameFace(ObjectId body, const doc::FaceReference& a, const doc::FaceReference& b) const;
+    /// The sketch frame of a chosen face when it is flat (nullopt for a curved
+    /// one or a face no longer there): the same frame a click on that face in
+    /// "Начать эскиз" gives, its normal out of the body as the face was chosen.
+    std::optional<Frame> PlaneOfFace(const SelectedFace& chosen) const;
     /// Pictures on faces: the largest side a picture may keep on the graphics
     /// card, in pixels (a bigger one is made smaller first); 0 = as it is.
     /// The weaker the computer, the smaller: less memory, coarser texture.
@@ -144,6 +162,39 @@ public:
     /// screen (the window's view is not touched). nullopt when the graphics
     /// cannot (no OpenGL context yet).
     std::optional<Image> Snapshot(const CameraState& camera, int width, int height);
+
+    /// «Кадр»: a picture of the bodies as the window shows them, for posts
+    /// and the site. The camera is the window's, scaled so the picture holds
+    /// what PhotoFrame() outlines. Everything is put back afterwards.
+    struct PhotoOptions {
+        enum class Background : unsigned char { Studio, Dark, Transparent } background = Background::Studio;
+        int  width = 1920, height = 1080;
+        bool floor = true;      ///< the floor with the bodies' shadow (not on a transparent background)
+        bool edges = true;
+    };
+    /// The whole picture at once (view.render for modules and MCP; the
+    /// window waits).
+    std::optional<Image> Photo(const PhotoOptions& options);
+
+    /// The same in parts, for the «Кадр» panel: each Render() draws a few
+    /// tiles of the picture (~12 ms), so the window keeps answering. The
+    /// picture has a view of its own: its camera and background are not the
+    /// window's, which can be turned meanwhile. false: cannot start (no
+    /// OpenGL context yet, size too small).
+    bool BeginPhoto(const PhotoOptions& options);
+    enum class PhotoState : unsigned char { None, Running, Done, Failed };
+    PhotoState PhotoStatus() const;
+    double     PhotoProgress() const;   ///< 0..1 while Running
+    /// The finished picture, once (then None); nullopt unless Done.
+    std::optional<Image> TakePhoto();
+    void CancelPhoto();   ///< Esc: the work is dropped, the view put back
+
+private:
+    void FinishPhoto();
+public:
+    /// The part of the window a picture of `aspect` (width / height) holds,
+    /// in window pixels from the top-left corner: x, y, width, height.
+    std::array<double, 4> PhotoFrame(double aspect) const;
     /// The model alone looking along `direction`, fitted into a size x size
     /// square with a transparent background (no planes, sketch marks,
     /// section or background picture): the picture saved in documents for
@@ -221,10 +272,21 @@ public:
     /// context face (the edited part's own face is nearer, or nothing).
     std::vector<ContextEdge> PickContextFaceEdges(Vec2 pixel);
 
-    /// Outlines of a pattern's or mirror's sources (selection colour) and
-    /// copies (hover colour) over the model while its panel is open;
+    /// Outlines of a pattern's or mirror's sources (selection colour) over
+    /// the model while its panel is open (the copies are its ghost);
     /// nullptr hides them. Cheap when unchanged.
     void ShowCopyPreview(const kernel::Model* model, ObjectId feature);
+    /// The tool body of the operation whose panel is open, as a translucent
+    /// ghost: previewAdd — material it adds (or keeps, for «Пересечь»),
+    /// previewCut — material it cuts away. The part hidden inside the bodies
+    /// shows fainter (a second copy drawn over everything). Only the tool the
+    /// rebuild already made: no boolean of its own. nullptr hides it; cheap
+    /// when unchanged.
+    void ShowToolPreview(const kernel::Model* model, ObjectId feature);
+    /// Shows the bodies as they were before feature number `featureIndex`
+    /// (from the rebuild's cache) instead of the result; nullopt — the
+    /// result. Takes effect at the next Sync.
+    void ShowBodiesBefore(std::optional<std::size_t> featureIndex);
 
     // --- measuring ---------------------------------------------------------
     /// While on, vertices, edges and faces of the shown bodies are hovered

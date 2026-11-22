@@ -6,9 +6,11 @@
 
 #include "modules/bz_module.h"
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bz::kernel {
 class AssemblyReader;
@@ -38,5 +40,38 @@ void SetConfigDir(std::string utf8);
 
 /// True once after a module asked for main_tick (request_main). Any thread.
 bool TakeMainRequest();
+
+// --- module windows (add_action ... close_panel) ------------------------------
+// The host only keeps what modules asked for; the program shows it (see
+// app/shell/ModuleWindows) and calls the module back through ModuleManager.
+
+/// A module's item in the menus and the command search.
+struct ModuleAction {
+    std::string module;        ///< the module's id
+    std::string id;            ///< the module's own id ("start")
+    std::string label, tooltip, icon;
+    std::string menu;          ///< "file" or empty
+    std::string ribbonTab, ribbonGroup;   ///< empty: not on the ribbon
+    bool        enabled = true;
+};
+
+/// A panel a module shows; `json` as the module sent it (checked, re-written).
+struct ModulePanel {
+    std::string module, id, json;
+};
+
+/// Which module is running now: what add_action and the rest are filed under.
+/// ModuleManager sets it around every call into a module; empty outside them.
+void SetCallingModule(std::string id);
+
+const std::vector<ModuleAction>& ModuleActions();
+const std::vector<ModulePanel>&  ModulePanels();
+/// Grows whenever an item or a panel changes (the program redraws then).
+std::uint64_t ModuleUiRevision();
+
+/// The user closed a panel: it is gone (the module gets the "close" event).
+void DropPanel(const std::string& module, const std::string& id);
+/// A module stops (unloaded, init failed): its items and panels go.
+void ForgetModule(const std::string& module);
 
 } // namespace bz::modules

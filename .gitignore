@@ -19,3 +19,4 @@ imgui.ini
 # AI-инструменты (docs/dev/AI-TOOLS.md): локальный граф кода и личные настройки Claude Code
 graphify-out/
 .claude/settings.local.json
+__pycache__/

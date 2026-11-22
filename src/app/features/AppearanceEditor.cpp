@@ -19,6 +19,7 @@
 #include "core/Image.h"
 
 #include "ui/Gl.h"
+#include "kernel/Model.h"
 #include <imgui.h>
 
 #include <format>
@@ -344,7 +345,7 @@ void AppearanceEditor::WriteIntoParts(AppContext& app, Session& session, const d
             continue;
         }
         apply(part->look, list);
-        if (const Status s = doc::SaveBzc(*part, file, PartGenerator()); !s) {
+        if (const Status s = doc::SaveBzc(*part, file, PartGenerator(), kernel::GeometryKernelVersion()); !s) {
             app.notes.Error(Tr(s.GetError().message));
             continue;
         }

@@ -44,7 +44,7 @@ constexpr char kTrailer[8] = {'B', 'Z', 'S', 'E', 'T', 'U', 'P', '1'};
 #ifdef _WIN32
 constexpr const wchar_t* kHost = L"github.com";
 #endif
-constexpr const char* kRepo = "/MikeVerx/breezecad/releases";
+constexpr const char* kRepo = "/BreezeCAD/breezecad/releases";
 
 /// This .exe mapped into memory once: the packed files are read from it in place.
 struct Self {

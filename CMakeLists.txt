@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(BreezeCAD
-    VERSION 0.2.5.1
+    VERSION 0.2.6
     DESCRIPTION "Free offline parametric CAD"
     LANGUAGES C CXX)
 # What the program calls itself: the number above plus a stage ("-Beta";
@@ -31,7 +31,6 @@ endif()
 
 option(BZ_BUILD_APP   "Build the BreezeCAD desktop application" ON)
 option(BZ_BUILD_TESTS "Build unit tests"                          ON)
-option(BZ_BUILD_MCP   "Build the MCP module package (modules/mcp → .bzmod)" OFF)
 # Android: the app is a native library (src/android) packed into an APK by
 # scripts/android/package-apk.sh; the desktop app (BZ_BUILD_APP) is off there.
 # Windows: the installer and the File Explorer previews (installer/).
@@ -42,6 +41,20 @@ elseif(UNIX AND NOT APPLE AND NOT ANDROID)
 endif()
 if(ANDROID)
     option(BZ_BUILD_ANDROID_APP "Build the Android app library (libbreezecad.so)" ON)
+endif()
+# Phones and tablets, Android and iOS: BZ_MOBILE marks the code they share
+# (the touch layout, no GLFW, files through platform/Mobile.h); __ANDROID__
+# and BZ_IOS what only one of them has.
+if(ANDROID OR IOS)
+    add_compile_definitions(BZ_MOBILE)
+endif()
+# iOS and iPadOS (docs/dev/IOS-PORT.md): the core with its unit tests (run on
+# the simulator) and the app (src/ios) packed into BreezeCAD.app / .ipa by
+# scripts/ios/package-app.sh; the desktop app (BZ_BUILD_APP) is off there.
+# BZ_IOS marks the code that differs (TargetConditionals.h is Apple-only).
+if(IOS)
+    add_compile_definitions(BZ_IOS GLES_SILENCE_DEPRECATION)
+    option(BZ_BUILD_IOS_APP "Build the iOS app (BreezeCAD.app)" ON)
 endif()
 
 # All binaries land in one folder so the app finds assets next to itself.
@@ -62,10 +75,6 @@ if(BZ_BUILD_INSTALLER)
 endif()
 if(APPLE AND BZ_BUILD_APP)
     add_subdirectory(installer/macos)
-endif()
-
-if(BZ_BUILD_MCP)   # a separate package, not a part of the program
-    add_subdirectory(modules/mcp)
 endif()
 
 if(BZ_BUILD_TESTS)

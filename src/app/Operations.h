@@ -11,6 +11,8 @@
 
 namespace bz::app {
 
+/// Leaves any tool or panel of the active document (before switching away).
+void EndEditing(AppContext& app);
 void NewDocument(AppContext& app);
 /// Opens the "Создать" window on the template used last (NewDocumentDialog.cpp).
 void OpenNewDocumentDialog(AppContext& app);

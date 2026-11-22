@@ -79,7 +79,7 @@ C++20 · Dear ImGui · OCCT · GLFW + OpenGL 3.3. Ядро переноситс�
 
 ## Шаг 2: окно, OpenGL ES, 3D-вид, APK (сделан)
 
-- Скачать на телефоне: https://github.com/MikeVerx/breezecad/releases/download/android-build/BreezeCAD-android.apk
+- Скачать на телефоне: https://github.com/BreezeCAD/breezecad/releases/download/android-build/BreezeCAD-android.apk
   (пре-релиз `android-build`, обновляется каждым зелёным push в ветки android.yml;
   рядом — снимки с эмулятора `emulator-1-start.png`, `emulator-2-turned.png`).
 - Приложение — `src/android/AndroidMain.cpp`, NativeActivity без Java: EGL + GLES 3,
@@ -313,7 +313,7 @@ C++20 · Dear ImGui · OCCT · GLFW + OpenGL 3.3. Ядро переноситс�
 - Иконка: адаптивная (`mipmap-anydpi-v26`), для карточки — `resources/android/play/icon-512.png`.
   Нужна ещё картинка 1024×500 и скриншоты — снимки эмулятора из `android-build` подходят как черновик.
 - Политика конфиденциальности — `docs/privacy.html`. Ссылка в «О программе» ведёт на
-  https://mikeverx.github.io/breezecad/privacy.html — **автору включить GitHub Pages** (ветка main, папка /docs).
+  https://breezecad.ru/privacy.html — страница на сайте проекта (репозиторий BreezeCAD/breezecad-site).
 - Анкета Data safety: данные не собираются и не передаются. Разрешение одно — уведомления.
 - Модули: в сборке для Play нативные модули скачивать нельзя (ADR-0005) — до публикации нужен флаг сборки
   «для магазина», который прячет установку `.bzmod` с нативным кодом.

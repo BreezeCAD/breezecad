@@ -40,6 +40,7 @@ Theme Theme::Light() {
     c.success         = Color::Hex(0x2E7D4F);
     c.warning         = Color::Hex(0xB45309);
     c.danger          = Color::Hex(0xE5484D);
+    c.opIntersect     = Color::Hex(0x7C4DDB);
 
     c.viewportTop     = Color::Hex(0xFAFBFC);
     c.viewportBottom  = Color::Hex(0xE4E8ED);
@@ -47,6 +48,9 @@ Theme Theme::Light() {
     c.bodyEdges       = Color::Hex(0x3D4552);
     c.hoverHighlight  = Color::Hex(0x38A9E8);
     c.selection       = Color::Hex(0x1D4ED8);
+    c.previewAdd      = Color::Hex(0x3B82F6);
+    c.previewCut      = Color::Hex(0xE5484D);
+    c.floorShadow     = Color::Hex(0x1F2937).WithAlpha(0.40f);
 
     c.sketchFree      = Color::Hex(0x1D4ED8);
     c.sketchDefined   = Color::Hex(0x1B1F24);
@@ -76,6 +80,10 @@ Theme Theme::Light() {
     c.cubeStroke      = Color::Hex(0x9DA6B2);
     c.cubeInner       = Color::Hex(0x3C4655, 0.14f);
     c.cubeText        = Color::Hex(0x3A424E);
+    c.sheetDesk       = Color::Hex(0xE4E7EB);
+    c.sheetPaper      = Color::Hex(0xFFFFFF);
+    c.sheetInk        = Color::Hex(0x1A1A1A);
+    c.sheetShadow     = Color::Hex(0x000000, 0.18f);
     c.floatingButton  = Color::Hex(0xFFFFFF, 0.88f);
     c.floatingBorder  = Color::Hex(0xD5DAE0);
     c.floatingInk     = Color::Hex(0x3D4552);
@@ -118,6 +126,7 @@ Theme Theme::Dark() {
     c.success         = Color::Hex(0x4CBB7F);
     c.warning         = Color::Hex(0xF5A524);
     c.danger          = Color::Hex(0xF06A6E);
+    c.opIntersect     = Color::Hex(0x9B7BEA);
 
     c.viewportTop     = Color::Hex(0x2A2E35);
     c.viewportBottom  = Color::Hex(0x17191D);
@@ -125,6 +134,9 @@ Theme Theme::Dark() {
     c.bodyEdges       = Color::Hex(0x0F1114);
     c.hoverHighlight  = Color::Hex(0x5BB6EE);
     c.selection       = Color::Hex(0x6E9BFF);
+    c.previewAdd      = Color::Hex(0x5B9BFF);
+    c.previewCut      = Color::Hex(0xFF6B6F);
+    c.floorShadow     = Color::Hex(0x000000).WithAlpha(0.45f);
 
     // Bright, saturated ink with a dark rim: the sketch must read both over
     // the dark background and over the light-grey body behind it.
@@ -156,6 +168,10 @@ Theme Theme::Dark() {
     c.cubeStroke      = Color::Hex(0x6A727E);
     c.cubeInner       = Color::Hex(0xFFFFFF, 0.10f);
     c.cubeText        = Color::Hex(0xDDE1E6);
+    c.sheetDesk       = Color::Hex(0x1E2126);
+    c.sheetPaper      = Color::Hex(0xF4F4F2);   // paper stays paper: what is printed
+    c.sheetInk        = Color::Hex(0x1A1A1A);
+    c.sheetShadow     = Color::Hex(0x000000, 0.5f);
     c.floatingButton  = Color::Hex(0x262A31, 0.90f);
     c.floatingBorder  = Color::Hex(0x3A404A);
     c.floatingInk     = Color::Hex(0xC4C9D1);

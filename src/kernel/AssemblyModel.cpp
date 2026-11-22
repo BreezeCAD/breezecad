@@ -7,8 +7,14 @@
 #include "document/WorkAxisFeature.h"
 #include "document/WorkPlaneFeature.h"
 #include "document/WorkPointFeature.h"
+#include "core/FaultGuard.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "kernel/occt/AssemblyModelImpl.h"
 #include "kernel/occt/ModelImpl.h"
+
+#include <atomic>
+#include <thread>
+#include <unordered_set>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRep_Tool.hxx>
@@ -314,6 +320,8 @@ bool AssemblyModel::IsPartInMemory(const std::filesystem::path& file) const { re
 
 void AssemblyModel::SetDiskCheckInterval(double seconds) { myImpl->diskInterval = seconds; }
 
+void AssemblyModel::SetParallelPartLoad(bool on) { myImpl->parallelLoad = on; }
+
 void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& assemblyFile,
                            std::vector<std::string>* problems) {
     Impl& m = *myImpl;
@@ -326,6 +334,14 @@ void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& a
     const bool lookAtDisk = m.diskInterval <= 0 ||
                             std::chrono::duration<double>(now - m.lastDiskCheck).count() >= m.diskInterval;
     if (lookAtDisk) m.lastDiskCheck = now;
+    struct Todo {
+        std::string key;
+        std::filesystem::path file;
+        std::filesystem::file_time_type time;
+        bool had = false;   // уже была в m.parts (в список перезагруженных)
+    };
+    std::vector<Todo> todo;
+    std::unordered_set<std::string> queued;
     for (const assembly::Component& c : a.components) {
         const std::filesystem::path file = assembly::ResolvePartPath(assemblyFile, c.path);
         const std::string key = ToUtf8(file);
@@ -352,19 +368,56 @@ void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& a
         std::error_code ec;
         const auto time = std::filesystem::last_write_time(file, ec);
         if (it != m.parts.end() && (ec || it->second.time == time)) continue;   // loaded and unchanged
+        if (!queued.insert(key).second) continue;   // второй компонент на тот же файл — грузим один раз
+        todo.push_back({key, file, ec ? std::filesystem::file_time_type{} : time, it != m.parts.end()});
+    }
 
+    // Детали независимы — грузятся на своих потоках. Сбой потока стоит одну
+    // деталь с пометкой (guard::RunGuarded), не программу. Вложенный
+    // параллелизм внутри булевых на это время выключается.
+    std::vector<Expected<LoadedPart>> loaded;
+    loaded.reserve(todo.size());
+    for (std::size_t i = 0; i < todo.size(); ++i) loaded.emplace_back(Error{"не загружена"});
+    if (todo.size() > 1 && m.parallelLoad) {
+        occt::PushBooleansSerial();
+        std::atomic<std::size_t> next{0};
+        const auto work = [&] {
+            for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed); i < todo.size();
+                 i = next.fetch_add(1, std::memory_order_relaxed)) {
+                std::string fault;
+                Expected<LoadedPart> result = Error{"не загружена"};
+                const bool survived = guard::RunGuarded([&] { result = LoadPart(todo[i].file); }, &fault);
+                if (!survived) result = Error{std::format("Сбой при загрузке: {}", fault)};
+                loaded[i] = std::move(result);
+            }
+        };
+        std::vector<std::thread> pool;
+        const unsigned workers = std::min<unsigned>(
+            std::min(8u, std::max(1u, std::thread::hardware_concurrency())),
+            static_cast<unsigned>(todo.size()));
+        for (unsigned w = 1; w < workers; ++w) pool.emplace_back(work);
+        work();
+        for (std::thread& t : pool) t.join();
+        occt::PopBooleansSerial();
+    } else {
+        for (std::size_t i = 0; i < todo.size(); ++i) loaded[i] = LoadPart(todo[i].file);
+    }
+
+    // Применение — в порядке компонентов: числа поколений детерминированы.
+    for (std::size_t i = 0; i < todo.size(); ++i) {
         Impl::Part part;
-        part.time = ec ? std::filesystem::file_time_type{} : time;
+        part.time = todo[i].time;
         part.generation = ++m.partsGeneration;
-        if (Expected<LoadedPart> loaded = LoadPart(file)) {
-            part.loaded = std::make_unique<LoadedPart>(std::move(*loaded));
+        if (loaded[i]) {
+            part.loaded = std::make_unique<LoadedPart>(std::move(*loaded[i]));
             part.TakeShape(part.loaded->model);
         } else {
-            part.problem = loaded.GetError().message;
+            part.problem = loaded[i].GetError().message;
         }
-        if (it != m.parts.end()) reloaded.push_back(key);
-        m.parts[key] = std::move(part);
+        if (todo[i].had) reloaded.push_back(todo[i].key);
+        m.parts[todo[i].key] = std::move(part);
     }
+
     for (auto& [key, part] : m.parts)
         if (!part.problem.empty() && !part.reported) {
             if (problems) problems->push_back(part.problem);
@@ -377,18 +430,67 @@ void AssemblyModel::Update(assembly::Assembly& a, const std::filesystem::path& a
     // only when some of it really moved — a part merely taken into memory
     // for editing, or rebuilt the same, leaves it as it was.
     bool moved = false;
-    if (!reloaded.empty())
-        for (assembly::Constraint& c : a.constraints)
+    if (!reloaded.empty()) {
+        // Every reference of a reloaded part, as it was and as found now.
+        struct Seen {
+            assembly::Constraint* constraint;
+            GeometryRef*          ref;
+            GeometryRef           was;
+        };
+        std::vector<Seen> seen;
+        for (assembly::Constraint& c : a.constraints) {
+            bool lost = false, ofReloaded = false;
             for (GeometryRef* g : {&c.first, &c.second, &c.third}) {
                 if (g == &c.third && c.type != assembly::ConstraintType::Symmetry) continue;
                 const auto k = m.partOf.find(g->component);
                 if (k == m.partOf.end() || std::find(reloaded.begin(), reloaded.end(), k->second) == reloaded.end()) continue;
+                ofReloaded = true;
                 const GeometryRef was = *g;
-                if (!Refresh(a, *g)) continue;
-                const auto differs = [](Vec3 p, Vec3 q) { return (p - q).Length() > 1e-9; };
-                if (differs(was.origin, g->origin) || differs(was.direction, g->direction) || std::abs(was.radius - g->radius) > 1e-9)
-                    moved = true;
+                if (!Refresh(a, *g)) {
+                    lost = lost || !g->OnOrigin();   // nothing like it in the part any more
+                    continue;
+                }
+                seen.push_back({&c, g, was});
             }
+            if (ofReloaded) {
+                if (c.lostReference != lost) a.Touch();
+                c.lostReference = lost;
+            }
+        }
+        // Two references that were on two different holes (or axes) of a part
+        // and now are on the same one: one of them was deleted, and nearest
+        // found the other. The one that was nearer keeps it; the other lost its
+        // geometry (Inventor: "потеряна ссылка") — not a part pulled onto
+        // its neighbour's hole, dragging the whole unit apart.
+        const auto sameLine = [](const GeometryRef& p, const GeometryRef& q) {
+            if (std::abs(std::abs(p.direction.Normalized().Dot(q.direction.Normalized())) - 1.0) > 1e-9) return false;
+            const Vec3 d = p.direction.Normalized(), off = q.origin - p.origin;
+            return (off - d * off.Dot(d)).Length() < 1e-6;
+        };
+        const auto samePlace = [&](const GeometryRef& p, const GeometryRef& q) {
+            if (p.component != q.component || p.kind != q.kind) return false;
+            if (p.kind == GeometryKind::Circle)
+                return (p.origin - q.origin).Length() < 1e-6 && std::abs(p.radius - q.radius) < 1e-9;
+            if (p.kind == GeometryKind::Axis) return sameLine(p, q);
+            return false;   // planes: two faces may well be in one plane
+        };
+        for (std::size_t i = 0; i < seen.size(); ++i)
+            for (std::size_t j = i + 1; j < seen.size(); ++j) {
+                Seen& p = seen[i];
+                Seen& q = seen[j];
+                if (!samePlace(*p.ref, *q.ref) || samePlace(p.was, q.was)) continue;
+                Seen& loser = (p.was.origin - p.ref->origin).Length() > (q.was.origin - q.ref->origin).Length() ? p : q;
+                *loser.ref = loser.was;   // where it was: shown, picked again from there
+                if (!loser.constraint->lostReference) a.Touch();
+                loser.constraint->lostReference = true;
+            }
+        for (const Seen& s : seen) {
+            const auto differs = [](Vec3 p, Vec3 q) { return (p - q).Length() > 1e-9; };
+            if (differs(s.was.origin, s.ref->origin) || differs(s.was.direction, s.ref->direction) ||
+                std::abs(s.was.radius - s.ref->radius) > 1e-9)
+                moved = true;
+        }
+    }
     if (moved) a.Touch();   // constraints are to be solved again
 
     if (a.Revision() == m.builtRevision && m.partsGeneration == m.builtGeneration) return;
@@ -484,6 +586,15 @@ std::optional<GeometryRef> AssemblyModel::GeometryAt(const assembly::Assembly& a
             if (want == AssemblyPick::Any && tolerance > 0) g = NearestVertex(part->shape, local, tolerance);
             if (!g && (want == AssemblyPick::Any || want == AssemblyPick::Line) && tolerance > 0)
                 g = NearestEdge(part->shape, local, tolerance, want == AssemblyPick::Line);
+            // An axis picked on a round edge: the edge's own axis, through its
+            // centre (the faces at the edge may be a ring and a cylinder: the
+            // ring has none, and the click is on both).
+            if (!g && want == AssemblyPick::Axis)
+                if (auto rim = NearestCircle(part->shape, local, std::max(tolerance, 1e-6))) {
+                    g = rim;
+                    g->kind = GeometryKind::Axis;
+                    g->source = assembly::PickSource::Edge;
+                }
             if (!g)
                 if (auto face = NearestFace(part->shape, ToPnt(local), 0.5))
                     g = FromFace(*face, local, want == AssemblyPick::Axis || want == AssemblyPick::Line);
@@ -554,6 +665,11 @@ bool AssemblyModel::Refresh(const assembly::Assembly& a, GeometryRef& ref) const
     try {
         if (ref.source == assembly::PickSource::Vertex) {
             found = NearestVertex(part->shape, ref.origin, 1e300);
+        } else if (ref.source == assembly::PickSource::Edge && ref.kind == GeometryKind::Axis && ref.radius > 0) {
+            // The axis of a round edge: the circle of the same size nearest where it was.
+            found = NearestCircle(part->shape, ref.origin, 1e300);
+            if (found && std::abs(found->radius - ref.radius) > 1e-6) found.reset();
+            if (found) found->kind = GeometryKind::Axis;
         } else if (ref.source == assembly::PickSource::Edge && ref.kind == GeometryKind::Axis) {
             // The straight edge along the same direction nearest where it was.
             found = NearestEdge(part->shape, ref.pick, 1e300, true, ref.direction.Normalized());

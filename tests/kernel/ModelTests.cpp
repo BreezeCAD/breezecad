@@ -12,6 +12,9 @@
 #include <iterator>
 #include <thread>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::BooleanOp;
@@ -408,3 +411,5 @@ TEST_CASE("extrude up to a curved face") {
     REQUIRE(post.status.state == FeatureState::Ok);
     CHECK(model.Volume() - kPi * 400 * 6 == doctest::Approx(area * 10).epsilon(1e-3));
 }
+
+TEST_SUITE_END();

@@ -1,4 +1,5 @@
 #include "app/features/FeatureOperationEditor.h"
+#include "app/features/OperationEditors.h"
 #include "app/features/ToolChoice.h"
 
 #include "app/Format.h"
@@ -41,6 +42,7 @@ void FeatureOperationEditor::Changed(Session& session) const {
 void FeatureOperationEditor::Reset() {
     myFeature = {};
     myIsNew = false;
+    myNextAfterApply = false;
     myOriginal.reset();
 }
 
@@ -51,6 +53,7 @@ void FeatureOperationEditor::OpenNew(AppContext& app, Session& session, std::uni
     if (feature->name.empty()) feature->name = session.doc.UniqueFeatureName(Title());
     myFeature = feature->id;
     myIsNew = true;
+    myNextAfterApply = false;
     myOwner = &session;
     LoadTexts(*feature);
     myFocusFirstField = true;
@@ -66,6 +69,7 @@ void FeatureOperationEditor::EditExisting(AppContext& app, Session& session, Obj
     myFeature = feature;
     myOwner = &session;
     myIsNew = false;
+    myNextAfterApply = false;
     myOriginal = f->Clone();
     LoadTexts(*f);
     myFocusFirstField = true;
@@ -101,6 +105,7 @@ void FeatureOperationEditor::Apply(AppContext& app, Session& session) {
     if (!Commit(app, session)) return;
     Reset();
     StartNext(app, session, *previous);
+    myNextAfterApply = IsOpen() && myIsNew;
 }
 
 void FeatureOperationEditor::StartNext(AppContext& app, Session& session, const doc::Feature& previous) {
@@ -115,6 +120,15 @@ bool FeatureOperationEditor::ShowStatus(const doc::Feature& feature) const {
 }
 
 void FeatureOperationEditor::Done(AppContext& app, Session& session) {
+    // The next one after «Применить», still not buildable (nothing picked for
+    // it): «Готово» closes it — the applied one is already in the part.
+    if (myNextAfterApply && myIsNew) {
+        session.RebuildNow();
+        if (const doc::Feature* f = Edited(session); f && f->status.state == doc::FeatureState::Error) {
+            Cancel(app, session);
+            return;
+        }
+    }
     if (!Commit(app, session)) return;
     Reset();
     app.shell.keepModelInView = true;
@@ -349,6 +363,13 @@ void FeatureOperationEditor::DrawPanel(AppContext& app, Session& session) {
     ImGui::PushItemWidth(inner);
     DrawBody(app, session, *f, inner);
     myFocusFirstField = false;
+    // The tool's ghost shows over the result, or (off) over the body as it was.
+    if (app.ops.ShowsToolGhost(this)) {
+        Gap(app);
+        ImGui::Checkbox(std::format("{}##preview-result", Tr("Предпросмотр результата")).c_str(), &app.settings.previewResult);
+        ui::ItemTooltip(ui, Tr("Синий призрак — что добавится, красный — что уйдёт. "
+                               "Снимите флажок, чтобы видеть тело до операции"));
+    }
 
     if ((f->status.state == doc::FeatureState::Error || f->status.state == doc::FeatureState::Warning) && ShowStatus(*f)) {
         if (!f->status.message.empty()) {

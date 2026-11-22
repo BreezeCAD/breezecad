@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 
@@ -25,15 +26,6 @@ Expected<std::string> ReadBytes(const fs::path& file) {
     std::ifstream in(file, std::ios::binary);   // a wide path on Windows: names are often Cyrillic
     if (!in) return Error{std::format("Не удалось прочитать {}", ToUtf8(file.filename()))};
     return std::string(std::istreambuf_iterator<char>(in), {});
-}
-
-/// A path inside the archive that stays inside the folder it is unpacked to.
-bool SafeInside(const std::string& path) {
-    if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != std::string::npos) return false;
-    std::stringstream parts(path);
-    for (std::string part; std::getline(parts, part, '/');)
-        if (part.empty() || part == "." || part == ".." || part.find('\\') != std::string::npos) return false;
-    return true;
 }
 
 /// "Вал.bzc" → "Вал (2).bzc" while taken.
@@ -56,6 +48,14 @@ struct Zip {
 };
 
 } // namespace
+
+bool SafeArchivePath(const std::string& path) {
+    if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != std::string::npos) return false;
+    std::stringstream parts(path);
+    for (std::string part; std::getline(parts, part, '/');)
+        if (part.empty() || part == "." || part == ".." || part.find('\\') != std::string::npos) return false;
+    return true;
+}
 
 Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& out, std::string_view version) {
     Expected<Assembly> loaded = LoadAssembly(assemblyFile);
@@ -83,10 +83,11 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
             std::string where = c.path;
             for (char& ch : where)
                 if (ch == '\\') ch = '/';
-            if (!SafeInside(where) || taken.contains(where)) where = FreeName(ToUtf8(file.filename()), taken);
+            if (!SafeArchivePath(where) || taken.contains(where)) where = FreeName(ToUtf8(file.filename()), taken);
             taken.insert(where);
             it = inside.emplace(key, where).first;
             toPack.emplace_back(where, file);
+            report.packed.push_back({where, file, c.path});
             files[where] = ProjectFile{where, "part", {}};
             ++report.parts;
         }
@@ -98,7 +99,10 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
     const fs::path temp = out.parent_path() / PathFromUtf8("." + ToUtf8(out.filename()) + ".assembly");
     std::vector<std::uint8_t> preview;
     if (auto p = doc::ReadBzcPreview(assemblyFile); p) preview = std::move(*p);
-    if (Status s = SaveAssembly(a, temp, "BreezeCAD project", preview); !s) return s.GetError();
+    // Only its paths change: the kernel it was saved with stays.
+    std::string kernel;
+    if (auto archive = doc::ReadBzcArchive(assemblyFile); archive) kernel = archive->kernel;
+    if (Status s = SaveAssembly(a, temp, "BreezeCAD project", kernel, preview); !s) return s.GetError();
     Expected<std::string> assemblyBytes = ReadBytes(temp);
     std::error_code ec;
     fs::remove(temp, ec);
@@ -133,11 +137,11 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
     void* buffer = nullptr;
     std::size_t size = 0;
     ok = ok && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    std::string archive = ok ? std::string(static_cast<const char*>(buffer), size) : std::string();
     mz_zip_writer_end(&zip);
     if (!ok) return Error{"Не удалось упаковать проект"};
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
     std::ofstream file(out, std::ios::binary | std::ios::trunc);
-    file.write(archive.data(), static_cast<std::streamsize>(archive.size()));
+    file.write(static_cast<const char*>(archive.get()), static_cast<std::streamsize>(size));
     if (!file) return Error{std::format("Не удалось записать {}", ToUtf8(out.filename()))};
     return report;
 }
@@ -168,10 +172,10 @@ Expected<ProjectManifest> ReadProject(const fs::path& bzp) {
             pf.role = f.value("role", std::string{});
             for (const Json& c : f.value("components", Json::array()))
                 if (c.is_string()) pf.components.push_back(c.get<std::string>());
-            if (!SafeInside(pf.path)) return Error{std::format("Проект небезопасен: путь «{}» ведёт за пределы папки", pf.path)};
+            if (!SafeArchivePath(pf.path)) return Error{std::format("Проект небезопасен: путь «{}» ведёт за пределы папки", pf.path)};
             m.files.push_back(std::move(pf));
         }
-        if (!SafeInside(m.main)) return Error{"Проект повреждён: не указана главная сборка"};
+        if (!SafeArchivePath(m.main)) return Error{"Проект повреждён: не указана главная сборка"};
         if (j.value("version", 0) > kProjectFormatVersion && m.files.empty()) return Error{"Проект создан более новой версией BreezeCAD"};
         return m;
     } catch (const Json::exception&) {

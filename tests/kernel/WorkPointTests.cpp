@@ -14,6 +14,9 @@
 
 #include <cmath>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -178,3 +181,5 @@ TEST_CASE("work point errors") {
     CHECK(none.status.state == FeatureState::Error);
     CHECK_FALSE(none.position);
 }
+
+TEST_SUITE_END();

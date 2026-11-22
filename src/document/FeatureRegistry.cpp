@@ -5,6 +5,7 @@
 #include "document/EdgeFeature.h"
 #include "document/ExtrudeFeature.h"
 #include "document/HoleFeature.h"
+#include "document/ImportFeature.h"
 #include "document/LoftFeature.h"
 #include "document/PatternFeature.h"
 #include "document/RevolveFeature.h"
@@ -42,6 +43,7 @@ FeatureRegistry& FeatureRegistry::Default() {
         r.Register(std::string(SheetMetalFeature::kType), [] { return std::make_unique<SheetMetalFeature>(); });
         r.Register(std::string(FlangeFeature::kType), [] { return std::make_unique<FlangeFeature>(); });
         r.Register(std::string(SheetCutFeature::kType), [] { return std::make_unique<SheetCutFeature>(); });
+        r.Register(std::string(ImportFeature::kType), [] { return std::make_unique<ImportFeature>(); });
         return r;
     }();
     return registry;

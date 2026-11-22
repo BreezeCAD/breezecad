@@ -41,7 +41,7 @@ ObjectId SheetArg(Session& s, const Json& args) {
 
 Json CreateSheet(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::SheetMetalFeature>();
     f->sketch = Id(args, "sketch");
     if (!s.doc.FindAs<doc::SketchFeature>(f->sketch)) Fail("Элемент «sketch» — не эскиз");
@@ -53,11 +53,12 @@ Json CreateSheet(AppContext& app, const Json& args) {
     }
     f->thickness.name = s.doc.NextParameterName();
     f->thickness.expression = Expression(args, "thickness", "2");
-    if (Has(args, "radius")) {
+    // "auto": follows the thickness (as not given): the way back from a typed value through part.edit_feature too.
+    if (Has(args, "radius") && Expression(args, "radius") != "auto") {
         f->radiusAuto = false;
         f->radius.expression = Expression(args, "radius");
     }
-    if (Has(args, "k_factor")) {
+    if (Has(args, "k_factor") && Expression(args, "k_factor") != "auto") {
         f->kAuto = false;
         f->kFactor.expression = Expression(args, "k_factor");
     }
@@ -77,7 +78,7 @@ Json CreateSheet(AppContext& app, const Json& args) {
 
 Json Flange(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::FlangeFeature>();
     f->sheet = SheetArg(s, args);
     if (Has(args, "on_flange")) {
@@ -124,7 +125,7 @@ Json Flange(AppContext& app, const Json& args) {
 
 Json SheetCut(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     auto f = std::make_unique<doc::SheetCutFeature>();
     f->sheet = SheetArg(s, args);
     f->sketch = Id(args, "sketch");
@@ -147,7 +148,7 @@ Json SheetCut(AppContext& app, const Json& args) {
 
 Json FlatPattern(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const ObjectId base = SheetArg(s, args);
     const auto info = s.model.Sheet(s.doc, base);
     if (!info) Fail("Лист не построен: исправьте ошибки в дереве");
@@ -178,7 +179,7 @@ Json CheckJson(const dxf::Check& c) {
 Json DxfOpen(AppContext& app, const Json& args) {
     if (Flag(args, "flat_pattern", false)) {
         Session& s = ActivePart(app);
-        s.RebuildNow();
+        Rebuild(s);
         const auto info = s.model.Sheet(s.doc, SheetArg(s, args));
         if (!info) Fail("Лист не построен: исправьте ошибки в дереве");
         OpenDxfEditor(app, sheet::FlatPatternDrawing(sheet::Flatten(info->part, info->layout)), s.Title() + " развёртка");
@@ -246,15 +247,15 @@ void AddSheetCommands(Commands& out) {
                    "их вручную. Толщина — параметр (dN): part.set_parameter меняет её, всё остальное пересчитывается.",
                    Schema({{"sketch", IdArg("id эскиза с замкнутым контуром.")},
                            {"thickness", ExpressionArg("Толщина листа, мм (по умолчанию 2).")},
-                           {"radius", ExpressionArg("Внутренний радиус гиба, мм; не задан — равен толщине.")},
-                           {"k_factor", ExpressionArg("K-фактор 0…1; не задан — по DIN 6935.")},
+                           {"radius", ExpressionArg("Внутренний радиус гиба, мм; не задан или \"auto\" — равен толщине.")},
+                           {"k_factor", ExpressionArg("K-фактор 0…1; не задан или \"auto\" — по DIN 6935.")},
                            {"reversed", BoolArg("Толщина вниз от плоскости эскиза.")},
                            {"profiles", {{"type", "array"}, {"items", PointArg("Точка внутри контура.")}, {"description", "Одна точка внутри контура листа, если контуров несколько."}}},
                            {"name", StringArg("Имя операции.")}},
                           {"sketch"}),
                    true, &CreateSheet});
     out.push_back({"sheet.flange",
-                   "Отбортовка: полка на прямом ребре плоского листа или на дальнем ребре другой полки (on_flange), на всю длину ребра. Высота — наружная, от точки "
+                   "Отбортовка: полка на прямом ребре плоского листа или на дальнем ребре другой полки (on_flange); по умолчанию на всю длину ребра, width / offset_start / offset_end — часть ребра. Высота — наружная, от точки "
                    "пересечения наружных сторон (для 90° — наружный размер полки); основание укорачивается так, что наружный "
                    "габарит по эскизу сохраняется. Возвращает прямую часть полки и длину сгиба в развёртке.",
                    Schema({{"sheet", IdArg("id «Листа»; не задан — последний.")},

@@ -133,6 +133,7 @@ private:
         myReport = ReadText(myRequest.report);
         myCode = crash::ErrorCode(myReport);
         myLastAction = crash::ReportField(myReport, "Last action");
+        myWorkingOn = crash::ReportField(myReport, "Working on");
 
         if (!platform::InitGlfw()) return false;
         float sx = 1.0f, sy = 1.0f;
@@ -275,6 +276,7 @@ private:
             ImGui::SetCursorScreenPos({at.x, at.y + h + ui.S(6)});
         }
         if (!myLastAction.empty()) Wrapped(ui.fonts.caption, c.textMuted, Trf("Последнее действие: {}", myLastAction));
+        if (!myWorkingOn.empty()) Wrapped(ui.fonts.caption, c.textMuted, Trf("Выполнялось: {}", myWorkingOn));
         ImGui::Dummy({0, ui.S(4)});
         if (ui::LinkButton(ui, "##copy-report", copiedReport ? Tr("Отчёт скопирован") : Tr("Скопировать отчёт"))) {
             ImGui::SetClipboardText(FullReport(myCode, myReport).c_str());
@@ -321,6 +323,7 @@ private:
     std::string              myReport;
     std::string              myCode;
     std::string              myLastAction;
+    std::string              myWorkingOn;   ///< the long work the hang was in the middle of ("" if none)
     bool                     myDone = false;
 };
 

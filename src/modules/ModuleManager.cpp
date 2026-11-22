@@ -73,11 +73,13 @@ void ModuleManager::SetMarker(const std::string& id) const {
     std::ofstream out(MarkerPath(), std::ios::binary | std::ios::trunc);
     out << id;
     out.flush();   // must be on disk before the module runs
+    SetCallingModule(id);   // what its add_action / show_panel are filed under
 }
 
 void ModuleManager::ClearMarker() const {
     std::error_code ec;
     std::filesystem::remove(MarkerPath(), ec);
+    SetCallingModule({});
 }
 
 void ModuleManager::ReadState() {
@@ -347,6 +349,7 @@ void ModuleManager::Load(ModuleEntry& m) {
                       api->init && api->shutdown;
     if (fits) rc = api->init(myHost);
     ClearMarker();
+    if (!fits || rc != BZ_OK) ForgetModule(m.manifest.id);   // what init() managed to add
 
     if (!fits) {
         m.state   = ModuleState::Failed;
@@ -370,6 +373,7 @@ void ModuleManager::Unload(ModuleEntry& m) {
     SetMarker(m.manifest.id);
     m.api->shutdown();
     ClearMarker();
+    ForgetModule(m.manifest.id);   // its menu items and panels
     m.api = nullptr;
     m.library.Close();
     m.state = ModuleState::Found;

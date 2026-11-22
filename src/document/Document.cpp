@@ -173,6 +173,7 @@ int Document::EvaluateParameters() {
         // A name that exists but cannot be used here: said as it is, not as
         // "unknown name" (the user would look for a typo that is not there).
         std::string cycle;
+        std::string broken;   ///< a name used here whose own expression is wrong
         bool self = false;
         const NameLookup lookup = [&](std::string_view name) -> std::optional<NamedValue> {
             const auto it = byName.find(std::string(name));
@@ -186,10 +187,15 @@ int Document::EvaluateParameters() {
                 if (cycle.empty()) cycle = it->second->name;
                 return std::nullopt;
             }
+            // Its value is the last good one: using it silently would show a
+            // model that looks current and is not (as Inventor, the error goes on).
+            if (it->second->HasError() && broken.empty()) broken = it->second->name;
             return NamedValue{it->second->value, it->second->quantity};
         };
         Expected<double> result = EvaluateExpression(p->expression, p->quantity, units, lookup);
-        if (result) {
+        if (result && !broken.empty()) {
+            if (p->error.empty()) p->error = std::format("Ошибка в «{}» — взято его прежнее значение", broken);
+        } else if (result) {
             if (p->error.empty()) p->value = *result;
         } else if (p->error.empty()) {
             p->error = self              ? std::format("«{}» ссылается сам на себя", p->name)

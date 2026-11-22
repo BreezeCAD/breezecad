@@ -48,6 +48,10 @@ void ActionRegistry::Add(Action action) {
     myActions.push_back(std::move(action));
 }
 
+void ActionRegistry::Remove(std::string_view id) {
+    std::erase_if(myActions, [&](const Action& a) { return a.id == id; });
+}
+
 const Action* ActionRegistry::Find(std::string_view id) const {
     for (const auto& a : myActions)
         if (a.id == id) return &a;

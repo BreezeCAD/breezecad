@@ -1,11 +1,13 @@
 // Header row: brand menu, quick access toolbar, document title, command
 // search with its drop-down, and live stats (FPS, memory, objects).
 
+#include "app/handoff/HandoffUi.h"
 #include "app/assembly/AssemblyIssues.h"
 #include "app/BetaTesting.h"
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
 #include "app/mobile/MobileLayout.h"
+#include "app/shell/ModuleWindows.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
 #include "ui/Menus.h"
@@ -13,6 +15,7 @@
 
 #include <imgui_stdlib.h>
 
+#include <algorithm>
 #include <format>
 
 namespace bz::app {
@@ -49,7 +52,9 @@ void MainMenu(AppContext& app) {
     ui::MenuStyle style(ui);   // before Begin: must outlive the End call
     if (!ImGui::BeginPopup("##main-menu")) return;
     MenuAction(app, "file.new");
+    MenuAction(app, "drawing.fromModel");   // the drawing of what is open (ADR-0012)
     MenuAction(app, "file.open");
+    MenuAction(app, "file.import");
     if (ui::BeginSubmenu(ui, Tr("Последние"), "ui-file", !app.settings.recentFiles.empty())) {
         for (const auto& file : app.settings.recentFiles) {
             const std::u8string name = file.filename().u8string();
@@ -64,13 +69,23 @@ void MainMenu(AppContext& app) {
     MenuAction(app, "file.save");
     MenuAction(app, "file.saveAs");
     if (ui::BeginSubmenu(ui, Tr("Экспорт"), "ui-export", app.Doc() != nullptr)) {
-        MenuAction(app, "file.exportStep");
-        MenuAction(app, "file.exportStl");
-        MenuAction(app, "file.export3mf");
+        if (app.Doc()->drawing) MenuAction(app, "file.exportPdf");   // a drawing: its sheets; no bodies to export
+        else {
+            MenuAction(app, "file.exportStep");
+            MenuAction(app, "file.exportStl");
+            MenuAction(app, "file.export3mf");
+        }
         if (const Session* t = app.workspace.ActiveTab(); t && t->assembly) MenuAction(app, "file.exportProject");
         ImGui::EndMenu();
     }
-#if defined(__ANDROID__)
+    // «Продолжить на устройстве» (app/handoff): there and back over the local network.
+    if (HandoffOnDevice(app)) MenuAction(app, "file.handoffReturn");
+    else {
+        MenuAction(app, "file.handoff");
+        MenuAction(app, "file.handoffReceive");
+    }
+    ModuleMenuItems(app, "file");   // what the user's modules add (bz_module.h: add_action)
+#if defined(BZ_MOBILE)
     // The phone: files go to and come from the projects folder; "share"
     // hands a document or an export to another app (a slicer, a messenger).
     mobile::PhoneFileMenu(app);
@@ -284,19 +299,30 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
     x += ui.S(6);
     app.ops.appearance.DrawToolbarPicker(app, app.workspace.ShowsHome() ? nullptr : app.Doc(), {x, cy}, ui.S(170), ui.S(30));
     x += ui.S(176);
+    // A project from a computer (the device): its way back, here and not over the model.
+    if (const float back = DrawHandoffReturnButton(app, x + ui.S(4), cy, ui.S(30)); back > 0) x += back + ui.S(12);
 
-    // Right side: search and stats.
-    const float statsWidth = ui.S(190);
-    const float searchWidth = ui.S(240);
+    // Right side: search and stats. A narrow window (an iPad held upright, a
+    // small laptop) gives up the stats first, then narrows the search, and
+    // drops it last: nothing lies over the toolbar.
     const float right = pos.x + width - ui.S(10);
-    {
+    const float room = right - x - ui.S(8);
+    float statsWidth = ui.S(225);
+    float searchWidth = ui.S(240);
+    if (room < statsWidth + searchWidth) statsWidth = 0;
+    if (room < statsWidth + searchWidth) searchWidth = room >= ui.S(120) ? room : 0;
+    if (statsWidth > 0) {
         ui::FontScope font(ui.fonts.mono);
         Session* s = app.Doc();
         const int objects = s ? static_cast<int>(s->doc.FeatureCount()) : 0;
-        // Frames are drawn only when something changes, so frames per second
-        // would count mouse events; the work per frame is the honest figure.
+        // Frames are drawn only when something changes, so counting them would
+        // count mouse events. Shown instead: how many frames a second the work
+        // per frame allows, up to the monitor's rate ("144+": room to spare).
         const double workMs = app.stats.uiMs + app.stats.sceneMs;
-        const std::string fps = std::format("{:.1f}", workMs);
+        const int hz = std::max(app.stats.refreshHz, 1);
+        const double budget = workMs > 0.01 ? 1000.0 / workMs : 1.0e6;
+        const int rate = budget >= hz ? hz : static_cast<int>(budget + 0.5);
+        const std::string fps = budget > hz ? std::format("{}+", hz) : std::to_string(rate);
         const std::string mem = std::format("{:.0f}", app.stats.memoryMb);
         const std::string obj = std::to_string(objects);
         float sx = right - statsWidth + ui.S(12);
@@ -308,9 +334,10 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
             sx += ui.fonts.mono->CalcTextSizeA(ui.S(11), FLT_MAX, 0, unit).x + ui.S(12);
         };
         const float statsLeft = sx;
-        stat(fps, Tr("мс"), workMs < 8 ? c.success : workMs < 25 ? c.warning : c.danger);
+        // Coloured by what the work allows, not by the capped figure: a 30 Hz screen is not slow.
+        stat(fps, Tr("к/с"), budget >= 60 ? c.success : budget >= 30 ? c.warning : c.danger);
         stat(mem, Tr("МБ"), c.text);
-        stat(obj, "OBJ", c.text);
+        stat(obj, Tr("объектов"), c.text);
         // Where a frame's time goes, for performance reports.
         if (ImGui::IsMouseHoveringRect({statsLeft, pos.y}, {right, pos.y + h})) {
             const FrameStats& st = app.stats;
@@ -356,7 +383,7 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
         }
     }
 
-    CommandSearch(app, {searchX, pos.y + (h - ui.S(28)) / 2}, searchWidth);
+    if (searchWidth > 0) CommandSearch(app, {searchX, pos.y + (h - ui.S(28)) / 2}, searchWidth);
     EndArea();
 }
 

@@ -1,12 +1,17 @@
 // Mode tabs and the ribbon. Commands that are not built yet are shown
 // greyed out with a note, so the layout matches the approved mockup.
 
+#include "app/testing/UiProbe.h"
 #include "app/features/OperationEditors.h"
+#include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/shell/Shell.h"
 #include "app/sketch/SketchEditor.h"
 #include "core/I18n.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
+
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -502,7 +507,12 @@ void ViewRibbonImpl(AppContext& app, RibbonSink& r) {
     r.BeginColumn();
     r.Small("view.hidden", nullptr, style == render::DisplayStyle::HiddenLines);
     r.Small("view.transparent", nullptr, style == render::DisplayStyle::Transparent);
+    r.Small("view.live", nullptr, app.settings.LiveView());
     r.EndColumn();
+    r.EndGroup();
+
+    r.BeginGroup(N_("Кадр"));
+    r.Large("view.render", Tr("Сделать\nкадр"), app.ops.photo.IsOpen());
     r.EndGroup();
 
     r.BeginGroup(N_("Ориентация"));
@@ -527,6 +537,10 @@ void ViewRibbonImpl(AppContext& app, RibbonSink& r) {
 } // namespace
 
 void FillRibbon(AppContext& app, Session& session, RibbonSink& sink, bool withFinish) {
+    if (session.drawing) {
+        FillDrawingRibbon(app, sink);
+        return;
+    }
     switch (app.shell.ribbonTab) {
         case RibbonTab::Model:
             if (session.assembly) {
@@ -540,6 +554,7 @@ void FillRibbon(AppContext& app, Session& session, RibbonSink& sink, bool withFi
                 }
                 ModelRibbonImpl(sink);
             }
+            FillModuleRibbon(app, sink, session.assembly != nullptr);   // the user's modules, last
             break;
         case RibbonTab::Sketch: SketchRibbonImpl(app, sink, withFinish); break;
         case RibbonTab::View:   ViewRibbonImpl(app, sink); break;
@@ -557,11 +572,14 @@ void DrawModeBar(AppContext& app, ImVec2 pos, float width) {
         RibbonTab   tab;
     };
     const bool assemblyTabs = app.Doc() && app.Doc()->assembly && !app.workspace.ShowsHome();
+    const bool drawingTabs = app.Doc() && app.Doc()->drawing && !app.workspace.ShowsHome();
     const Tab partTabs[] = {{Tr("3D-модель"), RibbonTab::Model}, {Tr("Эскиз"), RibbonTab::Sketch}, {Tr("Вид"), RibbonTab::View}};
     const Tab asmTabs[] = {{Tr("Сборка"), RibbonTab::Model}, {Tr("Вид"), RibbonTab::View}};
+    // A drawing, as in КОМПАС-3D (ADR-0012): the three tabs reuse the three tab slots.
+    const Tab drawTabs[] = {{Tr("Виды"), RibbonTab::Model}, {Tr("Обозначения"), RibbonTab::Sketch}, {Tr("Оформление"), RibbonTab::View}};
     if (assemblyTabs && app.shell.ribbonTab == RibbonTab::Sketch) app.shell.ribbonTab = RibbonTab::Model;
     float x = pos.x + ui.S(12);
-    for (const Tab& t : assemblyTabs ? std::span<const Tab>(asmTabs) : std::span<const Tab>(partTabs)) {
+    for (const Tab& t : drawingTabs ? std::span<const Tab>(drawTabs) : assemblyTabs ? std::span<const Tab>(asmTabs) : std::span<const Tab>(partTabs)) {
         const bool on = app.shell.ribbonTab == t.tab;
         ImFont* font = on ? ui.fonts.strong : ui.fonts.medium;
         const ImVec2 ts = font->CalcTextSizeA(ui.S(13), FLT_MAX, 0, t.label);
@@ -569,6 +587,7 @@ void DrawModeBar(AppContext& app, ImVec2 pos, float width) {
         ImGui::SetCursorScreenPos({x, pos.y});
         ImGui::PushID(t.label);
         if (ImGui::InvisibleButton("##tab", {w, h})) app.shell.ribbonTab = t.tab;
+        probe::Name("tab", t.label);
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         if (on || hovered)
@@ -642,7 +661,7 @@ float DrawRibbon(AppContext& app, Session& session, ImVec2 pos, float width) {
     if (leftArrow) arrow(false);
     if (rightArrow) arrow(true);
 
-    const char* tabKey = session.assembly ? "asm" : app.shell.ribbonTab == RibbonTab::Sketch ? "sketch"
+    const char* tabKey = session.drawing ? "drawing" : session.assembly ? "asm" : app.shell.ribbonTab == RibbonTab::Sketch ? "sketch"
                        : app.shell.ribbonTab == RibbonTab::View ? "view" : "model";
     RibbonBuilder builder(app, {start - scroll, pos.y}, h, tabKey);
     ImGui::PushClipRect({start + (leftArrow ? aw : 0), pos.y}, {end - (rightArrow ? aw : 0), pos.y + h}, true);
@@ -652,6 +671,37 @@ float DrawRibbon(AppContext& app, Session& session, ImVec2 pos, float width) {
     const bool overRibbon = ImGui::IsMouseHoveringRect(pos, {pos.x + width, pos.y + h});
     if (overflow > 0 && overRibbon)
         scroll -= (ImGui::GetIO().MouseWheel + ImGui::GetIO().MouseWheelH) * ui.S(60);
+
+    // A touch screen: a finger dragged along the ribbon scrolls it, and it
+    // coasts a little after the finger leaves. Past a few pixels of travel the
+    // touch is a swipe, so the button it started on is not pressed.
+    if (app.shell.mobile.touchScreen && overflow > 0 && !app.shell.finishDrag) {
+        const ImGuiIO& io = ImGui::GetIO();
+        bool& swipe = app.shell.ribbonSwipe;
+        float& fling = app.shell.ribbonFling;
+        const bool startedHere = ImGui::IsMouseHoveringRect(pos, {pos.x + width, pos.y + h}, false) &&
+                                 io.MouseClickedPos[0].y >= pos.y && io.MouseClickedPos[0].y < pos.y + h &&
+                                 io.MouseClickedPos[0].x >= start && io.MouseClickedPos[0].x < end;
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && startedHere) {
+            if (!swipe && std::abs(io.MousePos.x - io.MouseClickedPos[0].x) > ui.S(10)) {
+                swipe = true;
+                ImGui::ClearActiveID();   // the button under the finger lets go
+            }
+            if (swipe) {
+                scroll -= io.MouseDelta.x;
+                fling = -io.MouseDelta.x;
+            }
+        } else {
+            swipe = false;
+            if (std::abs(fling) > 0.5f) {
+                scroll += fling;
+                fling *= 0.9f;
+            } else {
+                fling = 0;
+            }
+        }
+        scroll = std::clamp(scroll, 0.0f, overflow);
+    }
 
     // Carrying "Принять эскиз": both ends show where it can go, the nearer
     // one stronger; it lands there when the button is let go.

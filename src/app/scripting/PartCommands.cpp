@@ -5,6 +5,7 @@
 #include "app/Session.h"
 #include "app/scripting/Commands.h"
 #include "core/I18n.h"
+#include "document/ImportFeature.h"
 #include "document/Commands.h"
 #include "document/JsonIO.h"
 
@@ -32,7 +33,7 @@ Json DescribeParameter(const UnitSystem& units, const Parameter& p) {
 Json Tree(AppContext& app, const Json&) {
     Session&             s = ActivePart(app);
     const doc::Document& d = s.doc;
-    s.RebuildNow();
+    Rebuild(s);
     Json features = Json::array();
     for (std::size_t i = 0; i < d.FeatureCount(); ++i) {
         const doc::Feature& f = *d.Features()[i];
@@ -67,13 +68,16 @@ Json FeatureFields(AppContext& app, const Json& args) {
     Json                out = Describe(f);
     Json                fields;
     f.SaveFields(fields);
+    // An imported body's geometry is megabytes of base64: its size, not the bytes.
+    if (f.Type() == doc::ImportFeature::kType && fields.contains("data"))
+        fields["data"] = std::format("<{} байт геометрии внутри детали>", fields.value("dataSize", std::uint64_t{0}));
     out["fields"] = std::move(fields);
     return out;
 }
 
 Json Parameters(AppContext& app, const Json&) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     Json out = Json::array();
     for (const Parameter& v : s.doc.variables) {
         Json p     = DescribeParameter(s.doc.units, v);
@@ -93,7 +97,7 @@ Json Parameters(AppContext& app, const Json&) {
 
 Json Properties(AppContext& app, const Json& args) {
     Session& s = ActivePart(app);
-    s.RebuildNow();
+    Rebuild(s);
     const auto props = s.model.Properties();
     if (!props) Fail("В детали ещё нет тел");
     Json out = {{"bodies", s.model.Bodies().size()},
@@ -122,7 +126,7 @@ Json SetParameter(AppContext& app, const Json& args) {
         std::vector<Parameter> vars = s.doc.variables;
         vars[i].expression          = expression;
         s.Execute(doc::SetVariables(std::move(vars)));
-        s.RebuildNow();
+        Rebuild(s);
         s.doc.EvaluateParameters();   // a part without features has nothing to rebuild
         return DescribeParameter(s.doc.units, s.doc.variables[i]);
     }
@@ -164,7 +168,7 @@ Json SetVariable(AppContext& app, const Json& args) {
     it->expression = Expression(args, "value");
     const std::size_t index = static_cast<std::size_t>(it - vars.begin());
     s.Execute(doc::SetVariables(std::move(vars)));
-    s.RebuildNow();
+    Rebuild(s);
     s.doc.EvaluateParameters();   // a part without features has nothing to rebuild
     return DescribeParameter(s.doc.units, s.doc.variables[index]);
 }
@@ -203,7 +207,7 @@ Json Delete(AppContext& app, const Json& args) {
     const doc::Feature&  f  = FeatureOf(s, Id(args, "id"));
     const std::string    name = f.name;
     s.Execute(doc::RemoveFeature(s.doc, f.id));
-    s.RebuildNow();
+    Rebuild(s);
     Json broken = Json::array();   // what used it and is now in error
     for (const auto& g : s.doc.Features())
         if (g->status.state == doc::FeatureState::Error) broken.push_back(Describe(*g));

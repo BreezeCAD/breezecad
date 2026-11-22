@@ -140,7 +140,7 @@ Json EndMarker(AppContext& app, const Json& args) {
     const int at = Has(args, "index") ? Integer(args, "index") : n;
     if (at < 0 || at > n) Fail(std::format("«index» — от 0 до {} ({} — в конец)", n, n));
     s.Execute(doc::SetEndMarker(s.doc, static_cast<std::size_t>(at)));
-    s.RebuildNow();
+    Rebuild(s);
     return {{"end_marker", s.doc.EndMarker()}, {"features", n},
             {"note", "Операции с номером ≥ end_marker откачены (не вычисляются), как маркер «Конец детали»."}};
 }

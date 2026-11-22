@@ -10,6 +10,9 @@
 #include <cmath>
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::assembly;
 using doctest::Approx;
@@ -226,3 +229,5 @@ TEST_CASE("read-only API: components, properties from the part, placed bodies") 
     // Reading changes nothing.
     CHECK(m.Shown().Bodies().size() == 2);
 }
+
+TEST_SUITE_END();

@@ -1,4 +1,5 @@
-# Open CASCADE Technology. Supported: 7.6 … 8.0.
+# Open CASCADE Technology. CI and packages: 8.0.1, built by scripts/deps/build-occt.sh
+# (one OCCT everywhere, ADR-0001). Older 7.6 … 7.9 may still build but are not checked.
 # Point CMake at an install with -DOpenCASCADE_DIR=<prefix>/cmake
 # (Windows/MSYS2 example: C:/occt/install/cmake).
 
@@ -15,6 +16,12 @@ target_link_libraries(bz_occt_modeling INTERFACE
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo
     TKPrim TKBO TKBool TKFeat TKFillet TKOffset TKShHealing TKMesh)
 add_library(bz::occt_modeling ALIAS bz_occt_modeling)
+# Static OCCT (iOS) names its own third-party libraries (freetype) without a
+# path: scripts/ios/build-deps.sh installs them next to it.
+get_target_property(BZ_OCCT_TYPE TKernel TYPE)
+if(BZ_OCCT_TYPE STREQUAL "STATIC_LIBRARY")
+    target_link_directories(bz_occt_modeling INTERFACE ${OpenCASCADE_LIBRARY_DIR})
+endif()
 
 # Data exchange: STEP and STL. OCCT 7.8 renamed the toolkits to TKDE*.
 add_library(bz_occt_exchange INTERFACE)

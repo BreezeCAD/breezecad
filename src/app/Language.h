@@ -15,7 +15,7 @@ struct Settings;
 /// Where the user puts language packs (created when shown).
 std::filesystem::path LanguagePackDir();
 /// The page about language packs, opened in the browser on request.
-inline constexpr const char* kLanguagePacksUrl = "https://github.com/MikeVerx/breezecad/tree/next/translations";
+inline constexpr const char* kLanguagePacksUrl = "https://github.com/BreezeCAD/breezecad/tree/next/translations";
 
 std::vector<i18n::Language> AvailableLanguages();
 

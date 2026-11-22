@@ -1,0 +1,6 @@
+# Modules BreezeCAD ships links to: one GitHub repository per line.
+# Each module lives in its own repository (BreezeCAD/bz-module-<id>, made from
+# BreezeCAD/bz-module-template) and publishes its .bzmod packages in releases.
+# CI takes the latest release of each (scripts/fetch-modules.sh) for the
+# installer and the release page "modules".
+BreezeCAD/bz-module-mcp

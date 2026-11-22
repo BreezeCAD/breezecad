@@ -1,17 +1,21 @@
 // Windows on top of the work: "save changes?", "МЦХ" and "about". All close
 // with Esc.
 
-#if defined(__ANDROID__)
-#include "platform/Android.h"
+#if defined(BZ_MOBILE)
+#include "platform/Mobile.h"
 #endif
 #include "app/BetaTesting.h"
+#include "kernel/occt/BooleanBudget.h"
 #include "app/Format.h"
 #include "app/Language.h"
 #include "app/viewport/MarkingMenu.h"
 #include "app/Materials.h"
+#include "app/Import.h"
 #include "app/Operations.h"
 #include "app/ShortcutPresets.h"
 #include "app/Backgrounds.h"
+#include "app/shell/ModuleWindows.h"
+#include "app/drawing/DrawingEditor.h"
 #include "app/shell/Shell.h"
 #include "app/shell/TouchpadSettings.h"
 #include "app/mobile/MobileLayout.h"
@@ -21,6 +25,8 @@
 #include "document/Commands.h"
 #include "app/assembly/AssemblyUi.h"
 #include "app/assembly/ChangeDialog.h"
+#include "app/handoff/HandoffUi.h"
+#include "app/sketch/SketchRepair.h"
 #include "document/StandardPacks.h"
 #include "document/StandardParts.h"
 #include "core/PathText.h"
@@ -40,6 +46,7 @@
 #include <cmath>
 #include <format>
 #include <nlohmann/json.hpp>
+#include <cstring>
 #include <fstream>
 #include <vector>
 
@@ -49,7 +56,7 @@ bool BeginDialog(ui::Ui& ui, const char* id, bool& open, float width) {
     if (open && !ImGui::IsPopupOpen(id)) ImGui::OpenPopup(id);
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos({display.x / 2, display.y / 2}, ImGuiCond_Always, {0.5f, 0.5f});
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
     // A phone held sideways is ~400 dp tall: the dialog fits the screen and
     // scrolls (a swipe) instead of running off it.
     width = std::min(width, display.x - ui.S(24));
@@ -61,8 +68,23 @@ bool BeginDialog(ui::Ui& ui, const char* id, bool& open, float width) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ui.S(8, 8));
     const bool visible = ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar(3);
-    if (!visible) open = false;
-    return visible;
+    if (!visible) {
+        open = false;
+        return false;
+    }
+    // A click or tap beside the dialog closes it, as a press of Esc would — unless
+    // a menu of its own is open over it, or it asks about unsaved work (a stray
+    // tap must not throw that question away).
+    if (!ImGui::IsWindowAppearing() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && std::strcmp(id, "##unsaved") != 0) {
+        const ImVec2 p = ImGui::GetIO().MouseClickedPos[0];
+        const ImVec2 a = ImGui::GetWindowPos(), b{a.x + ImGui::GetWindowWidth(), a.y + ImGui::GetWindowHeight()};
+        if (p.x < a.x || p.y < a.y || p.x > b.x || p.y > b.y) {
+            open = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    return true;
 }
 
 namespace {
@@ -732,6 +754,21 @@ void DrawOptimizationSettings(AppContext& app, float width, bool performance) {
         if (const int n = ui::Segmented(ui, "rebuild", rebuild, r, 2, width); n != r) app.settings.backgroundRebuild = n == 0;
         caption(Tr("В фоне окно не замирает, пока считается тяжёлая операция: модель обновится, когда расчёт закончится. "
                    "«Сразу» — по-старому, на случай если фоновый расчёт ведёт себя странно."));
+        ui::FieldLabel(ui, Tr("Загрузка деталей сборки"));
+        static constexpr std::array<const char*, 2> loadMode{N_("Параллельно"), N_("По очереди")};
+        const int p = app.settings.parallelPartLoad ? 0 : 1;
+        if (const int n = ui::Segmented(ui, "pload", loadMode, p, 2, width); n != p) app.settings.parallelPartLoad = n == 0;
+        caption(Tr("Параллельно — при открытии сборки её детали считаются одновременно на разных ядрах, сборки открываются "
+                   "заметно быстрее. «По очереди» — прежнее поведение, если на слабом компьютере стало хуже."));
+        ui::FieldLabel(ui, Tr("Зависшие операции"));
+        static constexpr std::array<const char*, 2> toMode{N_("Прерывать"), N_("Ждать")};
+        const int t = app.settings.opTimeouts ? 0 : 1;
+        if (const int n = ui::Segmented(ui, "opto", toMode, t, 2, width); n != t) {
+            app.settings.opTimeouts = n == 0;
+            kernel::occt::SetBooleanBudgetMs(app.settings.opTimeouts ? kernel::occt::kDefaultBooleanBudgetMs : 0.0);
+        }
+        caption(Tr("Прерывать — операция, считающаяся дольше 20 секунд, отменяется: деталь открывается с пометкой ошибки на "
+                   "операции, а не виснет. Цена отмены — поток зависшей операции досчитывает фоном до конца сеанса."));
         return;
     }
     ui::FieldLabel(ui, Tr("Качество графики"));
@@ -739,6 +776,20 @@ void DrawOptimizationSettings(AppContext& app, float width, bool performance) {
     if (const int n = ui::Segmented(ui, "graphics", quality, app.settings.graphics, 3, width); n != app.settings.graphics)
         app.settings.graphics = n;
     caption(Tr("Сглаживание краёв и точность сетки круглых граней. Ниже качество — быстрее показ больших деталей."));
+
+    ui::FieldLabel(ui, Tr("Вид модели"));
+    static constexpr std::array<const char*, 2> look{N_("Живой"), N_("Простой")};
+    const int lv = app.settings.LiveView() ? 0 : 1;
+    if (const int n = ui::Segmented(ui, "live", look, lv, 2, width, app.settings.graphics >= 2 ? 1 : 0); n != lv) app.settings.liveView = n == 0;
+    caption(app.settings.graphics >= 2 ? Tr("На «Слабом компьютере» модель всегда в простом виде.")
+                                       : Tr("Живой: тень на полу, мягкий свет и контур детали — для видеокарты это ещё один проход. "
+                                            "Простой — как раньше, быстрее на старых ноутбуках."));
+    if (app.settings.LiveView()) {
+        ImGui::Indent(ui.S(14));
+        ImGui::Checkbox(std::format("{}##crisp-edges", Tr("Чёткие грани")).c_str(), &app.settings.crispEdges);
+        caption(Tr("Рёбра детали тёмной линией поверх живого вида: тени и объём остаются."));
+        ImGui::Unindent(ui.S(14));
+    }
 
     ui::FieldLabel(ui, Tr("Качество текстур"));
     static constexpr std::array<const char*, 3> textures{N_("Высокое"), N_("Среднее"), N_("Низкое")};
@@ -1047,6 +1098,29 @@ void DrawMouseSettings(AppContext& app, float width) {
 
 /// "Настройки": interface scale and theme; keyboard shortcuts.
 /// "Общие" → what is not about the controls or the picture.
+/// "Управление" → "Эскиз": what projects by itself (as Inventor's sketch options).
+void DrawSketchSettings(AppContext& app, float width) {
+    ui::Ui& ui = app.ui;
+    const auto note = [&](const char* text) {
+        ui::FontScope font(ui.fonts.caption);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(ui.C().textMuted));
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    };
+    static constexpr std::array<const char*, 2> onOff{N_("Включено"), N_("Выключено")};
+    ui::FieldLabel(ui, Tr("Автопроецирование рёбер при рисовании"));
+    const int a = app.settings.autoProjectEdges ? 0 : 1;
+    if (const int n = ui::Segmented(ui, "auto-project", onOff, a, 2, width); n != a) app.settings.autoProjectEdges = n == 0;
+    note(Tr("Отрезок, дуга или окружность, начатые или законченные на вершине или ребре модели, сами проецируют их и привязываются к ним."));
+    ImGui::Dummy({0, ui.S(6)});
+    ui::FieldLabel(ui, Tr("Проецировать начало координат при создании эскиза"));
+    const int o = app.settings.projectOriginOnCreate ? 0 : 1;
+    if (const int n = ui::Segmented(ui, "project-origin", onOff, o, 2, width); n != o) app.settings.projectOriginOnCreate = n == 0;
+    note(Tr("Как в Inventor: в новом эскизе сразу есть точка начала координат детали, связанная с ней."));
+}
+
 void DrawGeneralSettings(AppContext& app, float width) {
     ui::Ui& ui = app.ui;
     DrawLanguageSettings(app, width);
@@ -1247,7 +1321,7 @@ void DrawKeyboardSettings(AppContext& app, float width) {
     }
 }
 
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
 /// "Управление" → "Сенсор" (Android): the phone layout and touch (ADR-0004,
 /// "Настройки раскладки"), with "Сбросить".
 void DrawTouchScreenSettings(AppContext& app, float width) {
@@ -1257,6 +1331,16 @@ void DrawTouchScreenSettings(AppContext& app, float width) {
     ui::FieldLabel(ui, Tr("Вид интерфейса"));
     static constexpr std::array<const char*, 3> layouts{N_("По размеру экрана"), N_("Десктопный"), N_("Мобильный")};
     if (const int n = ui::Segmented(ui, "layout", layouts, m.layout, 3, width); n != m.layout) m.layout = n;
+    {
+        // On a tablet «По размеру экрана» is the desktop layout: they look the same there.
+        ui::FontScope small(ui.fonts.caption);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(ui.C().textMuted));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
+        ImGui::TextUnformatted(Tr("«По размеру экрана» выбирает сам: на планшете — десктопный, на телефоне — "
+                                  "мобильный. Поэтому на планшете первые два варианта выглядят одинаково."));
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    }
     gap();
     ui::FieldLabel(ui, Tr("Рука"));
     static constexpr std::array<const char*, 2> hands{N_("Правая: дерево слева"), N_("Левая: дерево справа")};
@@ -1354,6 +1438,22 @@ void DrawTouchScreenSettings(AppContext& app, float width) {
     static constexpr std::array<const char*, 4> reachNames{"32 dp", "48 dp", "64 dp", "80 dp"};
     static constexpr std::array<int, 4> reachValues{32, 48, 64, 80};
     choice("cursor-reach", Tr("Кончик курсора над пальцем"), nullptr, m.cursorReach, reachNames, reachValues);
+    static constexpr std::array<const char*, 4> inputNames{N_("Курсор"), N_("Касания"), N_("Зажать и тянуть"), N_("Прицел")};
+    static constexpr std::array<int, 4> inputValues{0, 1, 2, 3};
+    choice("sketch-input", Tr("Рисование в эскизе"),
+           Tr("Курсор — капля и ✓ (мобильный вид; в десктопном — как касания). Касания — тап ставит точку там, "
+              "где палец: первый — начало, второй — конец, дальше цепочка (✕ — закончить). Зажать и тянуть — "
+              "держите палец, пока не заполнится кружок: там первая точка; ведите палец и отпустите — вторая. "
+              "Прицел — как «зажать и тянуть», но с крестиком над пальцем: коснитесь вида, наведите крестик, "
+              "задержите палец, пока не заполнится кружок, — первая точка; ведите и отпустите — вторая. "
+              "Палец ничего не закрывает. Вид двигают два пальца."),
+           m.sketchInput, inputNames, inputValues);
+    static constexpr std::array<const char*, 8> polarNames{N_("выкл"), "5°", "10°", "15°", "22,5°", "30°", "45°", "90°"};
+    static constexpr std::array<double, 8> polarValues{0.0, 5.0, 10.0, 15.0, 22.5, 30.0, 45.0, 90.0};
+    choice("polar-step", Tr("Шаг угла отрезка (полярное отслеживание)"),
+           Tr("Отрезок от предыдущей точки идёт только под углами, кратными шагу, как в AutoCAD; рядом с курсором "
+              "виден угол. «Орто» действует вместо него, когда включено."),
+           app.settings.polarStep, polarNames, polarValues);
 
     ui::FieldLabel(ui, Tr("Кнопки громкости"));
     static constexpr std::array<const char*, 2> volume{N_("Громкость"), N_("Масштаб вида")};
@@ -1482,7 +1582,7 @@ void DrawAppearanceSettings(AppContext& app, float width) {
     if (ui::LinkButton(ui, "##open-backgrounds", Tr("Выбрать на вкладке «Вид» → «Фон»…"))) app.shell.backgroundMenu = true;
 }
 
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
 // --- Settings on the phone, as in Minecraft (docs/dev/mockups/4, the author 17.10.2026) ---
 // Full screen next to the hotbar: big tabs on the left, the groups as pills
 // on top, the options as a grid of two columns of wide cells. A slider is the
@@ -1629,6 +1729,20 @@ void Sensor(AppContext& app, Grid& g) {
         static constexpr std::array<int, 4> values{32, 48, 64, 80};
         int i = IndexOf(values, m.cursorReach);
         if (Choice(g, "##p-reach", Tr("Кончик курсора"), names, i)) m.cursorReach = values[static_cast<std::size_t>(i)];
+    }
+    {
+        static constexpr std::array<const char*, 4> names{N_("курсор"), N_("касания"), N_("зажать и тянуть"), N_("прицел")};
+        int i = std::clamp(m.sketchInput, 0, 3);
+        if (Choice(g, "##p-sketch-input", Tr("Рисование в эскизе"), names, i)) m.sketchInput = i;
+    }
+    {
+        static constexpr std::array<const char*, 8> names{N_("выкл"), "5°", "10°", "15°", "22,5°", "30°", "45°", "90°"};
+        static constexpr std::array<double, 8> values{0.0, 5.0, 10.0, 15.0, 22.5, 30.0, 45.0, 90.0};
+        int i = IndexOf(values, app.settings.polarStep);
+        if (Choice(g, "##p-polar", Tr("Шаг угла отрезка"), names, i)) {
+            app.settings.polarStep = values[static_cast<std::size_t>(i)];
+            if (app.settings.polarStep > 0) app.settings.orthoMode = false;
+        }
     }
     Heading(g, Tr("Раскладка"));
     {
@@ -1792,7 +1906,7 @@ void Draw(AppContext& app) {
         const float cx = pos.x + tabsW + ui.S(16), cw = size.x - tabsW - ui.S(32);
         float cy = pos.y + std::max(ui.S(12), ms.insets.top);
         std::vector<const char*> subs;
-        if (app.shell.settingsTab == 1) subs = {Tr("Клавиатура"), Tr("Мышь"), Tr("Сенсор"), Tr("Жесты")};
+        if (app.shell.settingsTab == 1) subs = {Tr("Клавиатура"), Tr("Мышь"), Tr("Сенсор"), Tr("Жесты"), Tr("Эскиз")};
         if (app.shell.settingsTab == 2) subs = {Tr("Внешний вид"), Tr("Качество"), Tr("Производительность")};
         if (!subs.empty()) {
             float px = cx;
@@ -1829,6 +1943,7 @@ void Draw(AppContext& app) {
             switch (app.shell.settingsTab) {
                 case 1:
                     if (app.shell.settingsSub == 1) DrawMouseSettings(app, cw);
+                    else if (app.shell.settingsSub == 4) DrawSketchSettings(app, cw);
                     else DrawKeyboardSettings(app, cw);
                     break;
                 case 2:
@@ -1856,7 +1971,7 @@ void Draw(AppContext& app) {
 
 void DrawSettings(AppContext& app) {
     ui::Ui& ui = app.ui;
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
     if (app.shell.mobile.phone) {   // full screen, as in Minecraft
         if (app.shell.showSettings) phone::Draw(app);
         return;
@@ -1876,11 +1991,11 @@ void DrawSettings(AppContext& app) {
     }
     ImGui::Dummy({0, ui.S(4)});
     if (app.shell.settingsTab == 1) {
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
         // A touch screen instead of a touchpad (ADR-0004): layout, hand, sizes, cursor.
-        static constexpr std::array<const char*, 4> subs{N_("Клавиатура"), N_("Мышь"), N_("Сенсор"), N_("Жесты")};
+        static constexpr std::array<const char*, 5> subs{N_("Клавиатура"), N_("Мышь"), N_("Сенсор"), N_("Жесты"), N_("Эскиз")};
 #else
-        static constexpr std::array<const char*, 3> subs{N_("Клавиатура"), N_("Мышь"), N_("Тачпад")};
+        static constexpr std::array<const char*, 4> subs{N_("Клавиатура"), N_("Мышь"), N_("Тачпад"), N_("Эскиз")};
 #endif
         app.shell.settingsSub = ui::Segmented(ui, "settings-sub", subs, app.shell.settingsSub, static_cast<int>(subs.size()), width);
         ImGui::Dummy({0, ui.S(4)});
@@ -1894,11 +2009,13 @@ void DrawSettings(AppContext& app) {
     switch (app.shell.settingsTab) {
         case 1:
             if (app.shell.settingsSub == 1) DrawMouseSettings(app, width);
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
             else if (app.shell.settingsSub == 2) DrawTouchScreenSettings(app, width);
             else if (app.shell.settingsSub == 3) DrawGestureSettings(app, width);
+            else if (app.shell.settingsSub == 4) DrawSketchSettings(app, width);
 #else
             else if (app.shell.settingsSub == 2) DrawTouchpadSettings(app, width);
+            else if (app.shell.settingsSub == 3) DrawSketchSettings(app, width);
 #endif
             else DrawKeyboardSettings(app, width);
             break;
@@ -1951,10 +2068,10 @@ void DrawBetaReport(AppContext& app) {
         paragraph(Tr("Отправьте этот файл в чат тестеров. Кнопка ниже откроет папку, где он лежит."), c.textSecondary);
         ImGui::Dummy({0, ui.S(8)});
         const float bw = (width - ui.S(8)) / 2;
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
         // No file manager for the app's own folder: the system's "share" sends the zip (ADR-0004).
         if (ui::PrimaryButton(ui, "##beta-show", Tr("Поделиться отчётом"), nullptr, {bw, ui.S(36)}))
-            platform::android::Share(r.packed, "application/zip", "BreezeCAD");
+            platform::mobile::Share(r.packed, "application/zip", "BreezeCAD");
 #else
         if (ui::PrimaryButton(ui, "##beta-show", Tr("Открыть папку с отчётом"), nullptr, {bw, ui.S(36)}))
             if (!platform::OpenFolder(r.packed.parent_path())) app.notes.Error(Tr("Не удалось открыть папку"));
@@ -1992,11 +2109,71 @@ void DrawBetaReport(AppContext& app) {
     ImGui::EndPopup();
 }
 
+// «Эскиз восстановлен. [Отменить] [Повторить изменение источника]»: the
+// restore notice (app/sketch/SketchRepair.h) as a small panel at the bottom
+// of the window, shown while the restore is the document's last undo step.
+bool DrawRestoreNotice(AppContext& app) {
+    RestoreNotice& n = app.shell.restoreNotice;
+    if (!n.active) return false;
+    // Its document was closed, or the restore is not the last step any more
+    // (undone another way, or something was done on top): nothing to offer.
+    if (!app.workspace.IsOpen(n.scope) || !n.CanUndo()) {
+        n.Dismiss();
+        return false;
+    }
+    ui::Ui& ui = app.ui;
+    const ui::ThemeColors& c = ui.C();
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos({display.x / 2, display.y - ui.S(54)}, ImGuiCond_Always, {0.5f, 1.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui.S(12, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui.S(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ui.S(8, 8));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::ToVec4(c.panel));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::ToVec4(c.divider));
+    const bool shown = ImGui::Begin("##restore-notice", nullptr,
+                                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+    if (!shown) {
+        ImGui::End();
+        return false;
+    }
+    ui.icons.Draw(ImGui::GetWindowDrawList(), "status-ok",
+                  {ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + ui.S(2)}, ui.S(16), c.success);
+    ImGui::SameLine(0, ui.S(8));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(Tr("Эскиз восстановлен."));
+    ImGui::SameLine(0, ui.S(12));
+    const auto width = [&](const char* label) {
+        return ui.fonts.medium->CalcTextSizeA(ui.S(13), FLT_MAX, 0, label).x + ui.S(26);
+    };
+    const std::string undo = Tr("Отменить"), redo = Tr("Повторить изменение источника");
+    if (ui::SecondaryButton(ui, "##notice-undo", undo.c_str(), nullptr, {width(undo.c_str()), ui.S(28)}, n.CanUndo())) {
+        Session* scope = n.scope;
+        n.Dismiss();
+        scope->Undo();
+    }
+    ImGui::SameLine(0, ui.S(8));
+    // Честная заглушка: действия «Повторить изменение источника» пока нет —
+    // кнопка выключена, сказано почему.
+    if (ui::SecondaryButton(ui, "##notice-redo", redo.c_str(), nullptr, {width(redo.c_str()), ui.S(28)}, false)) {
+    }
+    ui::ItemTooltip(ui, Tr("Пока не реализовано: повторное применение изменения источника"));
+    ImGui::End();
+    return false;
+}
+
 void DrawDialogs(AppContext& app) {
     ui::Ui& ui = app.ui;
     const ui::ThemeColors& c = ui.C();
     DrawNewDocumentDialog(app);
+    DrawImportDialog(app);
     DrawChangeDialog(app);
+    DrawHandoff(app);
+    DrawModulePanels(app);
+    DrawDrawingDialogs(app);
+    DrawRestoreNotice(app);
 
     // --- Save changes? ---
     bool unsavedOpen = app.shell.closeRequest.has_value();
@@ -2024,11 +2201,20 @@ void DrawDialogs(AppContext& app) {
                 ImGui::TextUnformatted(Trf("В документе «{}» есть несохранённые изменения. Если не сохранить, они пропадут.", s->Title()).c_str());
                 ImGui::PopTextWrapPos();
                 ImGui::PopStyleColor();
+                if (s->recoveredSinceSave) {
+                    // After a failure: the user decides knowing it (the state may be the one that failed).
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::ToVec4(c.danger));
+                    ImGui::PushTextWrapPos(0);
+                    ImGui::TextUnformatted(Tr("После последнего сохранения в программе был сбой: действие, на котором он случился, "
+                                              "отменено. Проверьте модель перед сохранением — или сохраните копию через «Сохранить как»."));
+                    ImGui::PopTextWrapPos();
+                    ImGui::PopStyleColor();
+                }
             }
             ImGui::Dummy({0, ui.S(8)});
             const float bw = (ImGui::GetContentRegionAvail().x - ui.S(16)) / 3;
             if (ui::PrimaryButton(ui, "##save", Tr("Сохранить"), nullptr, {bw, ui.S(36)})) {
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
                 if (s->path.empty()) {   // the phone: its name first; the tab closes once saved
                     mobile::AskSaveName(app, *s, true);
                     finish(false);
@@ -2077,17 +2263,17 @@ void DrawDialogs(AppContext& app) {
         // Exactly which build: the commit names it on GitHub.
         std::string build = *Commit() ? Trf("Сборка {} {} от {}", Branch(), Commit(), BuildDate())
                                       : Trf("Сборка от {}", BuildDate());
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
         // The APK's own version and number (the number grows with every build;
         // what a store and "install over" compare).
-        if (const std::string package = platform::android::PackageVersion(); !package.empty()) {
+        if (const std::string package = platform::mobile::PackageVersion(); !package.empty()) {
             const auto tab = package.find('\t');
             build = Trf("Android {}, версия {}", package.substr(0, tab), tab == std::string::npos ? "" : package.substr(tab + 1)) +
                     "\n" + build;
         }
 #endif
         dl->AddText(ui.fonts.mono, ui.S(11), {p.x + ui.S(63), p.y + ui.S(52)}, ui::ToU32(c.textMuted), build.c_str());
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
         ImGui::Dummy({0, ui.S(90)});
 #else
         ImGui::Dummy({0, ui.S(74)});
@@ -2101,10 +2287,10 @@ void DrawDialogs(AppContext& app) {
             ImGui::Dummy({0, ui.S(4)});
             ImGui::TextUnformatted(Tr("Использует: Open CASCADE Technology (LGPL 2.1), Dear ImGui, GLFW, lunasvg, "
                                    "nlohmann/json, miniz, portable-file-dialogs (MIT/zlib), stb_image (public domain), шрифты IBM Plex (OFL)."));
-#if defined(__ANDROID__)
+#if defined(BZ_MOBILE)
             ImGui::Dummy({0, ui.S(4)});
             if (ui::LinkButton(ui, "##privacy", Tr("Политика конфиденциальности")))
-                platform::OpenUrl("https://mikeverx.github.io/breezecad/privacy.html");
+                platform::OpenUrl("https://breezecad.ru/privacy.html");
 #endif
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();

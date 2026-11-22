@@ -2,12 +2,21 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BOPAlgo_Builder.hxx>
 #include <BRepAlgoAPI_Section.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <BRepBndLib.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <TColgp_HArray1OfPnt.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -31,11 +40,61 @@ namespace {
 Vec3 ToVec(const gp_Pnt& p) { return {p.X(), p.Y(), p.Z()}; }
 Vec3 ToVec(const gp_Dir& d) { return {d.X(), d.Y(), d.Z()}; }
 
+/// Any edge on the sketch plane as a spline through kSplineSpans + 1 points
+/// spaced evenly along it, in the edge's own direction.
+Expected<ProjectedCurve> ProjectAsSpline(const TopoDS_Edge& edge, const BRepAdaptor_Curve& curve, const Frame& frame) {
+    const double a = curve.FirstParameter(), b = curve.LastParameter();
+    // How much the projection turns: a few points are enough for a gentle
+    // curve, a winding one needs more; a helix (many turns on one circle)
+    // would come out as a scribble and, stacked on itself, makes the sketch's
+    // regions take minutes — it is refused, as its rim is what one projects.
+    constexpr int kProbe = 256;
+    double turning = 0;
+    {
+        Vec2 prev = frame.ToLocal(ToVec(curve.Value(a))), dirPrev{};
+        bool haveDir = false;
+        for (int i = 1; i <= kProbe; ++i) {
+            const Vec2 p = frame.ToLocal(ToVec(curve.Value(a + (b - a) * i / kProbe)));
+            const Vec2 d = p - prev;
+            if (d.Length() > 1e-9) {
+                if (haveDir) turning += std::abs(std::atan2(dirPrev.x * d.y - dirPrev.y * d.x, dirPrev.Dot(d)));
+                dirPrev = d;
+                haveDir = true;
+            }
+            prev = p;
+        }
+    }
+    if (turning > 4 * kPi + 0.5)
+        return Error{"Ребро закручено больше чем на два оборота (винтовая линия) — спроецируйте ребро торца или грань"};
+    const int spans = std::clamp(kSplineSpans * static_cast<int>(std::ceil(turning / kPi)), kSplineSpans, 4 * kSplineSpans);
+    std::vector<double> at;
+    try {
+        GCPnts_UniformAbscissa even(curve, spans + 1, a, b);
+        if (even.IsDone() && even.NbPoints() == spans + 1)
+            for (int i = 1; i <= even.NbPoints(); ++i) at.push_back(even.Parameter(i));
+    } catch (const Standard_Failure&) {
+        at.clear();
+    }
+    if (at.empty())
+        for (int i = 0; i <= spans; ++i) at.push_back(a + (b - a) * i / spans);
+    if (edge.Orientation() == TopAbs_REVERSED) std::reverse(at.begin(), at.end());
+    ProjectedCurve out;
+    out.kind = ProjectedCurve::Kind::Spline;
+    for (const double t : at) out.points.push_back(frame.ToLocal(ToVec(curve.Value(t))));
+    double extent = 0;
+    for (const Vec2& p : out.points) extent = std::max(extent, (p - out.points.front()).Length());
+    if (extent < 1e-6) return Error{"Ребро смотрит прямо на плоскость эскиза — в проекции точка"};
+    if ((out.points.back() - out.points.front()).Length() < 1e-7) out.points.back() = out.points.front();
+    out.start = out.points.front();
+    out.end = out.points.back();
+    return out;
+}
+
 /// A circle or arc not parallel to the sketch plane. Seen edge-on (its plane
 /// across the sketch plane: the rim of a cylinder looked at from the side) it
 /// covers a line; a whole circle at a slant is an ellipse.
-Expected<ProjectedCurve> ProjectSlantedCircle(const BRepAdaptor_Curve& curve, const gp_Circ& circle, bool closed,
-                                              const Frame& frame) {
+Expected<ProjectedCurve> ProjectSlantedCircle(const TopoDS_Edge& edge, const BRepAdaptor_Curve& curve, const gp_Circ& circle,
+                                              bool closed, const Frame& frame) {
     const Vec3 axis = ToVec(circle.Axis().Direction());
     const Vec3 centre = ToVec(circle.Location());
     const double r = circle.Radius();
@@ -67,7 +126,7 @@ Expected<ProjectedCurve> ProjectSlantedCircle(const BRepAdaptor_Curve& curve, co
         out.end = frame.ToLocal(centre + along * hi);
         return out;
     }
-    if (!closed) return Error{"Дуга не параллельна плоскости эскиза — в проекции дуга эллипса (пока не поддерживается)"};
+    if (!closed) return ProjectAsSpline(edge, curve, frame);   // a piece of an ellipse
     // The other axis: the circle's diameter across `along`, shortened by the slant.
     const Vec3 across = axis.Cross(along).Normalized();
     out.kind = ProjectedCurve::Kind::Ellipse;
@@ -99,7 +158,7 @@ Expected<ProjectedCurve> ProjectEdge(const TopoDS_Edge& edge, const Frame& frame
             const gp_Circ circle = curve.Circle();
             const double facing = ToVec(circle.Axis().Direction()).Dot(frame.normal);
             const bool closed = first.IsNull() || BRep_Tool::Pnt(first).Distance(BRep_Tool::Pnt(last)) < 1e-7;
-            if (std::abs(facing) < 0.9999) return ProjectSlantedCircle(curve, circle, closed, frame);
+            if (std::abs(facing) < 0.9999) return ProjectSlantedCircle(edge, curve, circle, closed, frame);
             out.centre = frame.ToLocal(ToVec(circle.Location()));
             out.radius = circle.Radius();
             if (closed) {
@@ -125,7 +184,9 @@ Expected<ProjectedCurve> ProjectEdge(const TopoDS_Edge& edge, const Frame& frame
         }
         default: break;
     }
-    return Error{"Такое ребро пока не проецируется: только отрезки, окружности и дуги"};
+    // An ellipse, a spline, a curve of a loft or a sweep: as Inventor does,
+    // its projection is drawn as a spline through points along it.
+    return ProjectAsSpline(edge, curve, frame);
 }
 
 } // namespace bz::kernel::occt
@@ -430,4 +491,142 @@ Expected<RevolvedProjection> ProjectRevolved(const TopoDS_Shape& body, const Top
     }
 }
 
+std::vector<ProjectedCurve> ProjectSection(const TopoDS_Shape& body, const Frame& frame) {
+    std::vector<ProjectedCurve> out;
+    if (body.IsNull()) return out;
+    try {
+        Bnd_Box box;
+        BRepBndLib::Add(body, box);
+        const double size = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
+        const double deflection = std::max(size * 2e-3, 1e-3);
+        const gp_Pnt origin(frame.origin.x, frame.origin.y, frame.origin.z);
+        const gp_Dir n(frame.normal.x, frame.normal.y, frame.normal.z);
+        const TopoDS_Shape cut = Section(body, gp_Pln(origin, n));
+        if (!cut.IsNull()) AddCurves(cut, frame, deflection, out);
+    } catch (const Standard_Failure&) {
+        out.clear();
+    }
+    return out;
+}
+
+namespace {
+
+/// A projected curve as an edge in the XY plane (sketch coordinates).
+std::optional<TopoDS_Edge> FlatEdge(const ProjectedCurve& c) {
+    const auto p = [](Vec2 v) { return gp_Pnt(v.x, v.y, 0.0); };
+    const gp_Dir z(0, 0, 1);
+    switch (c.kind) {
+        case ProjectedCurve::Kind::Line: {
+            if ((c.end - c.start).Length() < kLinear) return std::nullopt;
+            BRepBuilderAPI_MakeEdge make(p(c.start), p(c.end));
+            if (make.IsDone()) return make.Edge();
+            return std::nullopt;
+        }
+        case ProjectedCurve::Kind::Circle:
+        case ProjectedCurve::Kind::Arc: {
+            const gp_Circ circle(gp_Ax2(p(c.centre), z), c.radius);
+            BRepBuilderAPI_MakeEdge make = c.kind == ProjectedCurve::Kind::Circle ? BRepBuilderAPI_MakeEdge(circle)
+                                                                                 : BRepBuilderAPI_MakeEdge(circle, p(c.start), p(c.end));
+            if (make.IsDone()) return make.Edge();
+            return std::nullopt;
+        }
+        case ProjectedCurve::Kind::Spline: {
+            if (c.points.size() < 2) return std::nullopt;
+            const bool closed = (c.points.back() - c.points.front()).Length() < kLinear;
+            const int n = static_cast<int>(c.points.size()) - (closed ? 1 : 0);
+            Handle(TColgp_HArray1OfPnt) pts = new TColgp_HArray1OfPnt(1, n);
+            for (int i = 0; i < n; ++i) pts->SetValue(i + 1, p(c.points[static_cast<std::size_t>(i)]));
+            GeomAPI_Interpolate interpolate(pts, closed, kLinear);
+            interpolate.Perform();
+            if (!interpolate.IsDone()) return std::nullopt;
+            BRepBuilderAPI_MakeEdge make(interpolate.Curve());
+            if (make.IsDone()) return make.Edge();
+            return std::nullopt;
+        }
+        case ProjectedCurve::Kind::Ellipse: {
+            Vec2 major = c.start - c.centre, minor = c.end - c.centre;
+            if (minor.Length() > major.Length()) std::swap(major, minor);
+            if (minor.Length() < kLinear) return std::nullopt;
+            const gp_Elips e(gp_Ax2(p(c.centre), z, gp_Dir(major.x, major.y, 0.0)), major.Length(), minor.Length());
+            BRepBuilderAPI_MakeEdge make(e);
+            if (make.IsDone()) return make.Edge();
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+std::vector<ProjectedCurve> TrimOverlaps(const std::vector<ProjectedCurve>& curves, bool& changed) {
+    changed = false;
+    if (curves.size() < 2) return curves;
+    try {
+        BOPAlgo_Builder builder;
+        for (const ProjectedCurve& c : curves) {
+            const std::optional<TopoDS_Edge> e = FlatEdge(c);
+            if (!e) return curves;
+            builder.AddArgument(*e);
+        }
+        builder.SetFuzzyValue(1e-6);
+        builder.SetRunParallel(false);
+        builder.Perform();
+        if (builder.HasErrors()) return curves;
+        // Split where they cross; a stretch covered twice is one shared edge.
+        TopTools_IndexedMapOfShape pieces;
+        TopExp::MapShapes(builder.Shape(), TopAbs_EDGE, pieces);
+        if (pieces.Extent() == static_cast<int>(curves.size())) return curves;   // nothing crossed or overlapped
+        const Frame plane{{0, 0, 0}, {1, 0, 0}, {0, 0, 1}};
+        std::vector<ProjectedCurve> out;
+        for (int i = 1; i <= pieces.Extent(); ++i) {
+            const TopoDS_Edge& edge = TopoDS::Edge(pieces(i));
+            if (BRep_Tool::Degenerated(edge)) continue;
+            const Expected<ProjectedCurve> pc = ProjectEdge(edge, plane);
+            if (!pc) return curves;   // a piece of an ellipse: not a sketch curve, the outline stays as it was
+            if (pc->kind == ProjectedCurve::Kind::Line && (pc->end - pc->start).Length() < kLinear) continue;
+            out.push_back(*pc);
+        }
+        // A straight stretch the splitting cut into pieces with nothing else
+        // meeting where they join (a face seen edge-on): one line again.
+        const auto ends = [&](Vec2 p) {
+            int n = 0;
+            for (const ProjectedCurve& c : out) {
+                const bool open = c.kind != ProjectedCurve::Kind::Circle && c.kind != ProjectedCurve::Kind::Ellipse &&
+                                  !(c.kind == ProjectedCurve::Kind::Spline && (c.end - c.start).Length() < 1e-9);
+                n += open && (c.start - p).Length() < 1e-6 ? 1 : 0;
+                n += open && (c.end - p).Length() < 1e-6 ? 1 : 0;
+            }
+            return n;
+        };
+        for (bool merged = true; merged;) {
+            merged = false;
+            for (std::size_t i = 0; i < out.size() && !merged; ++i)
+                for (std::size_t j = i + 1; j < out.size() && !merged; ++j) {
+                    ProjectedCurve& a = out[i];
+                    const ProjectedCurve& b = out[j];
+                    if (a.kind != ProjectedCurve::Kind::Line || b.kind != ProjectedCurve::Kind::Line) continue;
+                    const Vec2 da = (a.end - a.start).Normalized(), db = (b.end - b.start).Normalized();
+                    if (std::abs(da.Cross(db)) > 1e-9) continue;
+                    for (const auto& [pa, pb] : {std::pair{&a.start, &b.start}, {&a.start, &b.end}, {&a.end, &b.start}, {&a.end, &b.end}}) {
+                        if ((*pa - *pb).Length() > 1e-6 || ends(*pa) != 2) continue;
+                        *pa = pb == &b.start ? b.end : b.start;   // a grows over b
+                        out.erase(out.begin() + static_cast<std::ptrdiff_t>(j));
+                        merged = true;
+                        break;
+                    }
+                }
+        }
+        changed = true;
+        return out;
+    } catch (const Standard_Failure&) {
+        return curves;
+    }
+}
+
 } // namespace bz::kernel::occt
+
+namespace bz::kernel {
+std::vector<ProjectedCurve> TrimOverlappingCurves(const std::vector<ProjectedCurve>& curves, bool& changed) {
+    return occt::TrimOverlaps(curves, changed);
+}
+} // namespace bz::kernel

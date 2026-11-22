@@ -5,8 +5,10 @@ add_executable(bz_tests
     app/NewTemplatesTests.cpp
     app/SettingsTests.cpp
     app/GestureTests.cpp
+    app/TouchTextTests.cpp
     app/SectionTests.cpp
     app/ExtrudeDirectionTests.cpp
+    app/ProjectIntoTests.cpp
     # The app is an executable; its OCCT-free pieces are compiled in directly.
     ${PROJECT_SOURCE_DIR}/src/app/Format.cpp
     ${PROJECT_SOURCE_DIR}/src/app/NewTemplates.cpp
@@ -14,14 +16,25 @@ add_executable(bz_tests
     ${PROJECT_SOURCE_DIR}/src/app/sketch/DimensionLayout.cpp
     ${PROJECT_SOURCE_DIR}/src/app/Settings.cpp
     ${PROJECT_SOURCE_DIR}/src/app/mobile/Gestures.cpp
+    ${PROJECT_SOURCE_DIR}/src/app/mobile/TouchText.cpp
     ${PROJECT_SOURCE_DIR}/src/app/features/ExtrudeDirection.cpp
+    drawing/BalloonTests.cpp
+    drawing/DimensionTests.cpp
+    drawing/DrawingTests.cpp
+    drawing/DxfTests.cpp
+    drawing/DrawingViewTests.cpp
+    drawing/PdfTests.cpp
+    drawing/SectionTests.cpp
+    drawing/SpecificationTests.cpp
     assembly/AssemblyFileTests.cpp
+    assembly/HandoffTests.cpp
     assembly/InventorConstraintsTests.cpp
     assembly/PartsBesideTests.cpp
     assembly/ProjectPackTests.cpp
     assembly/RotationAnglesTests.cpp
     assembly/SolverTests.cpp
     core/CrashCodeTests.cpp
+    core/MathTests.cpp
     core/ExpressionTests.cpp
     core/FaultGuardTests.cpp
     core/FoldersTests.cpp
@@ -36,23 +49,29 @@ add_executable(bz_tests
     document/StandardPacksTests.cpp
     kernel/AssemblyDesignTests.cpp
     kernel/ChangeDialogTests.cpp
+    kernel/CorpusTests.cpp
     kernel/AssemblyModelTests.cpp
     kernel/AutoDropTests.cpp
     kernel/ComponentPatternTests.cpp
     kernel/BracketTests.cpp
     kernel/CoilTests.cpp
     kernel/FilletTests.cpp
+    kernel/SlotSeatTests.cpp
     kernel/SeamTests.cpp
+    kernel/HiddenLinesTests.cpp
     kernel/HoleTests.cpp
+    kernel/ImportTests.cpp
     kernel/LoftTests.cpp
     kernel/MaterialSideTests.cpp
     kernel/MeasureTests.cpp
     kernel/ExtrudeToFaceTests.cpp
     kernel/ExtrudeToCurvedTests.cpp
+    kernel/RegressionOpenTests.cpp
     kernel/ModelTests.cpp
     kernel/PatternTests.cpp
     kernel/ProjectionTests.cpp
     kernel/SketchSourceTests.cpp
+    kernel/ProjectGeometryTests.cpp
     kernel/ProjectionRepairTests.cpp
     kernel/RevolvedProjectionTests.cpp
     kernel/RevolveTests.cpp
@@ -80,19 +99,29 @@ add_executable(bz_tests
     sketch/SolverTests.cpp
     sketch/StressTests.cpp
     sketch/TrimTests.cpp)
-target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
+target_link_libraries(bz_tests PRIVATE bz::miniz bz::core bz::sketch bz::document bz::drawing bz::assembly bz::kernel bz::sheetmetal bz::modules bz::doctest bz::json)
 add_dependencies(bz_tests bz_example_module bz_example_module_fail)
-if(TARGET bz_render AND NOT ANDROID)
+target_link_libraries(bz_tests PRIVATE bz::occt_exchange)   # ImportTests write their own STEP files
+if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop only (GLFW)
     # The assembly as the program runs it (solving, adaptivity, undo): its
     # state and the part sessions in it, without a window.
-    target_sources(bz_tests PRIVATE app/AssemblyAdaptTests.cpp app/ChangeQueueTests.cpp
+    target_sources(bz_tests PRIVATE app/AssemblyAdaptTests.cpp app/ChangeQueueTests.cpp app/DrawingSessionTests.cpp
+        render/FloorShadowTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/AssemblyState.cpp
         ${PROJECT_SOURCE_DIR}/src/app/Session.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/drawing/DrawingState.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchRepair.cpp
         app/SketchSnapTests.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchPick.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchText.cpp)
     target_link_libraries(bz_tests PRIVATE bz::render bz::ui bz::imgui glfw OpenGL::GL)
+endif()
+if(IOS)
+    # The tests run on the iOS simulator (scripts/ios/run-tests.sh): it sees
+    # the Mac's files, so the paths below are the build machine's. OCCT is
+    # static there and its toolkits want these system frameworks.
+    target_link_libraries(bz_tests PRIVATE "-framework Foundation" "-framework CoreFoundation" "-framework CoreGraphics"
+                                           "-framework CoreText" "-framework UIKit")
 endif()
 if(ANDROID)
     # The tests run on a phone or the emulator, not where they were built:
@@ -109,15 +138,15 @@ else()
         BZ_EXAMPLE_MODULE_FAIL="$<TARGET_FILE:bz_example_module_fail>"
         BZ_CMAKE="${CMAKE_COMMAND}")
 endif()
-if(BZ_BUILD_MCP)   # the MCP module's protocol layer, the module, and its package
-    target_sources(bz_tests PRIVATE modules/McpProtocolTests.cpp ${PROJECT_SOURCE_DIR}/modules/mcp/Protocol.cpp
-                                    ${PROJECT_SOURCE_DIR}/modules/mcp/Net.cpp ${PROJECT_SOURCE_DIR}/modules/mcp/Connection.cpp)
-    target_include_directories(bz_tests PRIVATE ${PROJECT_SOURCE_DIR}/modules/mcp)
-    if(WIN32)
-        target_link_libraries(bz_tests PRIVATE ws2_32)
-    endif()
-    add_dependencies(bz_tests bz_mcp)
-    target_compile_definitions(bz_tests PRIVATE BZ_MCP_MODULE="$<TARGET_FILE:bz_mcp_module>" BZ_MCP_PACKAGE="${BZ_MCP_PACKAGE}")
-endif()
 bz_set_warnings(bz_tests)
 add_test(NAME bz_tests COMMAND bz_tests)
+
+# Headless-диагностика медленного открытия: каждый файл из
+# tests/data/regression загружается и пересчитывается без отрисовки,
+# печатаются времена операций и топ-20. Не часть bz_tests: запускается
+# вручную (scripts/dev/check.sh) — зависание здесь не должно вешать CI.
+if(NOT ANDROID AND NOT IOS)
+    add_executable(bz_openbench openbench.cpp)
+    target_link_libraries(bz_openbench PRIVATE bz::core bz::document bz::assembly bz::kernel)
+    bz_set_warnings(bz_openbench)
+endif()

@@ -20,12 +20,15 @@
 
 #include <miniz.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <format>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <string_view>
 
 namespace bz::kernel {
 namespace {
@@ -34,12 +37,13 @@ struct Triangle {
     std::array<Vec3, 3> v;
 };
 
-/// All bodies as one compound.
+/// All exact bodies as one compound (meshes have no surfaces to write).
 TopoDS_Compound Compound(const std::vector<Body>& bodies) {
     TopoDS_Compound compound;
     BRep_Builder builder;
     builder.MakeCompound(compound);
-    for (const Body& b : bodies) builder.Add(compound, b.shape);
+    for (const Body& b : bodies)
+        if (!b.mesh) builder.Add(compound, b.shape);
     return compound;
 }
 
@@ -48,7 +52,8 @@ std::vector<Triangle> Triangulate(const std::vector<Body>& bodies, MeshQuality q
     std::vector<Triangle> triangles;
     for (const Body& body : bodies) {
         // Not in parallel: a fault in OCCT's worker threads is not caught (see SetUpOcct).
-        BRepMesh_IncrementalMesh mesher(body.shape, quality.chordal, false, quality.angular, false);
+        // A mesh body already is triangles.
+        if (!body.mesh) BRepMesh_IncrementalMesh mesher(body.shape, quality.chordal, false, quality.angular, false);
         for (TopExp_Explorer it(body.shape, TopAbs_FACE); it.More(); it.Next()) {
             const TopoDS_Face face = TopoDS::Face(it.Current());
             TopLoc_Location location;
@@ -73,7 +78,7 @@ std::vector<Triangle> Triangulate(const std::vector<Body>& bodies, MeshQuality q
     return triangles;
 }
 
-Status WriteBytes(const std::filesystem::path& path, const std::string& bytes) {
+Status WriteBytes(const std::filesystem::path& path, std::string_view bytes) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return Error{std::format("Не удалось создать файл: {}", ToUtf8(path))};
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -92,6 +97,8 @@ void AppendRaw(std::string& out, T value) {
 
 Status Model::ExportStep(const std::filesystem::path& path) const {
     if (myImpl->bodies.empty()) return Error{"Нет тел для экспорта"};
+    if (std::all_of(myImpl->bodies.begin(), myImpl->bodies.end(), [](const Body& b) { return b.mesh; }))
+        return Error{"В детали только сетка (STL): в STEP её не сохранить — экспортируйте в STL или 3MF"};
     try {
         STEPControl_Writer writer;
         Interface_Static::SetCVal("write.step.schema", "AP214IS");
@@ -194,10 +201,10 @@ Status Model::Export3mf(const std::filesystem::path& path, MeshQuality quality) 
     void* buffer = nullptr;
     std::size_t size = 0;
     const bool finalized = added && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    const std::string bytes = finalized ? std::string(static_cast<const char*>(buffer), size) : std::string{};
     mz_zip_writer_end(&zip);
     if (!finalized) return Error{"Не удалось упаковать 3MF"};
-    return WriteBytes(path, bytes);
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
+    return WriteBytes(path, {static_cast<const char*>(archive.get()), size});
 }
 
 } // namespace bz::kernel

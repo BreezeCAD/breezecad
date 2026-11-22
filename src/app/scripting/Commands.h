@@ -20,6 +20,9 @@
 namespace bz::doc {
 class Document;
 class Feature;
+namespace parts {
+struct Request;
+}
 } // namespace bz::doc
 
 namespace bz::app {
@@ -37,6 +40,15 @@ struct Failure {
     std::string message;
 };
 [[noreturn]] void Fail(std::string message);
+
+/// Thrown when the user cancels the rebuild a command waits for: the
+/// command's changes are taken back (Run), the caller is told so.
+struct Cancelled {};
+/// Brings `part`'s model up to date before the command reads it. A long
+/// rebuild runs on another thread while the window stays alive and shows
+/// its progress (Session::RebuildWaiting, AppContext::keepAlive); the
+/// command goes on when it is done. Throws Cancelled.
+void Rebuild(Session& part);
 
 struct Command {
     std::string name;          ///< "part.tree"
@@ -58,6 +70,7 @@ void AddFeatureCommands(Commands& out);    // FeatureCommands.cpp: hole, fillet,
 void AddWorkCommands(Commands& out);       // WorkCommands.cpp: work planes, axes, points
 void AddViewCommands(Commands& out);       // ViewCommands.cpp: picture, camera, appearance, standard parts
 void AddAssemblyCommands(Commands& out);   // AssemblyCommands.cpp: components, constraints, joints
+void AddConnCommands(Commands& out);       // ConnCommands.cpp: «Продолжить на устройстве» for a module
 
 // --- schemas ----------------------------------------------------------------
 
@@ -133,6 +146,9 @@ void RollBackIfFailed(Session& part, ObjectId feature);
 /// rebuilds, rolls back on failure. The reply: the feature, its named
 /// parameters and the part's volume.
 Json AddToPart(Session& part, std::unique_ptr<doc::Feature> f, const Json& args, const char* title, std::vector<Parameter*> name = {});
+/// The sizes a standard part takes typed ("inputs": {"B": 1250}, mm) into
+/// `request` (library.make_part, assembly.place).
+void StandardInputs(const Json& args, doc::parts::Request& request);
 /// A plane: "XY" / "XZ" / "YZ", a work plane's name or its id.
 ObjectId PlaneArg(Session& part, const Json& args, const char* key);
 

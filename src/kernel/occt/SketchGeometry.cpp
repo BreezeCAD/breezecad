@@ -17,6 +17,8 @@
 #include <GCPnts_TangentialDeflection.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <IntTools_Context.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
 #include <NCollection_List.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
 #include <Standard_Failure.hxx>
@@ -29,6 +31,7 @@
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Wire.hxx>
+#include <chrono>
 #include <format>
 #include <gp.hxx>
 #include <gp_Ax2.hxx>
@@ -210,6 +213,23 @@ TopoDS_Face DropInnerEdges(const TopoDS_Face& face) {
     return out;
 }
 
+/// Stops OCCT's loops once a deadline has passed: finding a sketch's regions
+/// must never hang the program (a sketch of hundreds of stacked curves took
+/// minutes inside BOPAlgo_BuilderFace).
+class Deadline : public Message_ProgressIndicator {
+public:
+    explicit Deadline(double seconds)
+        : myEnd(std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds))) {}
+    void Show(const Message_ProgressScope&, const Standard_Boolean) override {}
+    Standard_Boolean UserBreak() override { return std::chrono::steady_clock::now() > myEnd; }
+
+private:
+    std::chrono::steady_clock::time_point myEnd;
+};
+
+/// Seconds a sketch's regions may take to find (far beyond any real sketch).
+constexpr double kRegionSeconds = 8.0;
+
 bool TouchesBox(const TopoDS_Face& face, const Frame& frame, double limit) {
     for (TopExp_Explorer it(face, TopAbs_VERTEX); it.More(); it.Next()) {
         const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(it.Current()));
@@ -263,7 +283,13 @@ Expected<SketchProfile> BuildProfile(const doc::SketchFeature& feature) {
         BRepAlgoAPI_Splitter splitter;
         splitter.SetArguments(objects);
         splitter.SetTools(tools);
-        splitter.Build();
+        Handle(Deadline) deadline = new Deadline(kRegionSeconds);
+        const auto started = std::chrono::steady_clock::now();
+        splitter.Build(Message_ProgressRange(deadline->Start()));
+        if (deadline->UserBreak() || std::chrono::steady_clock::now() - started > std::chrono::duration<double>(kRegionSeconds))
+            return Error{std::format("Эскиз слишком сложный: замкнутые контуры не найдены за {:.0f} с ({} кривых) — уберите лишние "
+                                     "проекции или сделайте их вспомогательными",
+                                     kRegionSeconds, edges.size())};
         if (!splitter.IsDone()) return Error{"Не удалось найти замкнутые контуры эскиза"};
 
         Handle(IntTools_Context) context = new IntTools_Context();

@@ -42,6 +42,10 @@ constexpr FileType kTypes[] = {
     {L".bzlib", L"BreezeCAD.Library", L"library.ico"},
     {L".bzp", L"BreezeCAD.Project", L"project.ico"},
 };
+/// Other programs' files BreezeCAD imports (STEP, STL): offered in "Open
+/// with" only, never made the default — an STL usually opens in a slicer.
+constexpr const wchar_t* kImportProgId = L"BreezeCAD.Import";
+constexpr const wchar_t* kImportExts[] = {L".step", L".stp", L".stl"};
 
 fs::path KnownFolder(REFKNOWNFOLDERID id) {
     PWSTR raw = nullptr;
@@ -455,7 +459,7 @@ bool Register(const Choices& c, const std::string& version, std::uint64_t sizeBy
               SetString(HKEY_CURRENT_USER, key, L"QuietUninstallString", Quoted(uninstaller) + L" --uninstall --quiet") &&
               SetString(HKEY_CURRENT_USER, key, L"ModifyPath", Quoted(uninstaller)) &&
               SetString(HKEY_CURRENT_USER, key, L"URLInfoAbout", L"https://breezecad.ru") &&
-              SetString(HKEY_CURRENT_USER, key, L"HelpLink", L"https://github.com/MikeVerx/breezecad/issues") &&
+              SetString(HKEY_CURRENT_USER, key, L"HelpLink", L"https://github.com/BreezeCAD/breezecad/issues") &&
               SetDword(HKEY_CURRENT_USER, key, L"NoRepair", 1) &&
               SetDword(HKEY_CURRENT_USER, key, L"EstimatedSize", static_cast<DWORD>(sizeBytes / 1024));
     if (!ok) {
@@ -478,6 +482,13 @@ bool Register(const Choices& c, const std::string& version, std::uint64_t sizeBy
         SetString(HKEY_CURRENT_USER, classes + t.ext + L"\\OpenWithProgids", t.progId, L"");
         SetString(HKEY_CURRENT_USER, classes + L"Applications\\breezecad.exe\\SupportedTypes", t.ext, L"");
         if (chosen[i]) SetString(HKEY_CURRENT_USER, classes + t.ext, nullptr, t.progId);
+    }
+    SetString(HKEY_CURRENT_USER, classes + kImportProgId, nullptr, L"STEP / STL");
+    SetString(HKEY_CURRENT_USER, classes + kImportProgId + L"\\DefaultIcon", nullptr, (c.dir / L"shell" / L"part.ico").wstring());
+    SetString(HKEY_CURRENT_USER, classes + kImportProgId + L"\\shell\\open\\command", nullptr, command);
+    for (const wchar_t* ext : kImportExts) {
+        SetString(HKEY_CURRENT_USER, classes + ext + L"\\OpenWithProgids", kImportProgId, L"");
+        SetString(HKEY_CURRENT_USER, classes + L"Applications\\breezecad.exe\\SupportedTypes", ext, L"");
     }
     SetString(HKEY_CURRENT_USER, classes + L"Applications\\breezecad.exe\\shell\\open\\command", nullptr, command);
     SetString(HKEY_CURRENT_USER, classes + L"Applications\\breezecad.exe", L"FriendlyAppName", L"BreezeCAD");
@@ -535,6 +546,9 @@ bool Uninstall(const fs::path& dir, bool keepSettings, std::wstring& error) {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, (classes + t.ext + L"\\OpenWithProgids").c_str(), t.progId);
         RegDeleteTreeW(HKEY_CURRENT_USER, (classes + t.progId).c_str());
     }
+    for (const wchar_t* ext : kImportExts)
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, (classes + ext + L"\\OpenWithProgids").c_str(), kImportProgId);
+    RegDeleteTreeW(HKEY_CURRENT_USER, (classes + kImportProgId).c_str());
     RegDeleteTreeW(HKEY_CURRENT_USER, (classes + L"Applications\\breezecad.exe").c_str());
     RegDeleteTreeW(HKEY_CURRENT_USER, kUninstallKey);
     fs::remove(KnownFolder(FOLDERID_Programs) / L"BreezeCAD.lnk", ec);

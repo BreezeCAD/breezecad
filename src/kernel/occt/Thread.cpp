@@ -8,7 +8,9 @@
 #include <gp_Ax2.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
-#include <BRepClass3d_SolidClassifier.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <Precision.hxx>
+#include <gp_Lin.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepGProp_Face.hxx>
@@ -119,6 +121,27 @@ struct Layout {
     double side = -1;          ///< -1 shaft (the groove goes in), +1 hole
 };
 
+/// Whether `p` is in the material of `body`: rays from it cross the body's
+/// surface an odd number of times. Not BRepClass3d_SolidClassifier: in OCCT
+/// 7.9.3 of MSYS2 (Windows) it faults inside, at some points and not others
+/// (a hole under a counterbore made on an iPad, standard screws), while the
+/// same build intersects lines with faces fine. Three skew rays, the
+/// majority: a ray through an edge or along a face can miscount.
+bool Inside(const TopoDS_Shape& body, const Vec3& p, const Vec3& axis, const Vec3& across) {
+    IntCurvesFace_ShapeIntersector rays;
+    rays.Load(body, 1e-7);
+    const Vec3 side = across.Cross(axis);
+    const Vec3 dirs[] = {(across * 0.7 + axis * 0.2 + side * 0.3).Normalized(),
+                         (across * -0.3 + axis * -0.6 + side * 0.7).Normalized(),
+                         (across * 0.4 + axis * 0.5 + side * -0.75).Normalized()};
+    int inside = 0;
+    for (const Vec3& d : dirs) {
+        rays.Perform(gp_Lin(gp_Pnt(p.x, p.y, p.z), gp_Dir(d.x, d.y, d.z)), 0, Precision::Infinite());
+        if (rays.IsDone() && rays.NbPnt() % 2 == 1) ++inside;
+    }
+    return inside >= 2;
+}
+
 Expected<Layout> Plan(const TopoDS_Shape& body, const doc::ThreadFeature& f) {
     if (!f.face) return Error{"Щёлкните цилиндрическую грань: вал или стенку отверстия"};
     for (const Parameter* p : {&f.pitch, &f.length})
@@ -158,11 +181,9 @@ Expected<Layout> Plan(const TopoDS_Shape& body, const doc::ThreadFeature& f) {
     // runs out past it. A closed one (a shoulder, the bottom of a blind
     // hole): the groove stops short of it rather than cutting into it.
     const double half = (l.depth + kOvershoot * l.pitch) * std::tan(kPi / 6);
-    BRepClass3d_SolidClassifier classifier(body);
     const auto open = [&](double along, double outward) {
         const Vec3 p = s.axisPoint + axis * (along + outward * std::min(0.2 * l.pitch, 0.5)) + l.across * (s.radius + l.side * l.depth / 2);
-        classifier.Perform(gp_Pnt(p.x, p.y, p.z), 1e-7);
-        return classifier.State() == TopAbs_OUT;
+        return !Inside(body, p, axis, l.across);
     };
     l.begin += open(l.begin, -1) ? -l.pitch : half;
     if (length >= faceLength - 1e-9) l.end += open(l.end, 1) ? l.pitch : -half;

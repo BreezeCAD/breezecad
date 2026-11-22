@@ -23,8 +23,7 @@ struct DocumentTypeInfo {
 
 class DocumentTypeRegistry {
 public:
-    /// Part, assembly and drawing (the drawing is a placeholder: it can
-    /// be neither created nor opened until its module exists).
+    /// Part, assembly and drawing (docs/ADR/0012-drawings.md).
     static DocumentTypeRegistry& Default();
 
     /// Adds a kind, or replaces the one with the same id.

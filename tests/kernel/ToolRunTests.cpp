@@ -30,6 +30,9 @@
 #include <algorithm>
 #include <filesystem>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using namespace bz::test;
 using doc::FeatureState;
@@ -172,6 +175,27 @@ TEST_CASE("a tapered extrusion is as tall as asked") {
     const double top = 20 - 2 * 10 * std::tan(5 * kPi / 180);
     const double v = 10.0 / 3 * (400 + top * top + 20 * top);
     CHECK(model.Volume() == doctest::Approx(v).epsilon(1e-5));
+}
+
+TEST_CASE("a tapered extrusion keeps its holes, their walls drafted the same way") {
+    // Found on Windows: a plate with a hole extruded with a taper came out
+    // solid — the hole filled. As in Inventor, the material narrows: the
+    // outside leans in, the hole opens up towards the top.
+    doc::Document d;
+    auto& sk = AddSketch(d);
+    AddRect(d, sk, {-10, -10}, {10, 10});
+    AddCircle(d, sk, {0, 0}, 4);
+    auto& ex = AddExtrude(d, sk.id, "10");
+    ex.taper.expression = "5";
+    kernel::Model model;
+    model.Rebuild(d);
+    REQUIRE(ex.status.state == FeatureState::Ok);
+    const double t = std::tan(5 * kPi / 180);
+    const double top = 20 - 2 * 10 * t;
+    const double block = 10.0 / 3 * (400 + top * top + 20 * top);
+    const double r2 = 4 + 10 * t;   // the hole's radius at the top
+    const double hole = kPi * 10.0 / 3 * (16 + r2 * r2 + 4 * r2);
+    CHECK(model.Volume() == doctest::Approx(block - hole).epsilon(1e-5));
 }
 
 TEST_CASE("a shell of a square-to-circle loft says why it cannot be built") {
@@ -514,3 +538,5 @@ TEST_CASE("a washer turns on a screw head both ways round") {
     CHECK(over.translation.z == doctest::Approx(6.0).epsilon(1e-6));
     std::filesystem::remove_all(dir);
 }
+
+TEST_SUITE_END();

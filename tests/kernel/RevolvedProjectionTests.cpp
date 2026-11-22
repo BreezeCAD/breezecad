@@ -19,6 +19,9 @@
 #include <algorithm>
 #include <array>
 
+// The fast set: every pull request runs it (bz_tests -ts=fast, STAB-0 step 4).
+TEST_SUITE_BEGIN("fast");
+
 using namespace bz;
 using kernel::ProjectedCurve;
 
@@ -222,3 +225,5 @@ TEST_CASE("a cylinder on its own seen from the side: no line twice") {
     REQUIRE(r);
     CHECK(TotalLength(r->outline) == doctest::Approx(2 * 25 + 2 * 20));
 }
+
+TEST_SUITE_END();

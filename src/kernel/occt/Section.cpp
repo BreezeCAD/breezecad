@@ -1,6 +1,15 @@
 #include "kernel/occt/Section.h"
 
+#include "core/FaultGuard.h"
+
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom_Plane.hxx>
+#include <TopoDS.hxx>
+#include <gp_Pln.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <Bnd_Box.hxx>
@@ -41,6 +50,66 @@ Expected<std::optional<TopoDS_Shape>> CutByPlane(const TopoDS_Shape& body, const
     } catch (const Standard_Failure& failure) {
         return Error{std::format("Ошибка сечения: {}", failure.GetMessageString())};
     }
+}
+
+Expected<std::vector<TopoDS_Face>> CutFaces(const TopoDS_Shape& body, const Frame& plane, double deflection) {
+    Bnd_Box box;
+    BRepBndLib::Add(body, box);
+    if (box.IsVoid()) return std::vector<TopoDS_Face>{};
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    // The plane misses the box: nothing to compute (most bodies of an assembly).
+    double lo = 0, hi = 0;
+    bool first = true;
+    for (const double x : {x0, x1})
+        for (const double y : {y0, y1})
+            for (const double z : {z0, z1}) {
+                const double d = (Vec3{x, y, z} - plane.origin).Dot(plane.normal);
+                lo = first ? d : std::min(lo, d);
+                hi = first ? d : std::max(hi, d);
+                first = false;
+            }
+    if (lo > 0 || hi < 0) return std::vector<TopoDS_Face>{};
+    const Vec3 corner{x0, y0, z0}, opposite{x1, y1, z1};
+    double reach = (opposite - corner).Length();
+    for (const Vec3 c : {corner, opposite}) reach = std::max(reach, (c - plane.origin).Length());
+    reach += 10.0;
+
+    std::vector<TopoDS_Face> faces;
+    std::string fault;
+    try {
+        const bool ok = guard::RunGuarded(
+            [&] {
+                const gp_Pnt at(plane.origin.x, plane.origin.y, plane.origin.z);
+                const gp_Dir n(plane.normal.x, plane.normal.y, plane.normal.z);
+                // A frame made from a normal alone may carry any x: take it only across the normal.
+                const Vec3 x = plane.xDir - plane.normal * plane.xDir.Dot(plane.normal);
+                const gp_Pln pln = x.Length() > 1e-6 ? gp_Pln(gp_Ax3(at, n, gp_Dir(x.x, x.y, x.z))) : gp_Pln(at, n);
+                const TopoDS_Face sheet = BRepBuilderAPI_MakeFace(pln, -reach, reach, -reach, reach).Face();
+                BRepAlgoAPI_Common common(body, sheet);
+                if (!common.IsDone()) return;
+                const TopoDS_Shape cut = common.Shape();
+                BRepMesh_IncrementalMesh mesh(cut, deflection, false, 0.5, false);
+                for (TopExp_Explorer f(cut, TopAbs_FACE); f.More(); f.Next()) {
+                    TopoDS_Face face = TopoDS::Face(f.Current());
+                    TopLoc_Location loc;
+                    if (BRep_Tool::Triangulation(face, loc).IsNull()) continue;
+                    // Facing the half that is cut away: towards the one who looks in.
+                    const Handle(Geom_Plane) surface = Handle(Geom_Plane)::DownCast(BRep_Tool::Surface(face));
+                    if (!surface.IsNull()) {
+                        gp_Dir n = surface->Pln().Axis().Direction();
+                        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+                        if (n.X() * plane.normal.x + n.Y() * plane.normal.y + n.Z() * plane.normal.z < 0) face.Reverse();
+                    }
+                    faces.push_back(face);
+                }
+            },
+            &fault);
+        if (!ok) return Error{std::format("Сечение: сбой ядра ({})", fault)};
+    } catch (const Standard_Failure& failure) {
+        return Error{std::format("Ошибка сечения: {}", failure.GetMessageString())};
+    }
+    return faces;
 }
 
 } // namespace bz::kernel::occt

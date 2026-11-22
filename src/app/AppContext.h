@@ -14,6 +14,7 @@
 #include "ui/Ui.h"
 #include "ui/Widgets.h"
 
+#include <cstdint>
 #include <memory>
 #include <functional>
 #include <optional>
@@ -274,6 +275,7 @@ struct AppContext {
     /// nothing of the input reaching the document. False — the user asked
     /// to cancel (Esc, «Отменить» in the status bar). Empty without a window.
     std::function<bool()>      keepAlive;
+    std::uintptr_t              nativeWindow = 0;   ///< window handle for desktop platform services
 
     Session* Doc() { return workspace.Active(); }
 

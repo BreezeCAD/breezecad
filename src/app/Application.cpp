@@ -272,7 +272,8 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
     myIcons.SetScale(framebufferScale);
 
     progress(Tr("Загрузка ядра геометрии…"));
-    if (!myViewport.Init(myWindow.NativeSurface())) return false;
+    const NativeGlSurface nativeSurface = myWindow.NativeSurface();
+    if (!myViewport.Init(nativeSurface)) return false;
 
     myUi = std::make_unique<ui::Ui>(ui::Ui{myTheme, myFonts, myIcons, myScale});
     ApplyTheme(true);
@@ -284,6 +285,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
                                                         myViewport, mySketch, myOps, myShell, myDeferred, 0.0, {}, {}, {}});
     myContext->recovery = &myRecovery;
     myContext->keepAlive = [this] { return KeepAlive(); };
+    myContext->nativeWindow = nativeSurface.window;
     myWorkspace.previewMaker = [this] { return DocumentPreview(myViewport); };
     RegisterActions(*myContext);
     LoadStandardPacks(*myContext);

@@ -143,7 +143,7 @@ void PhotoEditor::Poll(AppContext& app) {
         return;
     }
     if (myToClipboard) {
-        if (platform::SetClipboardImage(*image))
+        if (platform::SetClipboardImage(*image, app.nativeWindow))
             app.notes.Info(Tr("Кадр скопирован в буфер обмена"));
         else
             app.notes.Error(Tr("Не удалось положить кадр в буфер обмена"));

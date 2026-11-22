@@ -7,21 +7,36 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
-#include <cstdint>
+#include <limits>
 
 namespace bz::platform {
 
-bool SetClipboardImage(const Image& image) {
+bool SetClipboardImage(const Image& image, std::uintptr_t nativeWindow) {
+    const HWND owner = reinterpret_cast<HWND>(nativeWindow);
     const int w = image.width, h = image.height;
-    if (w <= 0 || h <= 0 || image.rgba.size() < static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4) return false;
+    if (owner == nullptr || w <= 0 || h <= 0) return false;
+    constexpr std::size_t headerSize = sizeof(BITMAPINFOHEADER);
+    constexpr std::size_t maxDataSize = (std::min)(
+        static_cast<std::size_t>((std::numeric_limits<DWORD>::max)()),
+        (std::numeric_limits<std::size_t>::max)() - headerSize);
+    const auto width  = static_cast<std::size_t>(w);
+    const auto height = static_cast<std::size_t>(h);
+    if (height > (std::min)(maxDataSize, image.rgba.size()) / 4 / width) return false;
+    const std::size_t pixels = width * height;
+    const std::size_t dataSize = pixels * 4;
+
     // CF_DIB: a BITMAPINFOHEADER with the pixels right after it (a 32-bit one
     // has no colour map). Negative height — the rows come top to bottom, as
     // in Image; the channels go R and B swapped, Windows' BGRA order.
-    const std::size_t pixels = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-    const HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + pixels * 4);
+    const HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, headerSize + dataSize);
     if (mem == nullptr) return false;
     auto*      head = static_cast<BITMAPINFOHEADER*>(GlobalLock(mem));
+    if (head == nullptr) {
+        GlobalFree(mem);
+        return false;
+    }
     std::byte* bits = reinterpret_cast<std::byte*>(head + 1);
     head->biSize          = sizeof(BITMAPINFOHEADER);
     head->biWidth         = w;
@@ -29,7 +44,7 @@ bool SetClipboardImage(const Image& image) {
     head->biPlanes        = 1;
     head->biBitCount      = 32;
     head->biCompression   = BI_RGB;
-    head->biSizeImage     = static_cast<DWORD>(pixels * 4);
+    head->biSizeImage     = static_cast<DWORD>(dataSize);
     head->biXPelsPerMeter = head->biYPelsPerMeter = 2835;   // 72 dpi, a screen picture
     for (std::size_t i = 0; i < pixels; ++i) {
         bits[4 * i + 0] = static_cast<std::byte>(image.rgba[4 * i + 2]);
@@ -37,15 +52,20 @@ bool SetClipboardImage(const Image& image) {
         bits[4 * i + 2] = static_cast<std::byte>(image.rgba[4 * i + 0]);
         bits[4 * i + 3] = static_cast<std::byte>(image.rgba[4 * i + 3]);
     }
-    GlobalUnlock(mem);
-    if (!OpenClipboard(nullptr) || !EmptyClipboard()) {
+    SetLastError(NO_ERROR);
+    // The only lock is released when GlobalUnlock returns zero with no error.
+    if (GlobalUnlock(mem) || GetLastError() != NO_ERROR) {
         GlobalFree(mem);
         return false;
     }
-    const bool done = SetClipboardData(CF_DIB, mem) != nullptr;   // the clipboard owns it now
-    CloseClipboard();
-    if (!done) GlobalFree(mem);
-    return done;
+    if (!OpenClipboard(owner)) {
+        GlobalFree(mem);
+        return false;
+    }
+    const bool transferred = EmptyClipboard() && SetClipboardData(CF_DIB, mem) != nullptr;
+    const bool closed = CloseClipboard() != FALSE;
+    if (!transferred) GlobalFree(mem);
+    return transferred && closed;
 }
 
 } // namespace bz::platform
@@ -79,7 +99,7 @@ int RouteXError(Display* d, XErrorEvent* e) {
 
 } // namespace
 
-bool SetClipboardImage(const Image& image) {
+bool SetClipboardImage(const Image& image, std::uintptr_t) {
     std::size_t pngSize = 0;
     void*     png = tdefl_write_image_to_png_file_in_memory(image.rgba.data(), image.width, image.height, 4, &pngSize);
     if (png == nullptr || pngSize == 0 || pngSize > 0x7FFFFFFF) return false;
@@ -149,7 +169,7 @@ bool SetClipboardImage(const Image& image) {
 
 namespace bz::platform {
 
-bool SetClipboardImage(const Image&) { return false; }   // not implemented on this platform
+bool SetClipboardImage(const Image&, std::uintptr_t) { return false; }   // not implemented on this platform
 
 } // namespace bz::platform
 

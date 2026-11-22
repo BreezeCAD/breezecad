@@ -7,11 +7,14 @@
 
 #include "core/Image.h"
 
+#include <cstdint>
+
 namespace bz::platform {
 
 /// The picture in the system clipboard. The X11 selection answers while this
 /// program runs; with a clipboard manager (the usual desktop) the picture
 /// outlives it, like the text GLFW puts there.
-bool SetClipboardImage(const Image& image);
+/// On Windows, nativeWindow is the HWND that takes ownership of the clipboard.
+bool SetClipboardImage(const Image& image, std::uintptr_t nativeWindow);
 
 } // namespace bz::platform

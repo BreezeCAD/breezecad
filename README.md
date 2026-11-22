@@ -159,7 +159,7 @@ ctest --preset macos
 ./build/macos/bin/breezecad
 ```
 
-Windows builds use MSYS2 / MinGW64; the packages for all three systems
+Windows CI builds use MSYS2 / UCRT64; the packages for all three systems
 (`scripts/package-*.sh`) — the exact steps are in
 [`.github/workflows/build.yml`](.github/workflows/build.yml).
 

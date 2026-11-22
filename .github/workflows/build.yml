@@ -138,33 +138,30 @@ jobs:
           export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"   # tests listed at build time load OCCT
           cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Test
+        timeout-minutes: 25
         run: |
-          set +e +o pipefail   # the msys2 shell runs with -e: keep going to name the crash
+          set +e +o pipefail   # keep the test exit code even when reporting a failure
           export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"
-          # A time limit: a test that hangs fails with its name instead of
-          # holding the job for hours.
-          if [ -n "$BZ_TEST_FILTER" ]; then
+          exe=$(find build/windows-mingw -name bz_tests.exe -print -quit)
+          read -r -a test_args <<< "$BZ_TEST_FILTER"
+          if [ "${#test_args[@]}" -gt 0 ]; then
             start=$(date +%s)
-            timeout 1200 "$(find build/windows-mingw -name bz_tests.exe | head -1)" $BZ_TEST_FILTER 2>&1 | grep -vE " INFO | WARN " | tee test.log
+            timeout -k 10s 20m "$exe" "${test_args[@]}" 2>&1 | grep --line-buffered -vE " INFO | WARN " | tee test.log
             status=${PIPESTATUS[0]}
             echo "::notice title=Tests::fast set ($BZ_TEST_FILTER): $(grep 'test cases' test.log | tail -1), $(( $(date +%s) - start )) s"
           else
-            ctest --preset windows-mingw --output-on-failure --timeout 1200 2>&1 | tee test.log
+            timeout -k 10s 20m ctest --preset windows-mingw --output-on-failure --timeout 1200 2>&1 | tee test.log
             status=${PIPESTATUS[0]}
           fi
-          # A crash prints no failed check: run again, naming each finished test case.
-          if [ $status -ne 0 ]; then
-            exe=$(find build/windows-mingw -name bz_tests.exe | head -1)
-            timeout 1200 "$exe" -d 2>&1 | grep -vE "WARN|INFO|^$|^=+$" | tail -12 | sed 's/^/last cases: /' | tee -a test.log
-            # Each test case alone: names every one that crashes.
-            "$exe" -ltc --no-version 2>/dev/null | grep -vE "^\[doctest\]|^=+$|^$" | while IFS= read -r name; do
-              timeout 300 "$exe" -tc="${name//,/\\,}" >/dev/null 2>&1 || echo "crashes, fails or hangs: $name"
-            done | tee -a test.log
-            # And once more under gdb for the backtrace of the first crash (frames only).
-            timeout 1200 gdb -batch -ex run -ex bt --args "$exe" 2>&1 | grep -E "^#[0-9]+ " | head -40 \
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "::error title=Windows tests timed out::Test command exceeded 20 minutes (exit $status)." | tee -a test.log
+          elif [ "$status" -ne 0 ] && [ -n "$exe" ]; then
+            echo "Windows tests failed (exit $status); collecting diagnostics for the same test set." | tee -a test.log
+            timeout -k 5s 90s "$exe" "${test_args[@]}" -d 2>&1 | grep -vE "WARN|INFO|^$|^=+$" | tail -12 | sed 's/^/last cases: /' | tee -a test.log
+            timeout -k 5s 45s gdb -batch -ex run -ex bt --args "$exe" "${test_args[@]}" 2>&1 | grep -E "^#[0-9]+ " | head -40 \
               | sed -E 's/^(#[0-9]+) +0x[0-9a-f]+ in /\1 /; s/ from .*//' | sed 's/^/gdb: /' | tee -a test.log
           fi
-          exit $status
+          exit "$status"
       - name: Report failures
         if: failure()
         run: bash scripts/ci-annotate.sh build.log test.log

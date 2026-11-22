@@ -94,7 +94,7 @@ Expected<TopoDS_Shape> DrillHoles(const TopoDS_Shape& body, const doc::HoleFeatu
     return ApplyBoolean(body, *tools, doc::BooleanOp::Cut);
 }
 
-std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature) {
+std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature, const Frame& previousPlane) {
     std::size_t lost = 0;
     const Frame plane = doc::PlaneFrame(feature.face);
     for (doc::HoleAxis& axis : feature.concentric) {
@@ -102,7 +102,8 @@ std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature) {
         std::optional<std::pair<Vec3, Vec3>> line;
         try {
             if (axis.edge) {
-                line = ResolveCircle(*axis.edge, body);
+                const Frame* contextPlane = IsEdgeInPlane(*axis.edge, previousPlane) ? &plane : nullptr;
+                line = ResolveCircle(*axis.edge, body, contextPlane);
             } else if (axis.cylinder) {
                 if (const auto now = ResolveCylinder(body, *axis.cylinder)) {
                     axis.cylinder->axisPoint = now->axisPoint;

@@ -130,13 +130,14 @@ namespace {
 struct Boss {
     doc::Document       d;
     doc::SketchFeature* bossSketch = nullptr;
+    doc::ExtrudeFeature* bossExtrude = nullptr;
     Boss() {
         auto& plate = AddSketch(d);
         AddRect(d, plate, {-60, -40}, {60, 40});
         AddExtrude(d, plate.id, "10");
         bossSketch = &AddSketch(d);
         AddCircle(d, *bossSketch, {20, 10}, 5);
-        AddExtrude(d, bossSketch->id, "30", doc::BooleanOp::Join);
+        bossExtrude = &AddExtrude(d, bossSketch->id, "30", doc::BooleanOp::Join);
     }
     /// A Ø4 hole into the boss top, its centre typed off the axis on purpose.
     doc::HoleFeature& AddHole() {
@@ -193,6 +194,14 @@ TEST_CASE("a hole coaxial with a round edge sits on its axis and follows it") {
     // Drilled where the boss is: the volume lost is the Ø4×8 hole.
     const double boss = 120.0 * 80.0 * 10.0 + kPi * 25.0 * 20.0;
     CHECK(model.Volume() == doctest::Approx(boss - kPi * 4.0 * 8.0).epsilon(1e-4));
+
+    b.bossExtrude->distance.expression = "40";
+    b.d.MarkChanged(static_cast<std::size_t>(b.d.IndexOf(b.bossExtrude->id)));
+    model.Rebuild(b.d);
+    REQUIRE(hole.status.state == FeatureState::Ok);
+    CHECK(hole.face.point.z == doctest::Approx(40.0));
+    REQUIRE(hole.concentric[0].edge);
+    CHECK(hole.concentric[0].edge->middle.z == doctest::Approx(40.0));
 }
 
 TEST_CASE("a hole coaxial with a cylindrical face follows it; a lost reference is an error") {

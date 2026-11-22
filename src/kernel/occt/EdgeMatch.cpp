@@ -183,8 +183,17 @@ doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& bod
     return Describe(edge, edgeFaces);
 }
 
+bool IsEdgeInPlane(const EdgeReference& edge, const Frame& plane) {
+    constexpr double kPlaneDistance = 1e-5;   // mm
+    constexpr double kPlaneAngle = 1e-6;      // sine of the angle away from coplanarity
+    if (std::abs((edge.middle - plane.origin).Dot(plane.normal)) > kPlaneDistance) return false;
+    if (edge.curve == CurveKind::Line) return std::abs(edge.direction.Dot(plane.normal)) <= kPlaneAngle;
+    if (edge.curve == CurveKind::Circle) return edge.direction.Cross(plane.normal).Length() <= kPlaneAngle;
+    return false;
+}
+
 std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs, const TopoDS_Shape& body,
-                                                     std::vector<bool>* ambiguous) {
+                                                     std::vector<bool>* ambiguous, const Frame* contextPlane) {
     TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
     TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
 
@@ -197,8 +206,10 @@ std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::Edge
     for (int i = 1; i <= edgeFaces.Extent(); ++i) {
         const TopoDS_Edge& e = TopoDS::Edge(edgeFaces.FindKey(i));
         if (BRep_Tool::Degenerated(e)) continue;   // the pole of a sphere or cone
-        candidates.emplace_back(e, Describe(e, edgeFaces, &faceIndex, &cache));
-        box.Include(candidates.back().second.middle);
+        EdgeReference signature = Describe(e, edgeFaces, &faceIndex, &cache);
+        box.Include(signature.middle);
+        if (contextPlane && !IsEdgeInPlane(signature, *contextPlane)) continue;
+        candidates.emplace_back(e, signature);
     }
     const double size = box.IsEmpty() ? 1.0 : std::max((box.max - box.min).Length(), 1.0);
 
@@ -249,8 +260,9 @@ std::optional<std::pair<Vec3, Vec3>> ResolveLine(const doc::EdgeReference& ref, 
     return std::make_pair(Vec3{mid.X(), mid.Y(), mid.Z()}, Vec3{d.X(), d.Y(), d.Z()});
 }
 
-std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body) {
-    const auto found = ResolveEdges({ref}, body);
+std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body,
+                                                    const Frame* contextPlane) {
+    const auto found = ResolveEdges({ref}, body, nullptr, contextPlane);
     if (found.empty() || !found.front()) return std::nullopt;
     const BRepAdaptor_Curve curve(*found.front());
     if (curve.GetType() != GeomAbs_Circle) return std::nullopt;

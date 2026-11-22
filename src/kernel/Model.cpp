@@ -1634,6 +1634,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                     if (hole->sketch) {
                                         if (Status s = HoleCentresFromSketch(body, doc, impl, *hole); !s) return s.GetError();
                                     }
+                                    const Frame previousPlane = doc::PlaneFrame(hole->face);
                                     // Keep the reference on the face as it is now, so the
                                     // panel draws the centres where the holes are.
                                     if (const auto plane = occt::ResolvePlaneFrame(body, hole->face)) {
@@ -1642,7 +1643,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                     }
                                     // Centres held coaxial with a round edge or a cylinder go
                                     // where that axis is now.
-                                    if (occt::FollowAxes(body, *hole) > 0)
+                                    if (occt::FollowAxes(body, *hole, previousPlane) > 0)
                                         return Error{"Кромка или цилиндр, с которыми отверстие соосно, не найдены: укажите их заново"};
                                     const Expected<TopoDS_Shape> tools = occt::HoleTools(body, *hole);
                                     if (!tools) return tools.GetError();

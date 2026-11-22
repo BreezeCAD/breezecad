@@ -17,7 +17,7 @@ set -e
 BIN_DIR="${1:?usage: $0 <bin_dir> <exe_name> [occt_bin_dir]}"
 EXE_NAME="${2:?usage: $0 <bin_dir> <exe_name> [occt_bin_dir]}"
 OCCT_BIN="${3:-$HOME/occt/install/win64/gcc/bin}"
-MINGW_BIN="/mingw64/bin"
+MINGW_BIN="${MINGW_PREFIX:-/mingw64}/bin"
 
 EXE="$BIN_DIR/$EXE_NAME"
 

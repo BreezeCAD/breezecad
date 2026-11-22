@@ -2155,7 +2155,7 @@
     "Та деталь сама следует за этой: выдавливание до её грани замкнуло бы их друг на друга": "That part already follows this one: extruding up to its face would tie them to each other in a circle",
     "Так же для всех затронутых деталей": "The same for all affected parts",
     "Такого изделия нет в моей библиотеке": "This part is not in my library",
-    "Такое ребро пока не проецируется: только отрезки, окружности и дуги": "This edge cannot be projected yet: only lines, circles and arcs",
+    "Ребро закручено больше чем на два оборота (винтовая линия) — спроецируйте ребро торца или грань": "The edge twists more than two turns (helix). Project an end edge or a face.",
     "Такой размер противоречит другим ограничениям эскиза": "This dimension conflicts with other sketch constraints",
     "Тап 2 пальцами": "2-finger tap",
     "Тап 3 пальцами": "3-finger tap",

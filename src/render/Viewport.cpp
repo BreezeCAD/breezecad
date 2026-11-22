@@ -9,6 +9,7 @@
 #include "kernel/occt/Measure.h"
 #include "kernel/occt/ModelImpl.h"
 #include "kernel/occt/Section.h"
+#include "render/FloorShadow.h"
 #include "render/TexturedFaces.h"
 #include "core/Image.h"
 
@@ -16,6 +17,8 @@
 #include <Graphic3d_ArrayOfTriangles.hxx>
 #include <Graphic3d_AspectFillArea3d.hxx>
 #include <Graphic3d_Group.hxx>
+#include <Graphic3d_ShaderObject.hxx>
+#include <Graphic3d_ShaderProgram.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <BRepLib.hxx>
 #include <Graphic3d_SequenceOfHClipPlane.hxx>
@@ -276,48 +279,129 @@ public:
     DEFINE_STANDARD_RTTI_INLINE(BodyShape, AIS_ColoredShape)
 };
 
-/// «Живой вид»: the floor under the bodies — a square whose see-through
-/// texture fades to nothing toward its edge, so no border shows against the
-/// background; lit (it takes the shadows), never picked.
+/// «Живой вид»: see-through plastic (the Glass finish, clear and smoked
+/// polycarbonate) as plastic, not a tinted film. OCCT's Phong has no Fresnel
+/// (only its PBR mode, which is for the whole view and needs every material
+/// and light retuned), so the plastic gets a small program of its own:
+/// - Fresnel: toward the outline the surface reflects more and lets less
+///   through — the rims read as the walls' thickness;
+/// - a reflected sky (a light gradient) instead of nothing at grazing angles;
+/// - highlights stay bright through the transparency;
+/// - inner walls (back faces) fainter than the front.
+/// Written for the blended order-independent transparency of the live view.
+const char* const kGlassVertex = R"glsl(
+THE_SHADER_OUT vec3 Normal;
+THE_SHADER_OUT vec4 Position;
+THE_SHADER_OUT vec4 PositionWorld;
+void main() {
+  PositionWorld = occModelWorldMatrix * occVertex;
+  Position      = occWorldViewMatrix * PositionWorld;
+  Normal        = normalize((occWorldViewMatrixInverseTranspose * occModelWorldMatrixInverseTranspose * vec4(occNormal, 0.0)).xyz);
+  gl_Position   = occProjectionMatrix * Position;
+}
+)glsl";
+
+const char* const kGlassFragment = R"glsl(
+THE_SHADER_IN vec3 Normal;
+THE_SHADER_IN vec4 Position;
+THE_SHADER_IN vec4 PositionWorld;
+void main() {
+#if defined(THE_MAX_CLIP_PLANES) && (THE_MAX_CLIP_PLANES > 0)
+  for (int i = 0; i < occClipPlaneCount; ++i) {
+    vec4 eq = occClipPlaneEquations[i];
+    if (dot(eq.xyz, PositionWorld.xyz / PositionWorld.w) + eq.w < 0.0) discard;
+  }
+#endif
+  bool front = gl_FrontFacing;
+  vec3 n = normalize(Normal);
+  if (!front) n = -n;
+  // To the eye: along the axis for the parallel projection, else to the point.
+  vec3 v = occProjectionMatrix[3][3] > 0.5 ? vec3(0.0, 0.0, 1.0) : normalize(-Position.xyz / Position.w);
+  vec3 diffuse = vec3(0.0), specular = vec3(0.0);
+  float shine = max(occMaterial_Shininess(front), 64.0);
+  for (int i = 0; i < occLightSourcesCount; ++i) {
+    if (occLight_Type(i) != OccLightType_Direct) continue;
+    vec3 l = normalize(occLight_Position(i).xyz);
+    if (!occLight_IsHeadlight(i)) l = (occWorldViewMatrix * vec4(l, 0.0)).xyz;
+    float nl = max(dot(n, l), 0.0);
+    diffuse += occLight_Diffuse(i).rgb * nl;
+    if (nl > 0.0) specular += occLight_Specular(i).rgb * pow(max(dot(n, normalize(l + v)), 0.0), shine);
+  }
+  vec4  base = occMaterial_Diffuse(front);   // a: how opaque the plastic is head-on
+  vec3  colour = occLightAmbient.rgb * occMaterial_Ambient(front) * 0.6 + diffuse * base.rgb;
+  float facing = clamp(abs(dot(n, v)), 0.0, 1.0);
+  float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+  // The reflected surroundings: a bright sky above, a greyer ground below
+  // (by the reflected ray, in the world: Z up) — the top reads lighter than
+  // the walls, as plastic under a studio light.
+  vec3  r = (occWorldViewMatrixInverse * vec4(reflect(-v, n), 0.0)).xyz;
+  vec3  sky = mix(vec3(0.62, 0.66, 0.72), vec3(1.0), smoothstep(-0.35, 0.65, normalize(r).z));
+  colour = mix(colour, sky, 0.3 + 0.6 * fresnel);
+  float alpha = mix(base.a, 1.0, fresnel * 0.7);
+  if (!front) alpha *= 0.6;
+  vec3 glint = specular * 1.6;
+  colour += glint;
+  alpha = max(alpha, clamp(max(glint.r, max(glint.g, glint.b)), 0.0, 0.9));
+  occSetFragColor(vec4(colour, alpha));
+}
+)glsl";
+
+/// «Живой вид»: the floor under the bodies. Only the shadow on it shows: a
+/// grid whose points carry the shadow's colour, as opaque as the shadow is
+/// dark there (FloorShadow), clear everywhere else — no plane, no border
+/// against the background. Unlit, so the camera's lights neither tint it
+/// nor cast their own (hard) shadow on it; never picked.
 class FloorShape : public AIS_InteractiveObject {
 public:
-    FloorShape(const gp_Pnt& centre, double half, const Quantity_Color& colour, const Quantity_Color& ambient)
-        : myCentre(centre), myHalf(half), myColour(colour), myAmbient(ambient) {}
+    FloorShape(const render::FloorShadowSpec& spec, render::FloorShadowMap map, const bz::Color& shade)
+        : mySpec(spec), myMap(std::move(map)), myShade(shade) {}
 
     void Compute(const Handle(PrsMgr_PresentationManager)&, const Handle(Prs3d_Presentation)& presentation, const Standard_Integer) override {
-        // A grid of quads: each vertex carries how opaque the floor is there,
-        // full in the middle (where the shadow falls), clear at the rim.
-        constexpr int kCells = 24;
-        Handle(Graphic3d_ArrayOfTriangles) array = new Graphic3d_ArrayOfTriangles(
-            (kCells + 1) * (kCells + 1), kCells * kCells * 6, Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexColor);
+        const int n = myMap.size;
+        if (n < 2) return;
         const auto byte = [](double v) { return static_cast<std::uint8_t>(std::clamp(std::lround(v * 255), 0L, 255L)); };
-        double sr = 1, sg = 1, sb = 1;
-        myColour.Values(sr, sg, sb, Quantity_TOC_sRGB);
-        for (int j = 0; j <= kCells; ++j)
-            for (int i = 0; i <= kCells; ++i) {
-                const double u = 2.0 * i / kCells - 1, v = 2.0 * j / kCells - 1;
-                const int at = array->AddVertex(gp_Pnt(myCentre.X() + u * myHalf, myCentre.Y() + v * myHalf, myCentre.Z()), gp_Dir(0, 0, 1));
-                const double t = std::clamp((std::sqrt(u * u + v * v) - 0.35) / 0.6, 0.0, 1.0);
-                const double fade = 1 - t * t * (3 - 2 * t);
-                // The vertex colour stands for the material's, in sRGB like the background.
-                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), byte(fade)));
+        // How opaque each point is: the shadow, faded out toward the floor's rim.
+        std::vector<std::uint8_t> alpha(myMap.value.size());
+        int i0 = n, i1 = -1, j0 = n, j1 = -1;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double u = 2.0 * i / (n - 1) - 1, v = 2.0 * j / (n - 1) - 1;
+                const double t = std::clamp((std::sqrt(u * u + v * v) - 0.7) / 0.3, 0.0, 1.0);
+                const std::uint8_t a = byte(myMap.At(i, j) * myShade.a * (1 - t * t * (3 - 2 * t)));
+                alpha[static_cast<std::size_t>(j * n + i)] = a;
+                if (a == 0) continue;
+                i0 = std::min(i0, i), i1 = std::max(i1, i), j0 = std::min(j0, j), j1 = std::max(j1, j);
             }
-        for (int j = 0; j < kCells; ++j)
-            for (int i = 0; i < kCells; ++i) {
-                const int a = j * (kCells + 1) + i + 1, b = a + 1, c = a + kCells + 1, d = c + 1;
+        if (i1 < 0) return;   // nothing in shadow
+        // Only the part with a shadow, a point wider: its rim fades to clear.
+        i0 = std::max(0, i0 - 1), j0 = std::max(0, j0 - 1), i1 = std::min(n - 1, i1 + 1), j1 = std::min(n - 1, j1 + 1);
+        const int w = i1 - i0 + 1, h = j1 - j0 + 1;
+        Handle(Graphic3d_ArrayOfTriangles) array =
+            new Graphic3d_ArrayOfTriangles(w * h, (w - 1) * (h - 1) * 6, Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexColor);
+        double sr = 0, sg = 0, sb = 0;
+        ToQuantity(myShade).Values(sr, sg, sb, Quantity_TOC_sRGB);
+        const double step = 2.0 * mySpec.half / (n - 1);
+        for (int j = j0; j <= j1; ++j)
+            for (int i = i0; i <= i1; ++i) {
+                const int at = array->AddVertex(gp_Pnt(mySpec.centre.x - mySpec.half + i * step, mySpec.centre.y - mySpec.half + j * step, mySpec.z),
+                                                gp_Dir(0, 0, 1));
+                array->SetVertexColor(at, NCollection_Vec4<uint8_t>(byte(sr), byte(sg), byte(sb), alpha[static_cast<std::size_t>(j * n + i)]));
+            }
+        for (int j = 0; j + 1 < h; ++j)
+            for (int i = 0; i + 1 < w; ++i) {
+                const int a = j * w + i + 1, b = a + 1, c = a + w, d = c + 1;
                 array->AddEdges(a, b, d);
                 array->AddEdges(a, d, c);
             }
         Handle(Graphic3d_AspectFillArea3d) aspect = new Graphic3d_AspectFillArea3d();
         aspect->SetInteriorStyle(Aspect_IS_SOLID);
+        aspect->SetShadingModel(Graphic3d_TypeOfShadingModel_Unlit);
         Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
-        material.SetColor(myColour);
-        material.SetAmbientColor(myAmbient);
-        material.SetSpecularColor(Quantity_Color(0, 0, 0, Quantity_TOC_RGB));
+        material.SetColor(ToQuantity(myShade));
         material.SetTransparency(0.02f);   // into the see-through pass, where the vertices' alpha blends
         aspect->SetFrontMaterial(material);
         aspect->SetBackMaterial(material);
-        aspect->SetInteriorColor(myColour);
+        aspect->SetInteriorColor(ToQuantity(myShade));
         aspect->SetAlphaMode(Graphic3d_AlphaMode_Blend, 0.0f);
         aspect->SetDistinguishOff();
         Handle(Graphic3d_Group) group = presentation->NewGroup();
@@ -328,9 +412,9 @@ public:
     DEFINE_STANDARD_RTTI_INLINE(FloorShape, AIS_InteractiveObject)
 
 private:
-    gp_Pnt         myCentre;
-    double         myHalf;
-    Quantity_Color myColour, myAmbient;
+    render::FloorShadowSpec mySpec;
+    render::FloorShadowMap  myMap;
+    bz::Color               myShade;
 };
 
 /// The same for a plain AIS_Shape (the bodies picked "as they were").
@@ -643,10 +727,64 @@ struct Viewport::Impl {
     bool                         noFloor = false;   ///< for a moment: thumbnails
     std::optional<kernel::Bounds> floorFor;   ///< the bounds the floor was made for
 
-    /// The floor under the bodies: a square well beyond them, a hair below
-    /// the lowest point, in the background's lower colour and mostly see-
-    /// through — what reads is the shadow on it. Left out of "fit all".
+    Aspect_RenderingContext renderingContext = nullptr;   ///< the window's OpenGL context (for the picture's view)
+    struct PhotoJob;
+    std::unique_ptr<PhotoJob> photo;   ///< «Кадр» being made (BeginPhoto)
+    PhotoState                photoState = PhotoState::None;   ///< once it is no more
+    std::optional<Image>      photoDone;
+    bool                      photoEndLive = false;
+    void EndPhoto();
+    void StepPhoto(double budgetMs);
+
+    static constexpr double kSilhouetteWidth = 2.0;
+    /// OCCT sizes the outline by the drawn area's shorter side: a tile of a
+    /// picture would get a thicker one (by the picture's side over the
+    /// tile's). Each tile sets the width it needs, then puts it back.
+    void SetSilhouetteWidth(double width) {
+        const auto set = [&](const Handle(Prs3d_Drawer)& d) {
+            if (!d.IsNull() && d->HasOwnShadingAspect()) d->ShadingAspect()->Aspect()->SetEdgeWidth(width);
+        };
+        for (const auto& s : shown) {
+            set(s.shape->Attributes());
+            for (NCollection_DataMap<TopoDS_Shape, Handle(AIS_ColoredDrawer), TopTools_ShapeMapHasher>::Iterator it(s.shape->CustomAspectsMap()); it.More(); it.Next())
+                set(it.Value());
+            s.shape->SynchronizeAspects();
+        }
+    }
+
+    /// See-through bodies in the live view are sorted (blended OIT): the
+    /// inner walls of plastic read in the right order. It costs float
+    /// buffers and a pass over the see-through things, so only while one is
+    /// shown; otherwise (and in the plain view) the cheap unordered blending.
+    /// The «Прозрачный» style stays unordered too: there everything is
+    /// see-through and speed matters more.
+    void UpdateTransparency() {
+        bool seeThrough = false;
+        if (live && style != DisplayStyle::Transparent && style != DisplayStyle::Wireframe && style != DisplayStyle::HiddenLines)
+            for (const auto& s : shown) {
+                if (const doc::Appearance* a = look.OfBody(s.body); a && a->face.a < 0.999f) seeThrough = true;
+                for (const doc::Look::FaceLook& f : look.faces)
+                    if (f.body == s.body)
+                        if (const doc::Appearance* a = look.Find(f.appearance); a && a->face.a < 0.999f) seeThrough = true;
+                if (seeThrough) break;
+            }
+        Graphic3d_RenderingParams& params = view->ChangeRenderingParams();
+        const auto method = seeThrough ? Graphic3d_RTM_BLEND_OIT : Graphic3d_RTM_BLEND_UNORDERED;
+        if (params.TransparencyMethod != method) {
+            params.TransparencyMethod = method;
+            dirty = true;
+        }
+    }
+
+    std::vector<const void*>      floorShapes;    ///< the bodies it was made for (their TShapes)
+    std::vector<float>            floorOpacity;   ///< and how opaque their faces were
+
+    /// The floor under the bodies: a square around them, a hair below the
+    /// lowest point, carrying their soft shadow (FloorShadow). Counted again
+    /// when the bodies or their place change, not when the view turns.
+    /// Left out of "fit all".
     void UpdateFloor() {
+        UpdateTransparency();
         // Not with a section (the floor would be cut too), nor around a part
         // edited in its assembly (the faded parts below would sink under it),
         // nor with every body hidden.
@@ -657,20 +795,75 @@ struct Viewport::Impl {
             floor.Nullify();
             floorShown = false;
             floorFor.reset();
+            floorShapes.clear();
             return;
         }
-        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max;
+        std::vector<const void*> shapes;
+        for (const auto& s : shown) shapes.push_back(s.shape->Shape().TShape().get());
+        // A see-through face casts a lighter shadow: as opaque as it is drawn.
+        const auto opacityOf = [](const Handle(Prs3d_Drawer)& d) {
+            return d.IsNull() || d->ShadingAspect().IsNull() ? 1.0f : static_cast<float>(1.0 - d->ShadingAspect()->Transparency());
+        };
+        std::vector<float> faceOpacity;
+        for (const auto& s : shown)
+            for (TopExp_Explorer e(s.shape->Shape(), TopAbs_FACE); e.More(); e.Next()) {
+                const Handle(AIS_ColoredDrawer)* own = s.shape->CustomAspectsMap().Seek(e.Current());
+                faceOpacity.push_back(own ? opacityOf(*own) : opacityOf(s.shape->Attributes()));
+            }
+        const bool same = floorFor && floorFor->min == bounds->min && floorFor->max == bounds->max && shapes == floorShapes &&
+                          faceOpacity == floorOpacity;
         if (same && !floor.IsNull()) return;
         if (!floor.IsNull()) context->Remove(floor, false);
-        const Vec3 c = (bounds->min + bounds->max) * 0.5;
-        // Big enough for the shadow, small enough that the shadow map stays sharp.
-        const double r = std::max(1.0, (bounds->max - bounds->min).Length()) * 1.6;
-        const double z = bounds->min.z - std::max(0.01, (bounds->max - bounds->min).Length() * 1e-4);
-        // Lit by the camera's lights, the floor comes out about the background's colour.
-        const Color b = colors.backgroundBottom;
-        floor = new FloorShape(gp_Pnt(c.x, c.y, z), r, ToQuantity(b), Quantity_Color(b.r * 0.8, b.g * 0.8, b.b * 0.8, Quantity_TOC_RGB));
-        floorFor = bounds;
+        floor.Nullify();
         floorShown = false;
+
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<std::array<Vec3, 3>> triangles;
+        std::vector<float>               opacity;
+        std::size_t                      faceIndex = 0;
+        for (const auto& s : shown) {
+            const gp_Trsf place = s.shape->LocalTransformation();
+            for (TopExp_Explorer e(s.shape->Shape(), TopAbs_FACE); e.More(); e.Next()) {
+                const float faceOpaque = faceOpacity[faceIndex++];
+                TopLoc_Location loc;
+                const Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(TopoDS::Face(e.Current()), loc);
+                if (mesh.IsNull()) continue;
+                const gp_Trsf t = place * loc.Transformation();
+                for (int k = 1; k <= mesh->NbTriangles(); ++k) {
+                    int n[3];
+                    mesh->Triangle(k).Get(n[0], n[1], n[2]);
+                    std::array<Vec3, 3> tri;
+                    for (int c = 0; c < 3; ++c) {
+                        const gp_Pnt p = mesh->Node(n[c]).Transformed(t);
+                        tri[static_cast<std::size_t>(c)] = {p.X(), p.Y(), p.Z()};
+                    }
+                    triangles.push_back(tri);
+                    opacity.push_back(faceOpaque);
+                }
+            }
+        }
+        const Vec3 size = bounds->max - bounds->min;
+        render::FloorShadowSpec spec;
+        spec.centre = {(bounds->min.x + bounds->max.x) / 2, (bounds->min.y + bounds->max.y) / 2};
+        // Wide enough for a shadow cast aside by a tall body, with its soft rim.
+        spec.half = std::max(1.0, size.Length()) * 1.0;
+        spec.z = bounds->min.z - std::max(0.01, size.Length() * 1e-4);
+        // A lamp behind-left of the usual view (from the front, right,
+        // above): the shadow falls to the right and toward the viewer, as on
+        // the mock-up; standing still, it never swims as the view turns.
+        // Plus the sky: a faint shade all around the foot.
+        spec.light = Vec3{1.3, -0.5, -1};
+        spec.spread = 0.2;
+        spec.sky = 0.55;
+        spec.skySpread = 1.0;
+        spec.samples = render::FloorShadowSamples(triangles.size());
+        render::FloorShadowMap map = render::ComputeFloorShadow(triangles, spec, opacity);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        log::Debug("Viewport: floor shadow {} triangles × {} directions, {:.1f} ms", triangles.size(), spec.samples, ms);
+        floor = new FloorShape(spec, std::move(map), colors.floorShadow);
+        floorFor = bounds;
+        floorShapes = std::move(shapes);
+        floorOpacity = std::move(faceOpacity);
         ShowFloorForCamera();
     }
 
@@ -750,6 +943,33 @@ struct Viewport::Impl {
 
     Handle(OpenGl_Context) GlContext() const { return driver->GetSharedContext(); }
 
+    mutable Handle(Graphic3d_ShaderProgram) glass;   ///< see kGlassFragment; made once
+    mutable bool                    glassFailed = false;
+
+    /// The plastic's program for a look, in the live view (else none: OCCT's own).
+    Handle(Graphic3d_ShaderProgram) GlassFor(const doc::Appearance* a) const {
+        if (!live || style == DisplayStyle::Transparent || a == nullptr || a->finish != doc::Finish::Glass || a->face.a >= 0.999f)
+            return {};
+        if (glass.IsNull() && !glassFailed) {
+            const Handle(OpenGl_Context) gl = GlContext();
+            // Desktop OpenGL 3.2+ (GLSL 1.50); the live view is off on phones (OpenGL ES).
+            if (gl.IsNull() || gl->GraphicsLibrary() != Aspect_GraphicsLibrary_OpenGL || !gl->IsGlGreaterEqual(3, 2)) {
+                glassFailed = true;
+                return {};
+            }
+            glass = new Graphic3d_ShaderProgram();
+            glass->SetId("bz_glass_oit");
+            glass->SetHeader("#version 150");
+            glass->SetNbLightsMax(Graphic3d_ShaderProgram::THE_MAX_LIGHTS_DEFAULT);
+            glass->SetNbClipPlanesMax(Graphic3d_ShaderProgram::THE_MAX_CLIP_PLANES_DEFAULT);
+            glass->SetNbFragmentOutputs(2);
+            glass->SetOitOutput(Graphic3d_RTM_BLEND_OIT);
+            glass->AttachShader(Graphic3d_ShaderObject::CreateFromSource(Graphic3d_TOS_VERTEX, kGlassVertex));
+            glass->AttachShader(Graphic3d_ShaderObject::CreateFromSource(Graphic3d_TOS_FRAGMENT, kGlassFragment));
+        }
+        return glass;
+    }
+
     /// Material for a colour and a finish: matte with a faint highlight,
     /// metal with a bright one, glass glossy. The ambient part is the colour
     /// itself, so faces turned away from the lights stay readable.
@@ -789,8 +1009,9 @@ struct Viewport::Impl {
         if (!drawer->HasOwnShadingAspect()) drawer->SetupOwnShadingAspect();
         const Handle(Graphic3d_AspectFillArea3d)& fill = drawer->ShadingAspect()->Aspect();
         fill->SetDrawSilhouette(live && style != DisplayStyle::Transparent);
+        fill->SetShaderProgram(GlassFor(appearance));
         fill->SetEdgeColor(ToQuantity(edgeColour));
-        fill->SetEdgeWidth(2.0);
+        fill->SetEdgeWidth(kSilhouetteWidth);
         // Wireframe and hidden-line styles draw edges in the edge colour (not
         // the body colour SetColor gave them) and no isolines.
         const Quantity_Color ink = ToQuantity(edgeColour);
@@ -881,6 +1102,7 @@ struct Viewport::Impl {
             aspects->ShadingAspect()->SetMaterial(MaterialOf(colour, a->finish));
             aspects->ShadingAspect()->SetColor(ToQuantity(colour));
             aspects->ShadingAspect()->Aspect()->SetPolygonOffset(DepthBias(s.depthBias));
+            aspects->ShadingAspect()->Aspect()->SetShaderProgram(GlassFor(a));   // not the body's, copied
             if (style != DisplayStyle::Transparent) aspects->ShadingAspect()->SetTransparency(1.0 - a->face.a);
         }
         if (bodyLook && bodyLook->HasPicture())
@@ -1035,9 +1257,30 @@ double AnimationClock() {
 }
 } // namespace
 
+// «Кадр» in tiles. The picture is drawn by a view of its own on the same
+// scene (camera, background, smoothing are a view's), into an off-screen
+// buffer tile by tile, a few tiles per frame. What a view does not own — the
+// bodies' style and «Живой вид» — is set for the whole picture and shows in
+// the window too while it is made, and is put back after.
+struct Viewport::Impl::PhotoJob {
+    PhotoOptions                    options;
+    Handle(V3d_View)                view;
+    Handle(Aspect_NeutralWindow)    window;
+    Handle(Standard_Transient)      fbo;
+    Image_AlienPixMap               pictures[2];   ///< over black and over white for the transparent background
+    int                             passes = 1, pass = 0;
+    int                             tile = 0, tilesX = 1, tilesY = 1, tileSize = 512;
+    PhotoState                      state = PhotoState::Running;
+    std::optional<Image>            result;
+    // Put back afterwards.
+    DisplayStyle                    style = DisplayStyle::ShadedWithEdges;
+    bool                            live = false;
+};
+
 Viewport::Viewport() : myImpl(std::make_unique<Impl>()) {}
 
 Viewport::~Viewport() {
+    if (myImpl->photo) myImpl->EndPhoto();
     Impl& m = *myImpl;
     if (!m.fbo.IsNull() && !m.driver.IsNull()) m.fbo->Release(m.GlContext().get());
 }
@@ -1123,6 +1366,7 @@ bool Viewport::Init(const NativeGlSurface& surface) {
         return false;
     }
     m.view->SetWindow(m.occtWindow, glContext);
+    m.renderingContext = glContext;
     SetColors(m.colors);
     SetCamera({});
     log::Info("Viewport: OpenGL ready");
@@ -1322,12 +1566,8 @@ void Viewport::SetLive(bool on) {
     Impl& m = *myImpl;
     if (m.live == on) return;
     m.live = on;
-    // Shadows need per-pixel lighting: Phong, the viewer's default (checked at Init).
-    Graphic3d_RenderingParams& params = m.view->ChangeRenderingParams();
-    params.ShadowMapResolution = 2048;
-    params.ShadowMapBias = 0.004f;
-    if (!m.keyLight.IsNull()) m.keyLight->SetCastShadows(on);
-    m.viewer->UpdateLights();
+    // No shadow map: OCCT's has a hard edge at any resolution (see
+    // FloorShadow.h). The floor carries a soft shadow of its own.
     m.ApplyStyleAll();
     m.UpdateFloor();
     m.dirty = true;
@@ -1409,6 +1649,7 @@ void Viewport::SetLook(const doc::Look& look, const void* owner, std::uint64_t r
     m.look = look;
     m.textures.clear();   // made again from this look's pictures
     m.ApplyStyleAll();
+    m.UpdateFloor();   // a see-through body casts a lighter shadow
 }
 
 void Viewport::SetHiddenBodies(std::vector<ObjectId> bodies) {
@@ -1446,9 +1687,17 @@ void Viewport::Render() {
     }
     const bool hatchChanged = m.UpdateCaps();
     m.ShowFloorForCamera();
-    m.view->Redraw();
+    // While a picture is made, frames come for it: the window's own view is
+    // drawn only when something changed in it.
+    if (m.dirty || !m.photo || m.animating || hatchChanged) m.view->Redraw();
     m.fbo->UnbindBuffer(ctx);
     m.dirty = hatchChanged;   // the cut's look changes: OCCT shows it a frame later
+    if (m.photo) {
+        m.StepPhoto(12.0);
+        if (m.photo->state != PhotoState::Running) FinishPhoto();
+        m.fbo->BindBuffer(ctx);   // the picture's buffer was the last bound
+        m.fbo->UnbindBuffer(ctx);
+    }
 }
 
 std::string Viewport::HandBackToWindow() {
@@ -1486,7 +1735,7 @@ unsigned Viewport::TextureId() const {
 
 bool Viewport::NeedsRender() const {
     // A cut waiting for its hatching: frames until it is built (kCapsDelay).
-    return myImpl->dirty || myImpl->animating || (!myImpl->section.IsNull() && myImpl->caps.stale);
+    return myImpl->dirty || myImpl->animating || myImpl->photo || (!myImpl->section.IsNull() && myImpl->caps.stale);
 }
 
 ViewProjection Viewport::Projection() const {
@@ -1597,86 +1846,151 @@ std::optional<Image> ToImage(const Image_AlienPixMap& pixels) {
 }
 } // namespace
 
-std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
+namespace {
+constexpr int kPhotoTile = 512;   ///< a tile's side: a few milliseconds each on a weak laptop
+}
+
+bool Viewport::BeginPhoto(const PhotoOptions& o) {
     Impl& m = *myImpl;
+    CancelPhoto();
     if (m.GlContext().IsNull()) m.view->Redraw();
-    if (m.GlContext().IsNull() || o.width < 16 || o.height < 16) return std::nullopt;
+    if (m.GlContext().IsNull() || o.width < 16 || o.height < 16) return false;
     using Bg = PhotoOptions::Background;
-    const bool transparent = o.background == Bg::Transparent;
+    auto job = std::make_unique<Impl::PhotoJob>();
+    job->options = o;
+    job->style = m.style;
+    job->live = m.live;
+    job->passes = o.background == Bg::Transparent ? 2 : 1;
+    job->tileSize = kPhotoTile;
+    job->tilesX = (o.width + kPhotoTile - 1) / kPhotoTile;
+    job->tilesY = (o.height + kPhotoTile - 1) / kPhotoTile;
 
-    // What is changed for the picture, to put back.
-    const CameraState camera = Camera();
-    const ViewportColors colors = m.colors;
-    const DisplayStyle style = m.style;
-    const bool live = m.live;
-    const Graphic3d_RenderingParams params = m.view->RenderingParams();
-
-    // The camera: what the frame outlines fills the picture (OCCT keeps the
-    // shorter side's extent: the scale is that side in millimetres).
-    {
-        const double aspect = static_cast<double>(o.width) / o.height;
-        const auto frame = PhotoFrame(aspect);
-        const double mmPerPixel = camera.scale / (m.width >= m.height ? m.height : m.width);
-        CameraState shot = camera;
-        shot.scale = (aspect >= 1.0 ? frame[3] : frame[2]) * mmPerPixel;
-        SetCamera(shot);
+    // The picture's own view: the window's camera, scaled so the picture
+    // holds what the frame outlines (OCCT keeps the shorter side's extent:
+    // the scale is that side in millimetres).
+    job->window = new Aspect_NeutralWindow();
+    job->window->SetVirtual(true);
+    job->window->SetSize(std::min(o.width, kPhotoTile), std::min(o.height, kPhotoTile));
+    job->window->SetNativeHandle(m.occtWindow->NativeHandle());
+    job->view = m.viewer->CreateView();
+    job->view->SetImmediateUpdate(false);
+    job->view->SetWindow(job->window, m.renderingContext);
+    job->view->Camera()->Copy(m.view->Camera());
+    const double aspect = static_cast<double>(o.width) / o.height;
+    const auto frame = PhotoFrame(aspect);
+    const double mmPerPixel = m.view->Camera()->Scale() / (m.width >= m.height ? m.height : m.width);
+    job->view->Camera()->SetScale(std::max(1e-3, (aspect >= 1.0 ? frame[3] : frame[2]) * mmPerPixel));
+    job->view->Camera()->SetAspect(aspect);
+    // As the window draws it, with smoother edges: a picture is looked at closely.
+    Graphic3d_RenderingParams& params = job->view->ChangeRenderingParams();
+    params = m.view->RenderingParams();
+    params.NbMsaaSamples = 8;
+    for (int i = 0; i < 2; ++i) {
+        job->pictures[i].SetTopDown(true);
+        job->pictures[i].InitZero(Image_Format_RGBA, static_cast<std::size_t>(o.width), static_cast<std::size_t>(o.height));
     }
-    m.noFloor = false;
-    // Shaded, with or without the edges (a see-through style stays so).
-    const DisplayStyle shotStyle = style == DisplayStyle::Transparent ? style
-                                   : o.edges                          ? DisplayStyle::ShadedWithEdges
-                                                                      : DisplayStyle::Shaded;
-    if (shotStyle != style) {
-        m.style = shotStyle;
+    // The bodies: shaded, with or without the edges (a see-through style
+    // stays so), in «Живой вид» whatever the window's setting.
+    const DisplayStyle shot = m.style == DisplayStyle::Transparent ? m.style : o.edges ? DisplayStyle::ShadedWithEdges : DisplayStyle::Shaded;
+    if (shot != m.style) {
+        m.style = shot;
         m.ApplyStyleAll();
     }
-    // The light and the floor of «Живой вид», whatever the window's setting.
-    const auto background = [&](Color top, Color bottom) {
-        m.colors.backgroundTop = top;
-        m.colors.backgroundBottom = bottom;
-        m.view->SetBgGradientColors(ToQuantity(top), ToQuantity(bottom), Aspect_GradientFillMethod_Vertical, false);
-    };
-    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(Handle(Graphic3d_Texture2D)(), Aspect_FM_STRETCH, false);
-    if (o.background == Bg::Dark) background(Color::Hex(0x3A3F47), Color::Hex(0x15171B));
-    else background(Color::Hex(0xF8F9FB), Color::Hex(0xD3DBE5));
-    SetLive(true);
+    m.photo = std::move(job);
+    SetLive(true);   // after: UpdateTransparency sees the photo's view too
     m.floorFor.reset();
     m.UpdateFloor();
-    if (!o.floor || transparent) {
-        if (!m.floor.IsNull()) m.context->Remove(m.floor, false);
-        m.floor.Nullify();
-        m.floorShown = false;
-    }
-    m.ShowFloorForCamera();
-    // Smoother edges than the window's: a picture is looked at closely.
-    m.view->ChangeRenderingParams().NbMsaaSamples = 8;
+    m.dirty = true;
+    return true;
+}
 
-    const auto dump = [&]() -> std::optional<Image> {
-        Image_AlienPixMap pixels;
-        V3d_ImageDumpOptions options;
-        options.Width = o.width;
-        options.Height = o.height;
-        options.BufferType = Graphic3d_BT_RGBA;
-        bool done = false;
-        try {
-            done = m.view->ToPixMap(pixels, options);
-        } catch (const Standard_Failure& e) {
-            log::Error("Viewport: photo failed: {}", e.GetMessageString());
+void Viewport::Impl::EndPhoto() {
+    if (!photo) return;
+    std::unique_ptr<PhotoJob> job = std::move(photo);
+    if (!job->fbo.IsNull()) job->view->View()->FBORelease(job->fbo);
+    job->view->Remove();
+    if (job->style != style) {
+        style = job->style;
+        ApplyStyleAll();
+    }
+    photoEndLive = job->live;
+    photoDone = std::move(job->result);
+    photoState = job->state;
+    dirty = true;
+}
+
+void Viewport::Impl::StepPhoto(double budgetMs) {
+    PhotoJob& job = *photo;
+    const auto started = std::chrono::steady_clock::now();
+    using Bg = PhotoOptions::Background;
+    const PhotoOptions& o = job.options;
+    const Handle(Graphic3d_CView)& cview = job.view->View();
+    if (job.fbo.IsNull()) {
+        job.fbo = cview->FBOCreate(std::min(o.width, job.tileSize), std::min(o.height, job.tileSize));
+        if (job.fbo.IsNull()) {
+            job.state = PhotoState::Failed;
+            return;
         }
-        return done ? ToImage(pixels) : std::nullopt;
+        cview->SetFBO(job.fbo);
+    }
+    // See-through bodies sorted as in the window (it may have just turned live).
+    job.view->ChangeRenderingParams().TransparencyMethod = view->RenderingParams().TransparencyMethod;
+    // The floor: in the picture when asked and the background is not clear.
+    if (!floor.IsNull()) context->SetViewAffinity(floor, job.view, o.floor && o.background != Bg::Transparent);
+    const auto background = [&](Color top, Color bottom) {
+        job.view->SetBgGradientColors(ToQuantity(top), ToQuantity(bottom), Aspect_GradientFillMethod_Vertical, false);
     };
-    std::optional<Image> out;
-    if (!transparent) {
-        out = dump();
-    } else {
-        // Over black and over white: what changes is the background, by how
-        // much tells how see-through a pixel is (exact at smoothed edges too).
-        background(Color::Hex(0x000000), Color::Hex(0x000000));
-        std::optional<Image> black = dump();
-        background(Color::Hex(0xFFFFFF), Color::Hex(0xFFFFFF));
-        std::optional<Image> white = black ? dump() : std::nullopt;
-        if (black && white && black->rgba.size() == white->rgba.size()) {
-            out = std::move(*black);
+    const int tiles = job.tilesX * job.tilesY;
+    try {
+        do {
+            // Over black, then over white: what changes is the background,
+            // by how much tells how see-through a pixel is (exact at smoothed
+            // edges too).
+            if (o.background == Bg::Transparent) background(job.pass == 0 ? Color::Hex(0x000000) : Color::Hex(0xFFFFFF), job.pass == 0 ? Color::Hex(0x000000) : Color::Hex(0xFFFFFF));
+            else if (o.background == Bg::Dark) background(Color::Hex(0x3A3F47), Color::Hex(0x15171B));
+            else background(Color::Hex(0xF8F9FB), Color::Hex(0xD3DBE5));
+
+            const int tx = job.tile % job.tilesX, ty = job.tile / job.tilesX;
+            Graphic3d_CameraTile tile;
+            tile.TotalSize = Graphic3d_Vec2i(o.width, o.height);
+            tile.TileSize = Graphic3d_Vec2i(job.tileSize, job.tileSize);
+            tile.Offset = Graphic3d_Vec2i(tx * job.tileSize, ty * job.tileSize);
+            const Graphic3d_CameraTile cropped = tile.Cropped();
+            Image_AlienPixMap& picture = job.pictures[job.pass];
+            Image_PixMap part;
+            part.SetTopDown(picture.IsTopDown());
+            const int bottom = picture.IsTopDown() ? o.height - (cropped.Offset.y() + cropped.TileSize.y()) : cropped.Offset.y();
+            part.InitWrapper(picture.Format(),
+                             picture.ChangeData() + picture.SizeRowBytes() * static_cast<std::size_t>(bottom) +
+                                 picture.SizePixelBytes() * static_cast<std::size_t>(cropped.Offset.x()),
+                             static_cast<std::size_t>(cropped.TileSize.x()), static_cast<std::size_t>(cropped.TileSize.y()), picture.SizeRowBytes());
+            job.view->Camera()->SetTile(cropped);
+            cview->FBOChangeViewport(job.fbo, cropped.TileSize.x(), cropped.TileSize.y());
+            SetSilhouetteWidth(kSilhouetteWidth * std::min(cropped.TileSize.x(), cropped.TileSize.y()) / std::min(o.width, o.height));
+            job.view->Redraw();
+            SetSilhouetteWidth(kSilhouetteWidth);
+            if (!cview->BufferDump(part, Graphic3d_BT_RGBA)) {
+                job.state = PhotoState::Failed;
+                return;
+            }
+            if (++job.tile == tiles) {
+                job.tile = 0;
+                if (++job.pass == job.passes) break;
+            }
+        } while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() < budgetMs);
+    } catch (const Standard_Failure& e) {
+        log::Error("Viewport: photo failed: {}", e.GetMessageString());
+        SetSilhouetteWidth(kSilhouetteWidth);
+        job.state = PhotoState::Failed;
+        return;
+    }
+    if (job.pass < job.passes) return;
+
+    std::optional<Image> out = ToImage(job.pictures[0]);
+    if (out && o.background == Bg::Transparent) {
+        const std::optional<Image> white = ToImage(job.pictures[1]);
+        if (!white || white->rgba.size() != out->rgba.size()) out.reset();
+        else
             for (std::size_t i = 0; i < out->rgba.size(); i += 4) {
                 const int diff = (white->rgba[i] - out->rgba[i] + white->rgba[i + 1] - out->rgba[i + 1] + white->rgba[i + 2] - out->rgba[i + 2]) / 3;
                 const int alpha = std::clamp(255 - diff, 0, 255);
@@ -1684,26 +1998,54 @@ std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
                     out->rgba[i + k] = alpha > 0 ? static_cast<std::uint8_t>(std::min(255, out->rgba[i + k] * 255 / alpha)) : 0;
                 out->rgba[i + 3] = static_cast<std::uint8_t>(alpha);
             }
-        }
     }
+    job.result = std::move(out);
+    job.state = job.result ? PhotoState::Done : PhotoState::Failed;
+}
 
-    // Back as it was.
-    m.view->ChangeRenderingParams() = params;
-    m.colors = colors;
-    m.view->SetBgGradientColors(ToQuantity(colors.backgroundTop), ToQuantity(colors.backgroundBottom),
-                                colors.radialBackground ? Aspect_GradientFillMethod_Elliptical : Aspect_GradientFillMethod_Vertical, false);
-    if (!m.backgroundPicture.IsNull()) m.view->SetBackgroundImage(m.backgroundPicture, Aspect_FM_STRETCH, false);
-    if (shotStyle != style) {
-        m.style = style;
-        m.ApplyStyleAll();
+Viewport::PhotoState Viewport::PhotoStatus() const {
+    return myImpl->photo ? PhotoState::Running : myImpl->photoState;
+}
+
+double Viewport::PhotoProgress() const {
+    const auto& job = myImpl->photo;
+    if (!job) return myImpl->photoState == PhotoState::Done ? 1.0 : 0.0;
+    const double tiles = job->tilesX * job->tilesY;
+    return std::clamp((job->pass * tiles + job->tile) / (job->passes * tiles), 0.0, 1.0);
+}
+
+std::optional<Image> Viewport::TakePhoto() {
+    Impl& m = *myImpl;
+    if (m.photo || m.photoState != PhotoState::Done) return std::nullopt;
+    m.photoState = PhotoState::None;
+    return std::exchange(m.photoDone, std::nullopt);
+}
+
+void Viewport::CancelPhoto() {
+    Impl& m = *myImpl;
+    if (m.photo) {
+        m.photo->state = PhotoState::None;
+        m.photo->result.reset();
+        FinishPhoto();
     }
-    m.live = !live;   // SetLive acts on a change only
-    SetLive(live);
+    m.photoState = PhotoState::None;
+    m.photoDone.reset();
+}
+
+void Viewport::FinishPhoto() {
+    Impl& m = *myImpl;
+    m.EndPhoto();
+    SetLive(m.photoEndLive);
     m.floorFor.reset();
     m.UpdateFloor();
-    SetCamera(camera);
-    m.dirty = true;
-    return out;
+}
+
+std::optional<Image> Viewport::Photo(const PhotoOptions& o) {
+    Impl& m = *myImpl;
+    if (!BeginPhoto(o)) return std::nullopt;
+    while (m.photo && m.photo->state == PhotoState::Running) m.StepPhoto(1e9);
+    FinishPhoto();
+    return TakePhoto();
 }
 
 std::optional<Image> Viewport::Preview(Vec3 direction, Vec3 up, int size) {

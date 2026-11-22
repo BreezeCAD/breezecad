@@ -274,7 +274,8 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
     myIcons.SetScale(framebufferScale);
 
     progress(Tr("Загрузка ядра геометрии…"));
-    if (!myViewport.Init(myWindow.NativeSurface())) return false;
+    const NativeGlSurface nativeSurface = myWindow.NativeSurface();
+    if (!myViewport.Init(nativeSurface)) return false;
 
     myUi = std::make_unique<ui::Ui>(ui::Ui{myTheme, myFonts, myIcons, myScale});
     ApplyTheme(true);
@@ -286,6 +287,7 @@ bool Application::Init(const std::vector<std::filesystem::path>& files) {
                                                         myViewport, mySketch, myOps, myShell, myDeferred, 0.0, {}, {}, {}});
     myContext->recovery = &myRecovery;
     myContext->keepAlive = [this] { return KeepAlive(); };
+    myContext->nativeWindow = nativeSurface.window;
     myWorkspace.previewMaker = [this] { return DocumentPreview(myViewport); };
     RegisterActions(*myContext);
     LoadStandardPacks(*myContext);
@@ -349,7 +351,9 @@ void Application::ApplyTheme(bool force) {
     // Test hook: a flat background of a given colour (renders keyed out
     // against black and white for the splash picture, scripts/splash).
     if (const char* bg = std::getenv("BZ_VIEW_BG")) top = bottom = Color::Hex(static_cast<std::uint32_t>(std::strtoul(bg, nullptr, 16)));
-    myViewport.SetColors({top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, c.previewAdd, c.previewCut, bg.radial});
+    render::ViewportColors viewColors{top, bottom, c.body, c.bodyEdges, c.hoverHighlight, c.selection, c.danger, c.previewAdd, c.previewCut, bg.radial};
+    viewColors.floorShadow = c.floorShadow;
+    myViewport.SetColors(viewColors);
     if (pictureChanged) {
         if (mySettings.background == kPictureBackground && !mySettings.backgroundPicture.empty()) {
             if (const auto image = ReadImageFile(PathFromUtf8(mySettings.backgroundPicture))) {

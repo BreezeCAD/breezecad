@@ -6,6 +6,7 @@ if(ANDROID)
     target_include_directories(bz_android_glue SYSTEM PUBLIC ${BZ_GLUE_DIR})
     add_library(bz_platform STATIC
         Android.cpp
+        Clipboard.cpp
         FileDialogs_mobile.cpp
         OpenFiles.cpp
         OpenLinks.cpp
@@ -27,6 +28,7 @@ if(IOS)
     # iOS (docs/dev/IOS-PORT.md): the window is the app's view with EAGL;
     # the program runs on the main thread and pumps its run loop.
     add_library(bz_platform STATIC
+        Clipboard.cpp
         FileDialogs_mobile.cpp
         Launch.cpp
         Mobile_ios.mm
@@ -49,6 +51,7 @@ if(IOS)
 endif()
 
 add_library(bz_platform STATIC
+    Clipboard.cpp
     FileDialogs.cpp
     Launch.cpp
     Paths.cpp
@@ -60,7 +63,7 @@ add_library(bz_platform STATIC
     OpenFiles.cpp
     OpenLinks.cpp
     Window.cpp)
-target_link_libraries(bz_platform PUBLIC bz::core PRIVATE glfw OpenGL::GL bz::pfd)
+target_link_libraries(bz_platform PUBLIC bz::core PRIVATE glfw OpenGL::GL bz::pfd bz::miniz)
 if(WIN32)
     target_link_libraries(bz_platform PRIVATE shell32 ole32 advapi32 psapi)
 elseif(APPLE)

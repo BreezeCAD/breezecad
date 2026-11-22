@@ -307,7 +307,7 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
     // drops it last: nothing lies over the toolbar.
     const float right = pos.x + width - ui.S(10);
     const float room = right - x - ui.S(8);
-    float statsWidth = ui.S(190);
+    float statsWidth = ui.S(225);
     float searchWidth = ui.S(240);
     if (room < statsWidth + searchWidth) statsWidth = 0;
     if (room < statsWidth + searchWidth) searchWidth = room >= ui.S(120) ? room : 0;
@@ -337,7 +337,7 @@ void DrawHeader(AppContext& app, ImVec2 pos, float width) {
         // Coloured by what the work allows, not by the capped figure: a 30 Hz screen is not slow.
         stat(fps, Tr("к/с"), budget >= 60 ? c.success : budget >= 30 ? c.warning : c.danger);
         stat(mem, Tr("МБ"), c.text);
-        stat(obj, "OBJ", c.text);
+        stat(obj, Tr("объектов"), c.text);
         // Where a frame's time goes, for performance reports.
         if (ImGui::IsMouseHoveringRect({statsLeft, pos.y}, {right, pos.y + h})) {
             const FrameStats& st = app.stats;

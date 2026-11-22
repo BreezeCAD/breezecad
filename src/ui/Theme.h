@@ -55,6 +55,7 @@ struct ThemeColors {
     Color selection;
     Color previewAdd;        ///< operation preview ghost: material added (or kept by an intersection)
     Color previewCut;        ///< operation preview ghost: material removed
+    Color floorShadow;       ///< «Живой вид»: the shadow on the floor at its darkest (alpha: how dark)
 
     // sketch overlay
     Color sketchFree;        ///< under-defined geometry

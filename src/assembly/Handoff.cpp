@@ -17,7 +17,9 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <random>
+#include <string_view>
 #include <utility>
 
 namespace bz::assembly::handoff {
@@ -39,7 +41,7 @@ Expected<std::string> ReadBytes(const fs::path& file) {
 }
 
 /// Written beside and renamed over: a failure half way leaves the old file whole.
-Status WriteBytes(const fs::path& target, const std::string& bytes) {
+Status WriteBytes(const fs::path& target, std::string_view bytes) {
     std::error_code ec;
     fs::create_directories(target.parent_path(), ec);
     const fs::path temp = target.parent_path() / PathFromUtf8("." + ToUtf8(target.filename()) + ".bz-new");
@@ -95,10 +97,10 @@ Status WriteZip(const fs::path& out, const Entries& entries) {
     void* buffer = nullptr;
     std::size_t size = 0;
     ok = ok && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    std::string archive = ok ? std::string(static_cast<const char*>(buffer), size) : std::string();
     mz_zip_writer_end(&zip);
     if (!ok) return Error{"Не удалось упаковать пакет передачи"};
-    return WriteBytes(out, archive);
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
+    return WriteBytes(out, {static_cast<const char*>(archive.get()), size});
 }
 
 const std::string* Find(const Entries& entries, std::string_view name) {

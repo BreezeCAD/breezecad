@@ -27,6 +27,8 @@
 #include <format>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <string_view>
 
 namespace bz::kernel {
 namespace {
@@ -76,7 +78,7 @@ std::vector<Triangle> Triangulate(const std::vector<Body>& bodies, MeshQuality q
     return triangles;
 }
 
-Status WriteBytes(const std::filesystem::path& path, const std::string& bytes) {
+Status WriteBytes(const std::filesystem::path& path, std::string_view bytes) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return Error{std::format("Не удалось создать файл: {}", ToUtf8(path))};
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -199,10 +201,10 @@ Status Model::Export3mf(const std::filesystem::path& path, MeshQuality quality) 
     void* buffer = nullptr;
     std::size_t size = 0;
     const bool finalized = added && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    const std::string bytes = finalized ? std::string(static_cast<const char*>(buffer), size) : std::string{};
     mz_zip_writer_end(&zip);
     if (!finalized) return Error{"Не удалось упаковать 3MF"};
-    return WriteBytes(path, bytes);
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
+    return WriteBytes(path, {static_cast<const char*>(archive.get()), size});
 }
 
 } // namespace bz::kernel

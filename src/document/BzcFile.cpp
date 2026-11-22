@@ -25,7 +25,9 @@
 #include <map>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <sstream>
+#include <string_view>
 
 namespace bz::doc {
 namespace {
@@ -69,7 +71,7 @@ enum class WriteResult { Ok, CannotCreate, Failed };
 /// Writes `bytes` to `file` and waits until they are on the disk (fsync):
 /// a power cut right after "Сохранено" must not leave the new name over an
 /// empty file — the rename after this is what replaces the old document.
-WriteResult WriteDurably(const std::filesystem::path& file, const std::string& bytes) {
+WriteResult WriteDurably(const std::filesystem::path& file, std::string_view bytes) {
 #if defined(_WIN32)
     std::FILE* f = _wfopen(file.c_str(), L"wb");
 #else
@@ -277,9 +279,10 @@ Status WriteBzcArchive(const std::filesystem::path& path, std::string_view docum
     void* buffer = nullptr;
     std::size_t size = 0;
     const bool finalized = added && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    std::string bytes = finalized ? std::string(static_cast<const char*>(buffer), size) : std::string{};
     mz_zip_writer_end(&zip);
     if (!finalized) return Error{"Не удалось упаковать документ"};
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
+    const std::string_view bytes(static_cast<const char*>(archive.get()), size);
 
     std::filesystem::path temp = path;
     temp += ".saving";

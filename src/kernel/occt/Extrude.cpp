@@ -38,6 +38,10 @@
 #include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <atomic>
+#include <cstdlib>
+#include <future>
+#include <thread>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -362,13 +366,33 @@ struct Ran {
 /// cylinder ending on another's generatrix, a profile corner exactly on a
 /// wall) are then treated as meeting; the arguments are left as they were
 /// (a failed boolean changes their tolerances otherwise).
+// >0 — мы на потоке параллельной загрузки деталей: вложенный параллелизм
+// булевых выключаем, чтобы пулы OCCT не перемножались.
+std::atomic<int> gSerialDepth{0};
+
+// Эта сборка OCCT 7.8.1 не принимает внешний индикатор прогресса
+// (SetProgressIndicator отсутствует) — прервать зависшую булеву изнутри
+// нельзя. Поэтому при включённом бюджете булева уходит на отдельный поток
+// со сторожем: по таймауту поток отцепляется (единственная честная цена
+// зависания внутри OCCT — его утечка), операция возвращает ошибку и деталь
+// открывается с пометкой, а не висит.
 template <class Op>
-Ran RunBoolean(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch = nullptr) {
+Ran RunBooleanImpl(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch) {
     TopTools_ListOfShape arguments;
     arguments.Append(a);
     Op op;
     op.SetArguments(arguments);
     op.SetTools(tools);
+    op.SetUseOBB(true);
+#if defined(_WIN32)
+    // Windows FaultGuard only catches faults on the guarded thread. Keep
+    // the boolean on that thread rather than spawning unguarded OCCT workers.
+    op.SetRunParallel(false);
+#else
+    // Параллельная пара сборок пересечений; на потоках параллельной загрузки
+    // деталей вложенный параллелизм выключен, чтобы пулы OCCT не перемножались.
+    op.SetRunParallel(gSerialDepth.load(std::memory_order_relaxed) == 0);
+#endif
     if (fuzzy > 0) {
         op.SetFuzzyValue(fuzzy);
         op.SetNonDestructive(true);
@@ -387,25 +411,100 @@ Ran RunBoolean(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double 
 }
 
 template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch);
+
+template <class Op>
 Ran RunBoolean(const TopoDS_Shape& a, const TopoDS_Shape& b, double fuzzy = 0.0, const std::vector<Watched>* watch = nullptr) {
     TopTools_ListOfShape tools;
     tools.Append(b);
-    return RunBoolean<Op>(a, tools, fuzzy, watch);
+    return RunBooleanGuarded<Op>(a, tools, fuzzy, watch);
+}
+
+/// Булева с бюджетом времени: копии аргументов уходят на свой поток, родитель
+/// ждёт не дольше бюджета. Таймаут — ошибка, поток отцеплён (завис в OCCT).
+template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, double fuzzy, const std::vector<Watched>* watch) {
+    const double budgetMs = BooleanBudgetMs();
+    if (budgetMs <= 0) return RunBooleanImpl<Op>(a, tools, fuzzy, watch);
+    const TopTools_ListOfShape toolCopy = tools;
+    const std::vector<Watched> watchCopy = watch ? *watch : std::vector<Watched>{};
+    auto promised = std::make_shared<std::promise<Ran>>();
+    std::future<Ran> future = promised->get_future();
+    std::thread([promised, a, toolCopy, fuzzy, watchCopy] {
+        std::string fault;
+        const bool survived = guard::RunGuarded(
+            [&] {
+                try {
+                    promised->set_value_at_thread_exit(
+                        RunBooleanImpl<Op>(a, toolCopy, fuzzy, watchCopy.empty() ? nullptr : &watchCopy));
+                } catch (...) {
+                    promised->set_exception_at_thread_exit(std::current_exception());
+                }
+            },
+            &fault);
+        if (!survived)
+            promised->set_exception_at_thread_exit(std::make_exception_ptr(Standard_Failure("сбой внутри булевой операции")));
+    }).detach();
+    if (future.wait_for(std::chrono::milliseconds(static_cast<long long>(budgetMs))) != std::future_status::ready)
+        throw BooleanBudgetExceeded{};
+    return future.get();
+}
+
+template <class Op>
+Ran RunBooleanGuarded(const TopoDS_Shape& a, const TopoDS_Shape& b, double fuzzy, const std::vector<Watched>* watch) {
+    TopTools_ListOfShape tools;
+    tools.Append(b);
+    return RunBooleanGuarded<Op>(a, tools, fuzzy, watch);
 }
 
 /// The tolerances a boolean is tried with, in turn: exact first, then the
-/// touching-surfaces ones (BETA-BUGS №5, №7). Far below anything drawn on
-/// purpose: 0.1 µm, then 10 µm.
-constexpr double kFuzzySteps[] = {0.0, 1e-4, 1e-2};
+/// touching-surfaces ones (BETA-BUGS №5, №7). Доли диагонали габарита
+/// целевого тела: на детали ~100 мм даёт прежние 0.1 мкм и 10 мкм, а на
+/// микродетали фиксированный допуск не съест стенки.
+void FuzzyStepsFor(const TopoDS_Shape& target, double steps[3]) {
+    Bnd_Box box;
+    BRepBndLib::Add(target, box);
+    const double d = box.IsVoid() ? 100.0 : std::sqrt(box.SquareExtent());
+    steps[0] = 0.0;
+    steps[1] = 1e-6 * d;
+    steps[2] = 1e-4 * d;
+}
+
+// Бюджет времени одной булевой, мс. 0 — выключен (как раньше): включается
+// из настроек приложения, в тестах — переменной BZ_BOOLEAN_BUDGET_MS.
+namespace {
+std::atomic<double> gBudgetMs{[] {
+    const char* v = std::getenv("BZ_BOOLEAN_BUDGET_MS");
+    return v ? std::atof(v) : 0.0;
+}()};
+} // namespace
+
+} // namespace — конец внутренних инструментов; внешний API объявлен в Extrude.h
+
+void SetBooleanBudgetMs(const double ms) { gBudgetMs.store(ms > 0 ? ms : 0.0, std::memory_order_relaxed); }
+double BooleanBudgetMs() { return gBudgetMs.load(std::memory_order_relaxed); }
+
+void PushBooleansSerial() { gSerialDepth.fetch_add(1, std::memory_order_relaxed); }
+void PopBooleansSerial() { gSerialDepth.fetch_sub(1, std::memory_order_relaxed); }
+
+namespace {
+
+// Больше граней в тело не сливаем: слияние на очень больших телах —
+// историческое место зависаний; цена пропуска — лишние грани, а не ошибка.
+constexpr int kCleanFaceLimit = 500;
 
 const char* const kNothingLeft = "После операции не осталось материала";
 
 /// What every boolean result goes through: not empty, cleaned, valid.
 Expected<TopoDS_Shape> FinishBoolean(const TopoDS_Shape& raw, doc::BooleanOp op) {
+    auto _t0 = std::chrono::steady_clock::now();
     if (IsEmpty(raw)) {
         return Error{op == doc::BooleanOp::Intersect ? "Пересечение пустое: тела не перекрываются" : kNothingLeft};
     }
     const TopoDS_Shape result = Clean(raw);
+    { int n = 0; for (TopExp_Explorer e(raw, TopAbs_FACE); e.More(); e.Next()) ++n;
+      log::Info("FINISH clean: {:.0f} ms faces={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count(), n); }
+    log::Info("FINISH check: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_t0).count());
     if (!BRepCheck_Analyzer(result).IsValid()) return Error{"Результат операции некорректен"};
     return result;
 }
@@ -515,22 +614,28 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Sha
     bool                        missed = false;   // a valid cut came back without removing anything
     bool                        firstPartial = false;
     Error                       last{"Ошибка булевой операции"};
-    for (double fuzzy : kFuzzySteps) {
+    double                      fuzzySteps[3];
+    FuzzyStepsFor(target, fuzzySteps);
+    for (double fuzzy : fuzzySteps) {
         said.retried = fuzzy > 0;
+        auto _tb = std::chrono::steady_clock::now();
         try {
             Ran ran;
             switch (op) {
-                case doc::BooleanOp::Join:      ran = RunBoolean<BRepAlgoAPI_Fuse>(target, tool, fuzzy); break;
-                case doc::BooleanOp::Cut:       ran = RunBoolean<BRepAlgoAPI_Cut>(target, tool, fuzzy, watch.empty() ? nullptr : &watch); break;
-                case doc::BooleanOp::Intersect: ran = RunBoolean<BRepAlgoAPI_Common>(target, tool, fuzzy); break;
+                case doc::BooleanOp::Join:      ran = RunBooleanGuarded<BRepAlgoAPI_Fuse>(target, tool, fuzzy, nullptr); break;
+                case doc::BooleanOp::Cut:       ran = RunBooleanGuarded<BRepAlgoAPI_Cut>(target, tool, fuzzy, watch.empty() ? nullptr : &watch); break;
+                case doc::BooleanOp::Intersect: ran = RunBooleanGuarded<BRepAlgoAPI_Common>(target, tool, fuzzy, nullptr); break;
                 case doc::BooleanOp::NewBody:   break;
             }
+            log::Info("BOP fuzzy={} build: {:.0f} ms", fuzzy, std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count());
             if (IsEmpty(ran.shape)) return FinishBoolean(ran.shape, op);   // nothing left is an answer, not a failure
+            _tb = std::chrono::steady_clock::now();
             Expected<TopoDS_Shape> result = FinishBoolean(ran.shape, op);
             if (!result) {
                 last = result.GetError();
                 continue;   // not valid: once more, with a tolerance
             }
+            log::Info("BOP finish: {:.0f} ms ok={}", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tb).count(), result.HasValue());
             if (!cut) return result;
             const bool removed = VolumeOf(*result) < before - noise;
             // One face of a few is a ray gone wrong, not a groove left uncut.
@@ -541,6 +646,8 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const TopoDS_Sha
                 first = *result;
                 firstPartial = partial;
             }
+        } catch (const BooleanBudgetExceeded&) {
+            return Error{"Булева операция прервана по бюджету времени"};
         } catch (const Standard_Failure& failure) {
             last = Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
         }
@@ -567,13 +674,17 @@ Expected<TopoDS_Shape> ApplyBoolean(const TopoDS_Shape& target, const std::vecto
         // As a single tool: exact first, then with a tolerance for surfaces
         // that only touch.
         Error last{"Ошибка булевой операции"};
-        for (double fuzzy : kFuzzySteps) {
+        double fuzzySteps[3];
+        FuzzyStepsFor(target, fuzzySteps);
+        for (double fuzzy : fuzzySteps) {
             try {
-                const TopoDS_Shape raw = op == doc::BooleanOp::Join ? RunBoolean<BRepAlgoAPI_Fuse>(target, toolList, fuzzy).shape
-                                                                    : RunBoolean<BRepAlgoAPI_Cut>(target, toolList, fuzzy).shape;
+                const TopoDS_Shape raw = op == doc::BooleanOp::Join ? RunBooleanGuarded<BRepAlgoAPI_Fuse>(target, toolList, fuzzy, nullptr).shape
+                                                                    : RunBooleanGuarded<BRepAlgoAPI_Cut>(target, toolList, fuzzy, nullptr).shape;
                 Expected<TopoDS_Shape> result = FinishBoolean(raw, op);
                 if (result || IsEmpty(raw)) return result;
                 last = result.GetError();
+            } catch (const BooleanBudgetExceeded&) {
+                return Error{"Булева операция прервана по бюджету времени"};
             } catch (const Standard_Failure& failure) {
                 last = Error{std::format("Ошибка булевой операции: {}", failure.GetMessageString())};
             }
@@ -660,11 +771,61 @@ std::optional<Vec3> FindNewSliver(const TopoDS_Shape& before, const TopoDS_Shape
     return std::nullopt;
 }
 
+namespace {
+
+/// Рёбра, у которых только одна грань: дыры в оболочке тела. Шов (ребро,
+/// встречающееся в одной грани дважды) и вырожденное ребро (полюс конуса)
+/// дырами не считаются.
+int OpenEdges(const TopoDS_Shape& shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+    int open = 0;
+    for (int i = 1; i <= edgeFaces.Extent(); ++i) {
+        const TopoDS_Edge& edge = TopoDS::Edge(edgeFaces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge) || edgeFaces(i).Extent() != 1) continue;
+        if (BRep_Tool::IsClosed(edge, TopoDS::Face(edgeFaces(i).First()))) continue;   // шов
+        ++open;
+    }
+    return open;
+}
+
+int SolidCount(const TopoDS_Shape& shape) {
+    int n = 0;
+    for (TopExp_Explorer e(shape, TopAbs_SOLID); e.More(); e.Next()) ++n;
+    return n;
+}
+
+/// Почему слияние граней сделало `after` хуже `before`, или nullptr, если
+/// всё в порядке. Слияние только убирает линии между кусками одной
+/// поверхности: число тел, объём и замкнутость оболочки должны сохраниться
+/// (refine у FreeCAD проверяется так же; на OCCT встречалось тело,
+/// вывернутое наизнанку).
+const char* CleanBrokeShape(const TopoDS_Shape& before, const TopoDS_Shape& after) {
+    if (after.IsNull()) return "не дало результата";
+    if (SolidCount(after) != SolidCount(before)) return "изменило число тел";
+    const double v0 = VolumeOf(before), v1 = VolumeOf(after);
+    // Та же геометрия, другие грани: интегралы объёма отличаются только
+    // округлением — намного меньше 1e-5 от объёма тела.
+    if (std::abs(v1 - v0) > 1e-5 * std::max(std::abs(v0), 1.0)) return "изменило объём";
+    if (OpenEdges(after) > OpenEdges(before)) return "открыло оболочку";
+    return nullptr;
+}
+
+} // namespace
+
 TopoDS_Shape Clean(const TopoDS_Shape& input) {
+    auto _tc = std::chrono::steady_clock::now();
+    int cleanFaces = 0;
+    for (TopExp_Explorer e(input, TopAbs_FACE); e.More(); e.Next()) ++cleanFaces;
+    if (cleanFaces > kCleanFaceLimit) {
+        log::Warn("Clean: {} граней — слияние пропущено (защита от зависания)", cleanFaces);
+        return input;
+    }
     // One cylinder made twice (a fillet and the extruded arc projected from
     // it) is given one surface first: with two frames of opposite hands
     // UnifySameDomain never finished, and the line between them stayed.
     const TopoDS_Shape shape = ShareCylinders(input);
+    log::Info("CLEAN share: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     auto* unify = new ShapeUpgrade_UnifySameDomain(shape, true, true, true);
     // Faces of a real part are "one plane" only up to the sketch solver's
     // residual and the transforms of a part drawn in an assembly. The
@@ -710,12 +871,24 @@ TopoDS_Shape Clean(const TopoDS_Shape& input) {
     // Cleaning is a nicety: on a fault the shape goes on as the boolean or
     // sweep made it. The half-built object is left alone (leaked), its state
     // after the jump is not to be trusted even by its destructor.
+    log::Info("CLEAN prep: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     TopoDS_Shape result;
     if (!guard::RunGuarded([&] { unify->Build(); result = unify->Shape(); })) {
         log::Warn("Clean: OCCT fault in UnifySameDomain, the shape is left as it is");
         return input;
     }
     delete unify;
+    // Сама проверка не должна стоить дороже слияния: если сделать её нельзя —
+    // тело идёт дальше слитым, как до появления проверки. Слияние, сломавшее
+    // тело, откатывается: исходное тело надёжнее слитого, но невалидного.
+    try {
+        if (const char* why = CleanBrokeShape(shape, result)) {
+            log::Warn("Clean: слияние граней {} — тело оставлено как было", why);
+            return input;
+        }
+    } catch (const Standard_Failure&) {
+    }
+    log::Info("CLEAN unify-build: {:.0f} ms", std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-_tc).count());
     return result;
 }
 

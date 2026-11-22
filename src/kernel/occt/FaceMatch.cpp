@@ -1,5 +1,8 @@
 #include "kernel/occt/FaceMatch.h"
 
+#include "core/Log.h"
+
+#include <BRepBndLib.hxx>
 #include <gp_Cylinder.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
@@ -20,7 +23,12 @@ namespace bz::kernel::occt {
 namespace {
 
 constexpr double kSameDirection = 0.999;   // cos of the largest angle still counted as "same normal"
-constexpr double kSamePlane = 1e-6;        // mm: offsets closer than this tie, distance decides
+// «Та же плоскость» и равенство расстояний — доля диагонали габарита тела,
+// с нижней границей в миллиметрах: на микродетали фиксированный допуск
+// съедал бы стенки, на крупной — окно поиска не растёт (FreeCAD держит
+// окно по размеру детали, а не абсолютом).
+constexpr double kPlaneWindowFraction = 1e-3;
+constexpr double kPlaneWindowMin = 1e-6;   // мм
 
 Vec3 ToVec(const gp_XYZ& v) { return {v.X(), v.Y(), v.Z()}; }
 
@@ -110,28 +118,57 @@ std::optional<TopoDS_Face> ResolveAnyFace(const TopoDS_Shape& body, const doc::F
     return best;
 }
 
-std::optional<TopoDS_Face> ResolveFace(const TopoDS_Shape& body, const doc::FaceReference& ref) {
+std::optional<TopoDS_Face> ResolveFace(const TopoDS_Shape& body, const doc::FaceReference& ref, bool* ambiguous) {
+    if (ambiguous) *ambiguous = false;
     if (!ref.IsSet()) return std::nullopt;
     const Vec3 n = ref.normal.Normalized();
     const TopoDS_Vertex probe = BRepBuilderAPI_MakeVertex(gp_Pnt(ref.point.x, ref.point.y, ref.point.z));
 
-    std::optional<TopoDS_Face> best;
-    double bestOffset = 1e300, bestDistance = 1e300;
+    Bnd_Box bounds;
+    BRepBndLib::AddOptimal(body, bounds);
+    const double window = std::max(kPlaneWindowMin,
+                                   kPlaneWindowFraction * (bounds.IsVoid() ? 1.0 : std::sqrt(bounds.SquareExtent())));
+
+    // Ближайшая по отступу плоскость с тем же нормалью.
+    double bestOffset = 1e300;
     for (TopExp_Explorer e(body, TopAbs_FACE); e.More(); e.Next()) {
         const TopoDS_Face& face = TopoDS::Face(e.Current());
         const std::optional<Vec3> normal = PlanarNormal(face);
         if (!normal || normal->Dot(n) < kSameDirection) continue;
         const Vec3 location = ToVec(BRepAdaptor_Surface(face).Plane().Location().XYZ());
         const double offset = std::abs((location - ref.point).Dot(n));
-        if (offset > bestOffset + kSamePlane) continue;
-        // Same plane as the best so far (or nearer): the face nearest the point wins.
+        if (offset < bestOffset) bestOffset = offset;
+    }
+    if (bestOffset > 1e299) return std::nullopt;
+
+    // В окне той же плоскости — грань, ближайшая к точке. Вторая на том же
+    // расстоянии (с точки зрения габарита тела) — неоднозначно: слот,
+    // разрезавший грань напополам, не даём разрешить молча за ближайшую.
+    std::optional<TopoDS_Face> best;
+    double bestDistance = 1e300, secondDistance = 1e300;
+    for (TopExp_Explorer e(body, TopAbs_FACE); e.More(); e.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(e.Current());
+        const std::optional<Vec3> normal = PlanarNormal(face);
+        if (!normal || normal->Dot(n) < kSameDirection) continue;
+        const Vec3 location = ToVec(BRepAdaptor_Surface(face).Plane().Location().XYZ());
+        const double offset = std::abs((location - ref.point).Dot(n));
+        if (offset > bestOffset + window) continue;
         BRepExtrema_DistShapeShape distance(probe, face);
         const double d = distance.IsDone() ? distance.Value() : 1e300;
-        if (offset < bestOffset - kSamePlane || d < bestDistance) {
-            best = face;
-            bestOffset = offset;
+        if (d < bestDistance) {
+            secondDistance = bestDistance;
             bestDistance = d;
+            best = face;
+        } else if (d < secondDistance) {
+            secondDistance = d;
         }
+    }
+    if (best && secondDistance <= bestDistance + window) {
+        if (ambiguous) *ambiguous = true;
+        log::Warn("refs: грань у ({:.3f}, {:.3f}, {:.3f}) найдена неоднозначно — две в одной плоскости на расстоянии "
+                  "{:.4f} мм; выберите заново",
+                  ref.point.x, ref.point.y, ref.point.z, bestDistance);
+        return std::nullopt;
     }
     return best;
 }

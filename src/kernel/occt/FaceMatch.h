@@ -13,8 +13,12 @@ namespace bz::kernel::occt {
 
 /// The flat face of `body` with the reference's outward normal whose plane is
 /// nearest the stored point; among faces in that same plane, the one nearest
-/// the point. nullopt when no flat face faces that way.
-std::optional<TopoDS_Face> ResolveFace(const TopoDS_Shape& body, const doc::FaceReference& ref);
+/// the point. «Та же плоскость» и равенство расстояний — окно в долях
+/// диагонали габарита тела. Две грани в плоскости на одном расстоянии —
+/// неоднозначно: nullopt и true в `ambiguous`, грань просят выбрать заново.
+/// nullopt when no flat face faces that way.
+std::optional<TopoDS_Face> ResolveFace(const TopoDS_Shape& body, const doc::FaceReference& ref,
+                                       bool* ambiguous = nullptr);
 
 /// doc::PlaneFrame of the referenced face as it is on `body` now (the
 /// stored point moved onto the face's current plane); nullopt when the face

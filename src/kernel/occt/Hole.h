@@ -14,8 +14,9 @@ Expected<TopoDS_Shape> DrillHoles(const TopoDS_Shape& body, const doc::HoleFeatu
 /// Moves the centres held on an axis (feature.concentric) to where that axis,
 /// found again on `body`, crosses the hole's face now; the references follow
 /// the edge or face as it is now. Returns how many axes were not found (their
-/// centres stay where they were).
-std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature);
+/// centres stay where they were). An edge on `previousPlane` stays on the
+/// current hole plane even if the support face moved during the rebuild.
+std::size_t FollowAxes(const TopoDS_Shape& body, doc::HoleFeature& feature, const Frame& previousPlane);
 
 /// The cutting tools of all holes of `feature` on `body`, fused (what
 /// DrillHoles cuts out; patterns copy it).

@@ -16,10 +16,19 @@ namespace bz::kernel::occt {
 /// What `edge` of `body` looks like.
 doc::EdgeReference DescribeEdge(const TopoDS_Edge& edge, const TopoDS_Shape& body);
 
+/// Whether a straight or circular edge signature lies in the given plane.
+bool IsEdgeInPlane(const doc::EdgeReference& edge, const Frame& plane);
+
 /// For each reference, the matching edge of `body`, or nullopt when nothing
-/// resembles it any more.
+/// resembles it any more. Сохранены обе соседние грани — кандидат обязан
+/// показать обе; совпадение не единственно (ближайший кандидат почти не
+/// отличается) — nullopt и true в `ambiguous[i]`: ребро просят выбрать
+/// заново, молчаливый перескок запрещён.
+/// A supplied context plane restricts matching to coplanar edges.
 std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs,
-                                                     const TopoDS_Shape& body);
+                                                     const TopoDS_Shape& body,
+                                                     std::vector<bool>* ambiguous = nullptr,
+                                                     const Frame* contextPlane = nullptr);
 
 /// A straight edge as it is on `body` now: a point in its middle and its
 /// unit direction. nullopt when it is gone or not straight.
@@ -28,7 +37,8 @@ std::optional<std::pair<Vec3, Vec3>> ResolveLine(const doc::EdgeReference& ref, 
 /// A circular edge as it is on `body` now: its centre and unit axis. `ref`
 /// is updated to the edge as it is now (it is found again from there next
 /// time). nullopt when it is gone or not a circle.
-std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body);
+std::optional<std::pair<Vec3, Vec3>> ResolveCircle(doc::EdgeReference& ref, const TopoDS_Shape& body,
+                                                    const Frame* contextPlane = nullptr);
 
 /// The end of the edge `ref` on `body` now that was the vertex at `was`:
 /// the end that sits where `was` sat relative to the edge's middle (so a

@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace bz::kernel {
@@ -37,6 +38,12 @@ struct ProjectedLines {
 /// side of it (toward the viewer) is taken away.
 struct CutPlane {
     Vec3 point, normal;
+};
+
+/// The cut and the contours drawn on the sheet, in the view's plane at 1:1.
+struct SectionEdgeFilter {
+    CutPlane cut;
+    std::span<const std::vector<Vec2>> visible, hidden;
 };
 
 /// An edge of the model as it is: the ends of a line, the centre, axis and
@@ -71,7 +78,8 @@ public:
     /// The edge of the bodies nearest to `p` (the view's plane at 1:1, as
     /// Project gives it) within `tolerance`; of edges that look the same from
     /// here, the one nearer the viewer. nullopt — none that near.
-    std::optional<PickedEdge> EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double tolerance) const;
+    std::optional<PickedEdge> EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double tolerance,
+                                     const SectionEdgeFilter* section = nullptr) const;
     /// The edges of `refs` as they are now (kernel::occt::ResolveEdges); nullopt for one not found.
     std::vector<std::optional<ModelEdge>> Resolve(const std::vector<doc::EdgeReference>& refs) const;
 

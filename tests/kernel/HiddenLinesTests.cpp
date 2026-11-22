@@ -144,6 +144,39 @@ TEST_CASE("dimension edges: picked on a view, found again after the plate grows"
     CHECK(again[1]->radius == doctest::Approx(5));
 }
 
+TEST_CASE("dimension edges: section picking excludes removed edges and undisplayed contours") {
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(Plate());
+    const drawing::ViewBasis front = drawing::BasisOf(drawing::ViewDirection::Front);
+    const kernel::CutPlane cut{{0, -20, 0}, front.eye};
+    const auto lines = shapes.Project(front.eye, front.up, cut);
+    REQUIRE(lines);
+    kernel::SectionEdgeFilter section{cut, lines->visible, {}};
+
+    // The front and back edges coincide in projection. The front edge
+    // would win the ordinary pick, but it was removed by the cut.
+    const Vec2 topPoint{20, 30};
+    const auto ordinary = shapes.EdgeAt(front.eye, front.up, topPoint, 0.5);
+    REQUIRE(ordinary);
+    CHECK(ordinary->edge.a.y == doctest::Approx(-40));
+    const auto sectionEdge = shapes.EdgeAt(front.eye, front.up, topPoint, 0.5, &section);
+    REQUIRE(sectionEdge);
+    CHECK(sectionEdge->edge.a.y == doctest::Approx(40));
+    CHECK(shapes.Resolve({sectionEdge->ref})[0].has_value());
+
+    // A horizontal cut removes the upper rim. The lower rim remains
+    // selectable only where its projection matches a displayed contour.
+    const drawing::ViewBasis above = drawing::BasisOf(drawing::ViewDirection::Top);
+    const kernel::CutPlane horizontal{{0, 0, 15}, above.eye};
+    const auto fromAbove = shapes.Project(above.eye, above.up, horizontal);
+    REQUIRE(fromAbove);
+    section = {horizontal, fromAbove->visible, {}};
+    const auto rim = shapes.EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section);
+    REQUIRE(rim);
+    CHECK(rim->edge.center.z == doctest::Approx(0));
+    section.visible = {};
+    CHECK_FALSE(shapes.EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section));
+}
+
 TEST_CASE("dimension edges: the golden drawing's dimensions on the bracket they were made on") {
     // a3-dimensions.bzd was made in the program on кронштейн.bzc: a linear one,
     // a diameter and an angle (ADR-0012, step 5). Its references must keep finding the edges.

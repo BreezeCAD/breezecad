@@ -126,14 +126,27 @@ void AddAxes(const TopoDS_Shape& shape, const gp_Dir& eye, const gp_Dir& right, 
     for (const Line& l : lines) out.axes.push_back({l.origin + l.dir * l.from, l.origin + l.dir * l.to});
 }
 
-/// Distance from `p` to the segment a–b.
-double Distance(Vec2 p, Vec2 a, Vec2 b) {
+/// Closest point to `p` on the segment a–b.
+Vec2 ClosestPoint(Vec2 p, Vec2 a, Vec2 b) {
     const Vec2 d = b - a;
     const double len2 = d.x * d.x + d.y * d.y;
     double t = len2 > 0 ? ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / len2 : 0;
     t = std::clamp(t, 0.0, 1.0);
-    const Vec2 q = a + d * t;
+    return a + d * t;
+}
+
+double Distance(Vec2 p, Vec2 a, Vec2 b) {
+    const Vec2 q = ClosestPoint(p, a, b);
     return std::hypot(p.x - q.x, p.y - q.y);
+}
+
+bool OnContour(Vec2 p, std::span<const std::vector<Vec2>> lines) {
+    // The selection and HLR tessellate curves separately in model millimetres.
+    constexpr double tolerance = 0.02;
+    for (const auto& line : lines)
+        for (std::size_t i = 1; i < line.size(); ++i)
+            if (Distance(p, line[i - 1], line[i]) <= tolerance) return true;
+    return false;
 }
 
 /// ГОСТ 2.305: a hidden line under a visible one is not drawn. HLR gives
@@ -305,10 +318,12 @@ ModelEdge EdgeOf(const TopoDS_Edge& edge) {
 
 } // namespace
 
-std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double tolerance) const {
+std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double tolerance,
+                                            const SectionEdgeFilter* section) const {
     if (!myData) return std::nullopt;
     const Vec3 e = eye.Normalized(), u = up.Normalized(), r = u.Cross(e).Normalized();
     const auto to2d = [&](const gp_Pnt& q) { return Vec2{q.X() * r.x + q.Y() * r.y + q.Z() * r.z, q.X() * u.x + q.Y() * u.y + q.Z() * u.z}; };
+    const Vec3 cutNormal = section ? section->cut.normal.Normalized() : Vec3{};
     TopTools_IndexedMapOfShape edges;
     TopExp::MapShapes(myData->shape, TopAbs_EDGE, edges);
     std::optional<TopoDS_Edge> best;
@@ -325,10 +340,20 @@ std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double t
                 GCPnts_TangentialDeflection d(c, 0.08, 0.01);
                 for (int k = 1; k <= d.NbPoints(); ++k) points.push_back(d.Value(k));
             }
+            // A dimension stores a reference to the entire original model edge.
+            // A clipped edge would report the original length, including material cut away.
+            if (section && std::any_of(points.begin(), points.end(), [&](const gp_Pnt& q) {
+                    return (Vec3{q.X(), q.Y(), q.Z()} - section->cut.point).Dot(cutNormal) > 1e-7;
+                }))
+                continue;
             double distance = 1e300, depth = -1e300;
             for (std::size_t k = 0; k + 1 < points.size(); ++k) {
-                const double l = Distance(p, to2d(points[k]), to2d(points[k + 1]));
-                if (l < distance) {
+                const Vec2 a = to2d(points[k]), b = to2d(points[k + 1]);
+                if (section && (b - a).Dot(b - a) < 1e-12) continue;
+                const Vec2 q = ClosestPoint(p, a, b);
+                const double l = std::hypot(p.x - q.x, p.y - q.y);
+                if (l < distance && (!section || (l <= tolerance &&
+                    (OnContour(q, section->visible) || OnContour(q, section->hidden))))) {
                     distance = l;
                     const gp_Pnt m((points[k].XYZ() + points[k + 1].XYZ()) / 2);
                     depth = m.X() * e.x + m.Y() * e.y + m.Z() * e.z;   // toward the eye

@@ -18,6 +18,19 @@ namespace bz::app {
 
 namespace dw = bz::drawing;
 
+namespace {
+
+std::string ViewKey(const std::string& sourceKey, const dw::View& view) {
+    std::string key = sourceKey + "|" + std::string(dw::DirectionId(view.direction));
+    if (view.section) {   // a section: its plane and sight too
+        const dw::SectionCut& c = *view.section;
+        key += std::format("|{},{},{}|{},{},{}|{},{},{}", c.point.x, c.point.y, c.point.z, c.eye.x, c.eye.y, c.eye.z, c.up.x, c.up.y, c.up.z);
+    }
+    return key;
+}
+
+} // namespace
+
 /// A model read here from its file (not open in a tab).
 struct DrawingViews::Source {
     std::unique_ptr<Session>        session;
@@ -139,11 +152,7 @@ const dw::ViewLines* DrawingViews::Lines(Workspace& ws, DrawingState& d, const d
         e.problem = problem;
         return nullptr;
     }
-    std::string key = sourceKey + "|" + std::string(dw::DirectionId(view.direction));
-    if (view.section) {   // a section: its plane and sight too
-        const dw::SectionCut& c = *view.section;
-        key += std::format("|{},{},{}|{},{},{}|{},{},{}", c.point.x, c.point.y, c.point.z, c.eye.x, c.eye.y, c.eye.z, c.up.x, c.up.y, c.up.z);
-    }
+    const std::string key = ViewKey(sourceKey, view);
     if (e.key == key) return e.ready ? &e.lines : nullptr;
     const bool computing = myJob.valid() && myJobView == view.id && myJobKey == key;
     if (!computing && !myJob.valid()) {
@@ -219,11 +228,21 @@ std::vector<std::optional<dw::ModelEdge>> DrawingViews::Edges(Workspace& ws, Dra
 
 std::optional<dw::ModelEdge> DrawingViews::EdgeAt(Workspace& ws, DrawingState& d, const dw::View& view, Vec2 sheetPoint, double tolerance,
                                                   dw::Json& ref) {
-    const kernel::ViewShapes shapes = Shapes(ws, d, view.model);
+    std::string sourceKey;
+    const kernel::ViewShapes shapes = Shapes(ws, d, view.model, &sourceKey);
     if (shapes.Empty()) return std::nullopt;
+    std::optional<kernel::SectionEdgeFilter> section;
+    if (view.section) {
+        const dw::ViewLines* lines = Lines(ws, d, view);
+        if (!lines || myEntries.at(view.id).key != ViewKey(sourceKey, view)) return std::nullopt;
+        section = kernel::SectionEdgeFilter{
+            {view.section->point, view.section->eye}, lines->visible,
+            view.hidden ? std::span<const std::vector<Vec2>>(lines->hidden) : std::span<const std::vector<Vec2>>{}
+        };
+    }
     const dw::ViewBasis b = dw::BasisOf(view);
     const double s = view.scale.Value();
-    const auto picked = shapes.EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s);
+    const auto picked = shapes.EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s, section ? &*section : nullptr);
     if (!picked) return std::nullopt;
     ref = doc::json_io::ToJson(picked->ref);
     return ToDrawing(picked->edge);

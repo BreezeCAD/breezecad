@@ -384,9 +384,15 @@ Ran RunBooleanImpl(const TopoDS_Shape& a, const TopTools_ListOfShape& tools, dou
     op.SetArguments(arguments);
     op.SetTools(tools);
     op.SetUseOBB(true);
+#if defined(_WIN32)
+    // Windows FaultGuard only catches faults on the guarded thread. Keep
+    // the boolean on that thread rather than spawning unguarded OCCT workers.
+    op.SetRunParallel(false);
+#else
     // Параллельная пара сборок пересечений; на потоках параллельной загрузки
     // деталей вложенный параллелизм выключен, чтобы пулы OCCT не перемножались.
     op.SetRunParallel(gSerialDepth.load(std::memory_order_relaxed) == 0);
+#endif
     if (fuzzy > 0) {
         op.SetFuzzyValue(fuzzy);
         op.SetNonDestructive(true);

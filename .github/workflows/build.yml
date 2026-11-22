@@ -139,6 +139,8 @@ jobs:
           cmake --build --preset windows-mingw 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Test
         timeout-minutes: 25
+        env:
+          BZ_TEST_PROGRESS: '1'
         run: |
           set +e +o pipefail   # keep the test exit code even when reporting a failure
           export PATH="$(cygpath -u "$OCCT_PREFIX")/bin:$PATH"

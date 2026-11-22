@@ -34,7 +34,7 @@
     },
     {
       "name": "windows-mingw",
-      "displayName": "Windows (MSYS2 MinGW64) Release",
+      "displayName": "Windows (MSYS2) Release",
       "description": "Set OCCT_DIR to the folder that contains OpenCASCADEConfig.cmake, e.g. C:/occt/install/cmake.",
       "inherits": "base",
       "cacheVariables": {
@@ -44,7 +44,7 @@
     },
     {
       "name": "windows-mingw-debug",
-      "displayName": "Windows (MSYS2 MinGW64) Debug",
+      "displayName": "Windows (MSYS2) Debug",
       "inherits": "windows-mingw",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },

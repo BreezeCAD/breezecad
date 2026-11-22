@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 
@@ -136,11 +137,11 @@ Expected<PackReport> PackProject(const fs::path& assemblyFile, const fs::path& o
     void* buffer = nullptr;
     std::size_t size = 0;
     ok = ok && mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size);
-    std::string archive = ok ? std::string(static_cast<const char*>(buffer), size) : std::string();
     mz_zip_writer_end(&zip);
     if (!ok) return Error{"Не удалось упаковать проект"};
+    const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
     std::ofstream file(out, std::ios::binary | std::ios::trunc);
-    file.write(archive.data(), static_cast<std::streamsize>(archive.size()));
+    file.write(static_cast<const char*>(archive.get()), static_cast<std::streamsize>(size));
     if (!file) return Error{std::format("Не удалось записать {}", ToUtf8(out.filename()))};
     return report;
 }

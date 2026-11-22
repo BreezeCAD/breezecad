@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <set>
 
 using namespace bz;
@@ -179,12 +180,16 @@ TEST_CASE("a project file that is not one, or is damaged or unsafe, is refused")
     const auto make = [&](const char* name, const std::string& json) {
         mz_zip_archive z{};
         REQUIRE(mz_zip_writer_init_heap(&z, 0, 1024));
-        REQUIRE(mz_zip_writer_add_mem(&z, "project.json", json.data(), json.size(), MZ_DEFAULT_COMPRESSION));
-        void* buf = nullptr;
+        const bool added = mz_zip_writer_add_mem(&z, "project.json", json.data(), json.size(), MZ_DEFAULT_COMPRESSION);
+        void* buffer = nullptr;
         std::size_t size = 0;
-        REQUIRE(mz_zip_writer_finalize_heap_archive(&z, &buf, &size));
-        std::ofstream(root / name, std::ios::binary).write(static_cast<const char*>(buf), static_cast<std::streamsize>(size));
+        const bool finalized = added && mz_zip_writer_finalize_heap_archive(&z, &buffer, &size);
         mz_zip_writer_end(&z);
+        REQUIRE(added);
+        REQUIRE(finalized);
+        const std::unique_ptr<void, decltype(&mz_free)> archive(buffer, mz_free);
+        std::ofstream(root / name, std::ios::binary)
+            .write(static_cast<const char*>(archive.get()), static_cast<std::streamsize>(size));
     };
     make("evil.bzp", R"({"format":"bzp","version":1,"main":"a.bza","files":[{"path":"../../evil.bzc","role":"part"}]})");
     CHECK_FALSE(ReadProject(root / "evil.bzp"));

@@ -48,7 +48,7 @@ struct Dimension {
     ObjectId          view;
     DimensionKind     kind = DimensionKind::Linear;
     DimensionAxis     axis = DimensionAxis::Aligned;
-    std::vector<Json> edges;   ///< EdgeReference as JSON (document/JsonIO): read by the app, kept here as is
+    std::vector<Json> edges;   ///< Model EdgeReference, or {"sectionEdge": EdgeReference} on a cut solid. Kept verbatim.
     Vec2              at;      ///< the dimension line passes here: view plane, 1:1, model origin at (0, 0)
     std::string       text;    ///< the user's text, "<>" — the value; empty — the value alone
 };

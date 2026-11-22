@@ -594,8 +594,10 @@ void BalloonMenu(DrawingState& d) {
     ImGui::EndPopup();
 }
 
-/// The menu of a dimension: how a linear one measures, its text, delete.
-void DimensionMenu(DrawingState& d) {
+void StartDimensionRebind(AppContext& app, DrawingState& d, const dw::Dimension& dim);
+
+/// The menu of a dimension: measurement axis, text, attachment and deletion.
+void DimensionMenu(AppContext& app, DrawingState& d) {
     if (!ImGui::BeginPopup("##dim-menu")) return;
     const auto dims = dw::DimensionsOf(d.Sheet());
     const auto it = std::find_if(dims.begin(), dims.end(), [&](const dw::Dimension& x) { return x.id == d.selectedAnnotation; });
@@ -624,6 +626,7 @@ void DimensionMenu(DrawingState& d) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::Separator();
+    if (ImGui::MenuItem(Tr("Перепривязать размер"))) StartDimensionRebind(app, d, dim);
     if (ImGui::MenuItem(Tr("Удалить размер"), "Delete")) DeleteAnnotation(d, dim.id);
     ImGui::EndPopup();
 }
@@ -779,19 +782,31 @@ void ArrangeBalloons(AppContext& app) {
 /// A dimension being made: its edges picked one by one on a view, then its
 /// line placed with a click (as in КОМПАС: the command stays on for the next one).
 struct DimensionTool {
+    struct Rebind {
+        const DrawingState* owner;
+        ObjectId sheet;
+        std::uint64_t revision;
+        dw::Dimension dimension;
+        std::vector<std::size_t> slots;
+    };
+    std::optional<Rebind>         rebind;
     bool                          active = false;
     dw::DimensionKind             kind = dw::DimensionKind::Linear;
     ObjectId                      view;
     std::vector<dw::Json>         refs;
     std::vector<dw::ModelEdge>    edges;
 
-    std::size_t Needs() const { return kind == dw::DimensionKind::Linear || kind == dw::DimensionKind::Angle ? 2 : 1; }
+    std::size_t Needs() const {
+        if (rebind) return rebind->slots.size();
+        return kind == dw::DimensionKind::Linear || kind == dw::DimensionKind::Angle ? 2 : 1;
+    }
     /// Enough edges to show the dimension under the cursor.
-    bool CanPlace() const { return !edges.empty() && (kind != dw::DimensionKind::Angle || edges.size() == 2); }
+    bool CanPlace() const { return !rebind && !edges.empty() && (kind != dw::DimensionKind::Angle || edges.size() == 2); }
     void Reset() {
         view = {};
         refs.clear();
         edges.clear();
+        rebind.reset();
     }
 };
 
@@ -814,6 +829,48 @@ void StartDimension(AppContext& app, dw::DimensionKind kind) {
             t.active = false;
         }
     }
+}
+
+void StartDimensionRebind(AppContext& app, DrawingState& d, const dw::Dimension& dim) {
+    const dw::Item* item = dw::FindViewItem(d.Sheet(), dim.view);
+    const auto view = item ? dw::ReadView(*item) : std::nullopt;
+    if (!view) return;
+    DrawingViews& views = DrawingViews::Of(d);
+    if (!views.Lines(app.workspace, d, *view) || views.Busy()) {
+        app.notes.Info(Tr("Дождитесь пересчёта вида"));
+        return;
+    }
+    const auto edges = views.Edges(app.workspace, d, *view, dim.edges);
+    std::vector<std::size_t> slots;
+    for (std::size_t i = 0; i < edges.size(); ++i)
+        if (!edges[i]) slots.push_back(i);
+    if (slots.empty())
+        for (std::size_t i = 0; i < dim.edges.size(); ++i) slots.push_back(i);
+
+    Cutter().active = false;
+    Pointer().active = false;
+    DimensionTool& tool = Tool();
+    tool.Reset();
+    tool.kind = dim.kind;
+    tool.view = dim.view;
+    tool.rebind.emplace(DimensionTool::Rebind{&d, d.Sheet().id, d.Revision(), dim, std::move(slots)});
+    tool.active = true;
+}
+
+bool CommitReboundDimension(AppContext& app, DrawingState& d, const dw::View& view, DimensionTool& tool) {
+    const auto& repair = *tool.rebind;
+    dw::Dimension dim = repair.dimension;
+    for (std::size_t i = 0; i < repair.slots.size(); ++i)
+        dim.edges[repair.slots[i]] = tool.refs[i];
+    const auto edges = DrawingViews::Of(d).Edges(app.workspace, d, view, dim.edges);
+    std::string reason;
+    if (!dw::MeasureOf(view, dim, edges, &reason)) {
+        app.notes.Info(Tr(reason));
+        return false;
+    }
+    if (dim.edges != repair.dimension.edges)
+        ChangeDimension(d, dim.id, Tr("Перепривязать размер"), [&](dw::Dimension& x) { x.edges = std::move(dim.edges); });
+    return true;
 }
 
 void StartSectionTool(AppContext& app) {
@@ -1257,7 +1314,7 @@ void DrawDrawingTree(AppContext& app, Session& session, ImVec2 pos, ImVec2 size)
         ImGui::PopID();
     }
     ViewMenu(d);
-    DimensionMenu(d);
+    DimensionMenu(app, d);
     BalloonMenu(d);
     ImGui::SetCursorScreenPos({pos.x, y});
     ImGui::Dummy({1, ui.S(8)});
@@ -1320,10 +1377,14 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     ViewDrag& drag = Drag();
     DimensionDrag& dimDrag = DimDrag();
     DimensionTool& tool = Tool();
-    if (tool.active && (sheet.kind != dw::SheetKind::Drawing || (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape)))) {
+    const bool rebindExpired = tool.rebind && (tool.rebind->owner != &d || tool.rebind->sheet != sheet.id ||
+                                              tool.rebind->revision != d.Revision());
+    if (tool.active && (sheet.kind != dw::SheetKind::Drawing || rebindExpired ||
+                        ((hovered || tool.rebind) && ImGui::IsKeyPressed(ImGuiKey_Escape)))) {
         tool.active = false;
         tool.Reset();
     }
+    const bool rebinding = tool.active && tool.rebind.has_value();
     // A dimension being made: edges picked on a view, then its place.
     std::optional<dw::Dimension> phantom;
     std::optional<dw::View>      phantomView;
@@ -1352,6 +1413,15 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
                         tool.refs.push_back(std::move(ref));
                         tool.edges.push_back(*e);
                         took = true;
+                        if (tool.rebind && tool.edges.size() == tool.Needs()) {
+                            if (CommitReboundDimension(app, d, *v, tool)) {
+                                tool.active = false;
+                                tool.Reset();
+                            } else {
+                                tool.refs.pop_back();
+                                tool.edges.pop_back();
+                            }
+                        }
                     } else if (e) {
                         app.notes.Info(tool.kind == dw::DimensionKind::Angle ? Tr("Угол ставится между прямыми рёбрами")
                                                                              : Tr("Нужна окружность или дуга"));
@@ -1379,7 +1449,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
             }
         }
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {   // a step back: the picked edges, then the command
-            if (tool.edges.empty()) tool.active = false;
+            if (tool.rebind || tool.edges.empty()) tool.active = false;
             tool.Reset();
             phantom.reset();
         }
@@ -1500,7 +1570,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
             balloonGhost.reset();
         }
     }
-    const bool busy = tool.active || cutter.active || pointer.active;
+    const bool busy = rebinding || tool.active || cutter.active || pointer.active;
     if (!busy && hovered && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
         const Vec2 at = view.ToSheet(io.MousePos);
         // A dimension over the views is picked first.
@@ -1686,7 +1756,9 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     // A note at the top, as over the part's view: what to do now.
     const std::size_t newer = sheet.views.size() - onSheet.size() + sheet.annotations.size() - dw::DimensionsOf(sheet).size() - dw::BalloonsOf(sheet).size();
     std::string note;
-    if (tool.active) note = Tr(ToolPrompt(tool));
+    if (tool.active && tool.rebind)
+        note = Trf("Перепривязка размера: укажите ребро {} из {} (Esc — отменить)", tool.edges.size() + 1, tool.Needs());
+    else if (tool.active) note = Tr(ToolPrompt(tool));
     else if (pointer.active)
         note = pointer.picked ? Tr("Щелчок — место полки с номером (Esc — выйти)") : Tr("Позиция: щелчок по детали на виде сборки (Esc — выйти)");
     else if (cutter.active)
@@ -1704,7 +1776,7 @@ void DrawDrawingSheet(AppContext& app, Session& session, ImVec2 pos, ImVec2 size
     }
 
     ViewMenu(d);
-    DimensionMenu(d);
+    DimensionMenu(app, d);
     BalloonMenu(d);
     // The whole sheet again: a button in the corner, as «Домой» over the model.
     ImGui::SetCursorScreenPos({pos.x + size.x - ui.S(48), pos.y + ui.S(12)});

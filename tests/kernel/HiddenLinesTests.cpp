@@ -144,6 +144,45 @@ TEST_CASE("dimension edges: picked on a view, found again after the plate grows"
     CHECK(again[1]->radius == doctest::Approx(5));
 }
 
+TEST_CASE("dimension edges: section picking excludes removed edges and undisplayed contours") {
+    const kernel::ViewShapes shapes = kernel::ViewShapes::Of(Plate());
+    const drawing::ViewBasis front = drawing::BasisOf(drawing::ViewDirection::Front);
+    const kernel::CutPlane cut{{0, -20, 0}, front.eye};
+    const auto lines = shapes.Project(front.eye, front.up, cut);
+    REQUIRE(lines);
+    REQUIRE(lines->sectionShapes);
+    kernel::SectionEdgeFilter section{lines->visible, {}};
+
+    // The front and back edges coincide in projection. The front edge
+    // would win the ordinary pick, but it was removed by the cut.
+    const Vec2 topPoint{20, 30};
+    const auto ordinary = shapes.EdgeAt(front.eye, front.up, topPoint, 0.5);
+    REQUIRE(ordinary);
+    CHECK(ordinary->edge.a.y == doctest::Approx(-40));
+    const auto sectionEdge = lines->sectionShapes->EdgeAt(front.eye, front.up, topPoint, 0.5, &section);
+    REQUIRE(sectionEdge);
+    CHECK(sectionEdge->edge.a.y == doctest::Approx(-20));
+    const auto rebuilt = kernel::ViewShapes::Of(Plate()).Project(front.eye, front.up, cut);
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt->sectionShapes);
+    const auto recovered = rebuilt->sectionShapes->Resolve({sectionEdge->ref});
+    REQUIRE(recovered[0]);
+    CHECK(recovered[0]->a.y == doctest::Approx(-20));
+
+    // The circular rim on the section plane coincides with the lower rim in projection.
+    const drawing::ViewBasis above = drawing::BasisOf(drawing::ViewDirection::Top);
+    const kernel::CutPlane horizontal{{0, 0, 15}, above.eye};
+    const auto fromAbove = shapes.Project(above.eye, above.up, horizontal);
+    REQUIRE(fromAbove);
+    REQUIRE(fromAbove->sectionShapes);
+    section = {fromAbove->visible, {}};
+    const auto rim = fromAbove->sectionShapes->EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section);
+    REQUIRE(rim);
+    CHECK(rim->edge.center.z == doctest::Approx(15));
+    section.visible = {};
+    CHECK_FALSE(fromAbove->sectionShapes->EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section));
+}
+
 TEST_CASE("dimension edges: the golden drawing's dimensions on the bracket they were made on") {
     // a3-dimensions.bzd was made in the program on кронштейн.bzc: a linear one,
     // a diameter and an angle (ADR-0012, step 5). Its references must keep finding the edges.

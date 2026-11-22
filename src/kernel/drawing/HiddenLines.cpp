@@ -273,6 +273,11 @@ Expected<ProjectedLines> ViewShapes::Project(Vec3 eye, Vec3 up, const std::optio
             Expected<TopoDS_Shape> cutShape = CutBy(shape, *cut);
             if (!cutShape) return cutShape.GetError();
             shape = *cutShape;
+            auto section = std::make_shared<ViewShapes>();
+            auto data = std::make_shared<Data>();
+            data->shape = shape;
+            section->myData = std::move(data);
+            out.sectionShapes = std::move(section);
             out.sections = SectionFaces(shape, *cut, r, u);
         }
         const gp_Dir eyeDir(e.x, e.y, e.z), rightDir(r.x, r.y, r.z), upDir(u.x, u.y, u.z);
@@ -323,7 +328,6 @@ std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double t
     if (!myData) return std::nullopt;
     const Vec3 e = eye.Normalized(), u = up.Normalized(), r = u.Cross(e).Normalized();
     const auto to2d = [&](const gp_Pnt& q) { return Vec2{q.X() * r.x + q.Y() * r.y + q.Z() * r.z, q.X() * u.x + q.Y() * u.y + q.Z() * u.z}; };
-    const Vec3 cutNormal = section ? section->cut.normal.Normalized() : Vec3{};
     TopTools_IndexedMapOfShape edges;
     TopExp::MapShapes(myData->shape, TopAbs_EDGE, edges);
     std::optional<TopoDS_Edge> best;
@@ -340,12 +344,6 @@ std::optional<PickedEdge> ViewShapes::EdgeAt(Vec3 eye, Vec3 up, Vec2 p, double t
                 GCPnts_TangentialDeflection d(c, 0.08, 0.01);
                 for (int k = 1; k <= d.NbPoints(); ++k) points.push_back(d.Value(k));
             }
-            // A dimension stores a reference to the entire original model edge.
-            // A clipped edge would report the original length, including material cut away.
-            if (section && std::any_of(points.begin(), points.end(), [&](const gp_Pnt& q) {
-                    return (Vec3{q.X(), q.Y(), q.Z()} - section->cut.point).Dot(cutNormal) > 1e-7;
-                }))
-                continue;
             double distance = 1e300, depth = -1e300;
             for (std::size_t k = 0; k + 1 < points.size(); ++k) {
                 const Vec2 a = to2d(points[k]), b = to2d(points[k + 1]);

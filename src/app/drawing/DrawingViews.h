@@ -97,6 +97,7 @@ private:
     struct Entry {
         std::string        key;     ///< what the lines were computed for: model, revision, direction
         drawing::ViewLines lines;
+        std::shared_ptr<const kernel::ViewShapes> sectionShapes;
         bool               ready = false;
         std::string        problem;
     };

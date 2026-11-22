@@ -150,7 +150,8 @@ TEST_CASE("dimension edges: section picking excludes removed edges and undisplay
     const kernel::CutPlane cut{{0, -20, 0}, front.eye};
     const auto lines = shapes.Project(front.eye, front.up, cut);
     REQUIRE(lines);
-    kernel::SectionEdgeFilter section{cut, lines->visible, {}};
+    REQUIRE(lines->sectionShapes);
+    kernel::SectionEdgeFilter section{lines->visible, {}};
 
     // The front and back edges coincide in projection. The front edge
     // would win the ordinary pick, but it was removed by the cut.
@@ -158,23 +159,28 @@ TEST_CASE("dimension edges: section picking excludes removed edges and undisplay
     const auto ordinary = shapes.EdgeAt(front.eye, front.up, topPoint, 0.5);
     REQUIRE(ordinary);
     CHECK(ordinary->edge.a.y == doctest::Approx(-40));
-    const auto sectionEdge = shapes.EdgeAt(front.eye, front.up, topPoint, 0.5, &section);
+    const auto sectionEdge = lines->sectionShapes->EdgeAt(front.eye, front.up, topPoint, 0.5, &section);
     REQUIRE(sectionEdge);
-    CHECK(sectionEdge->edge.a.y == doctest::Approx(40));
-    CHECK(shapes.Resolve({sectionEdge->ref})[0].has_value());
+    CHECK(sectionEdge->edge.a.y == doctest::Approx(-20));
+    const auto rebuilt = kernel::ViewShapes::Of(Plate()).Project(front.eye, front.up, cut);
+    REQUIRE(rebuilt);
+    REQUIRE(rebuilt->sectionShapes);
+    const auto recovered = rebuilt->sectionShapes->Resolve({sectionEdge->ref});
+    REQUIRE(recovered[0]);
+    CHECK(recovered[0]->a.y == doctest::Approx(-20));
 
-    // A horizontal cut removes the upper rim. The lower rim remains
-    // selectable only where its projection matches a displayed contour.
+    // The circular rim on the section plane coincides with the lower rim in projection.
     const drawing::ViewBasis above = drawing::BasisOf(drawing::ViewDirection::Top);
     const kernel::CutPlane horizontal{{0, 0, 15}, above.eye};
     const auto fromAbove = shapes.Project(above.eye, above.up, horizontal);
     REQUIRE(fromAbove);
-    section = {horizontal, fromAbove->visible, {}};
-    const auto rim = shapes.EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section);
+    REQUIRE(fromAbove->sectionShapes);
+    section = {fromAbove->visible, {}};
+    const auto rim = fromAbove->sectionShapes->EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section);
     REQUIRE(rim);
-    CHECK(rim->edge.center.z == doctest::Approx(0));
+    CHECK(rim->edge.center.z == doctest::Approx(15));
     section.visible = {};
-    CHECK_FALSE(shapes.EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section));
+    CHECK_FALSE(fromAbove->sectionShapes->EdgeAt(above.eye, above.up, {5, 0}, 0.5, &section));
 }
 
 TEST_CASE("dimension edges: the golden drawing's dimensions on the bracket they were made on") {

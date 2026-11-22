@@ -10,6 +10,7 @@
 #include "document/JsonIO.h"
 #include "kernel/AssemblyReadApi.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -129,6 +130,7 @@ void DrawingViews::Poll() {
         e.problem = Tr(result.GetError().message);
         return;
     }
+    e.sectionShapes = std::move(result->sectionShapes);
     e.ready = true;
     e.problem.clear();
     e.lines.visible = std::move(result->visible);
@@ -211,18 +213,38 @@ std::vector<std::optional<dw::ModelEdge>> DrawingViews::Edges(Workspace& ws, Dra
     std::string key;
     const kernel::ViewShapes shapes = Shapes(ws, d, view.model, &key);
     if (shapes.Empty()) return std::vector<std::optional<dw::ModelEdge>>(refs.size());
-    std::string text = std::to_string(view.model.value);
+    // Legacy references describe the original solid. New section references
+    // describe the topology of the cut solid used to draw this particular view.
+    const auto isSectionRef = [](const dw::Json& ref) { return ref.contains("sectionEdge"); };
+    const kernel::ViewShapes* cut = nullptr;
+    if (std::any_of(refs.begin(), refs.end(), isSectionRef)) {
+        if (!view.section || !Lines(ws, d, view)) return std::vector<std::optional<dw::ModelEdge>>(refs.size());
+        key = ViewKey(key, view);
+        const Entry& entry = myEntries.at(view.id);
+        if (entry.key != key || !entry.sectionShapes) return std::vector<std::optional<dw::ModelEdge>>(refs.size());
+        cut = entry.sectionShapes.get();
+    }
+    std::string text = std::to_string(view.id.value);
     for (const dw::Json& r : refs) text += r.dump();
     Found& f = myFound[text];
     if (f.key == key && f.edges.size() == refs.size()) return f.edges;
-    std::vector<doc::EdgeReference> parsed(refs.size());
-    std::vector<bool> ok(refs.size());
-    for (std::size_t i = 0; i < refs.size(); ++i) ok[i] = doc::json_io::Read(refs[i], parsed[i]);
-    const std::vector<std::optional<kernel::ModelEdge>> found = shapes.Resolve(parsed);
     f.key = key;
     f.edges.assign(refs.size(), std::nullopt);
-    for (std::size_t i = 0; i < refs.size() && i < found.size(); ++i)
-        if (ok[i] && found[i]) f.edges[i] = ToDrawing(*found[i]);
+    for (bool onSection : {false, true}) {
+        std::vector<doc::EdgeReference> parsed;
+        std::vector<std::size_t> indices;
+        for (std::size_t i = 0; i < refs.size(); ++i) {
+            if (isSectionRef(refs[i]) != onSection) continue;
+            doc::EdgeReference ref;
+            if (!doc::json_io::Read(onSection ? refs[i].at("sectionEdge") : refs[i], ref)) continue;
+            parsed.push_back(ref);
+            indices.push_back(i);
+        }
+        if (parsed.empty()) continue;
+        const auto found = (onSection ? *cut : shapes).Resolve(parsed);
+        for (std::size_t i = 0; i < found.size(); ++i)
+            if (found[i]) f.edges[indices[i]] = ToDrawing(*found[i]);
+    }
     return f.edges;
 }
 
@@ -231,20 +253,24 @@ std::optional<dw::ModelEdge> DrawingViews::EdgeAt(Workspace& ws, DrawingState& d
     std::string sourceKey;
     const kernel::ViewShapes shapes = Shapes(ws, d, view.model, &sourceKey);
     if (shapes.Empty()) return std::nullopt;
+    const kernel::ViewShapes* topology = &shapes;
     std::optional<kernel::SectionEdgeFilter> section;
     if (view.section) {
         const dw::ViewLines* lines = Lines(ws, d, view);
         if (!lines || myEntries.at(view.id).key != ViewKey(sourceKey, view)) return std::nullopt;
+        topology = myEntries.at(view.id).sectionShapes.get();
+        if (!topology) return std::nullopt;
         section = kernel::SectionEdgeFilter{
-            {view.section->point, view.section->eye}, lines->visible,
+            lines->visible,
             view.hidden ? std::span<const std::vector<Vec2>>(lines->hidden) : std::span<const std::vector<Vec2>>{}
         };
     }
     const dw::ViewBasis b = dw::BasisOf(view);
     const double s = view.scale.Value();
-    const auto picked = shapes.EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s, section ? &*section : nullptr);
+    const auto picked = topology->EdgeAt(b.eye, b.up, dw::ViewPointOf(view, sheetPoint), tolerance / s, section ? &*section : nullptr);
     if (!picked) return std::nullopt;
-    ref = doc::json_io::ToJson(picked->ref);
+    const auto edgeRef = doc::json_io::ToJson(picked->ref);
+    ref = section ? dw::Json{{"sectionEdge", edgeRef}} : edgeRef;
     return ToDrawing(picked->edge);
 }
 

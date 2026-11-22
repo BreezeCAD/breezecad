@@ -17,8 +17,10 @@
 namespace bz::kernel {
 
 class Model;
+class ViewShapes;
 
 struct ProjectedLines {
+    std::shared_ptr<const ViewShapes> sectionShapes;   ///< cut topology used by HLR and dimension references
     std::vector<std::vector<Vec2>> visible, hidden;
     struct Mark {
         Vec2   center;
@@ -40,9 +42,8 @@ struct CutPlane {
     Vec3 point, normal;
 };
 
-/// The cut and the contours drawn on the sheet, in the view's plane at 1:1.
+/// The contours drawn on the sheet, in the view's plane at 1:1.
 struct SectionEdgeFilter {
-    CutPlane cut;
     std::span<const std::vector<Vec2>> visible, hidden;
 };
 

@@ -285,7 +285,7 @@ public:
 /// and light retuned), so the plastic gets a small program of its own:
 /// - Fresnel: toward the outline the surface reflects more and lets less
 ///   through — the rims read as the walls' thickness;
-/// - a reflected sky (a light gradient) instead of nothing at grazing angles;
+/// - a studio gradient sampled along reflected and refracted rays;
 /// - highlights stay bright through the transparency;
 /// - inner walls (back faces) fainter than the front.
 /// Written for the blended order-independent transparency of the live view.
@@ -321,11 +321,11 @@ void main() {
   float shine = max(occMaterial_Shininess(front), 64.0);
   for (int i = 0; i < occLightSourcesCount; ++i) {
     if (occLight_Type(i) != OccLightType_Direct) continue;
-    vec3 l = normalize(occLight_Position(i).xyz);
-    if (!occLight_IsHeadlight(i)) l = (occWorldViewMatrix * vec4(l, 0.0)).xyz;
+    vec3 l = normalize((occWorldViewMatrix * vec4(occLight_Position(i), 0.0)).xyz);
+    vec3 light = occLight_Specular(i).rgb * occLight_Intensity(i);
     float nl = max(dot(n, l), 0.0);
-    diffuse += occLight_Diffuse(i).rgb * nl;
-    if (nl > 0.0) specular += occLight_Specular(i).rgb * pow(max(dot(n, normalize(l + v)), 0.0), shine);
+    diffuse += light * nl;
+    if (nl > 0.0) specular += light * pow(max(dot(n, normalize(l + v)), 0.0), shine);
   }
   vec4  base = occMaterial_Diffuse(front);   // a: how opaque the plastic is head-on
   vec3  colour = occLightAmbient.rgb * occMaterial_Ambient(front) * 0.6 + diffuse * base.rgb;
@@ -336,8 +336,11 @@ void main() {
   // the walls, as plastic under a studio light.
   vec3  r = (occWorldViewMatrixInverse * vec4(reflect(-v, n), 0.0)).xyz;
   vec3  sky = mix(vec3(0.62, 0.66, 0.72), vec3(1.0), smoothstep(-0.35, 0.65, normalize(r).z));
+  vec3  t = (occWorldViewMatrixInverse * vec4(refract(-v, n, 0.63), 0.0)).xyz;
+  float transmitted = smoothstep(-0.8, 0.6, t.z);
+  colour = mix(colour, base.rgb * mix(0.65, 1.0, transmitted), 0.18);
   colour = mix(colour, sky, 0.3 + 0.6 * fresnel);
-  float alpha = mix(base.a, 1.0, fresnel * 0.7);
+  float alpha = mix(max(base.a, 0.32), 1.0, fresnel * 0.7);
   if (!front) alpha *= 0.6;
   vec3 glint = specular * 1.6;
   colour += glint;

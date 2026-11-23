@@ -21,7 +21,8 @@ Expected<ProjectedCurve> ProjectEdge(const TopoDS_Edge& edge, const Frame& frame
 /// the outline and the cut by the plane. Curves that are neither lines nor
 /// circles come as short lines. An error when `face` is not a surface of
 /// revolution.
-Expected<RevolvedProjection> ProjectRevolved(const TopoDS_Shape& body, const TopoDS_Face& face, const Frame& frame);
+Expected<RevolvedProjection> ProjectRevolved(const TopoDS_Shape& body, const TopoDS_Face& face, const Frame& frame,
+                                                bool fullTurnOnly = false);
 
 /// "Проецировать сечение" (Inventor's Project Cut Edges): where the plane of
 /// `frame` cuts `body`, in its coordinates. Lines and circles as they are,

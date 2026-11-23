@@ -356,7 +356,7 @@ void SketchEditor::HandleProject(AppContext& app, Session& session, const Sketch
     const auto tryRevolved = [&] {
         const std::optional<doc::FaceReference> face = app.viewport.PickFace(pixel, true);
         if (!face || !face->curved) return;
-        Expected<kernel::RevolvedProjection> r = session.model.ProjectRevolved(*face, f->placement.frame, static_cast<std::size_t>(index));
+        Expected<kernel::RevolvedProjection> r = session.model.ProjectRevolved(*face, f->placement.frame, static_cast<std::size_t>(index), true);
         if (r) revolved = std::move(*r);
         else revolvedProblem = r.GetError().message;
     };

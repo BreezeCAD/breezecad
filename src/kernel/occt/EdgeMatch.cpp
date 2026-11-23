@@ -193,7 +193,7 @@ bool IsEdgeInPlane(const EdgeReference& edge, const Frame& plane) {
 }
 
 std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs, const TopoDS_Shape& body,
-                                                     std::vector<bool>* ambiguous, const Frame* contextPlane) {
+                                                     std::vector<bool>* ambiguous, const Frame* contextPlane, bool preferExact) {
     TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
     TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
 
@@ -223,7 +223,13 @@ std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::Edge
         double best = -1, second = -1;
         std::optional<TopoDS_Edge> match;
         Vec3 took;
+        std::optional<TopoDS_Edge> exact;
+        int exactCount = 0;
         for (const auto& [edge, sig] : candidates) {
+            if (preferExact && sig == ref) {
+                exact = edge;
+                ++exactCount;
+            }
             if (wanted > 0 && MatchedFaces(ref, sig) < wanted) continue;
             const double s = Score(ref, sig, size);
             if (s < 0) continue;
@@ -236,7 +242,9 @@ std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::Edge
                 second = s;
             }
         }
-        if (match && second > best - kMinSeparation) {
+        if (exactCount == 1) {
+            match = exact;
+        } else if (match && second > best - kMinSeparation) {
             // Совпадение не единственно: молчаливый перескок запрещён —
             // ребро просят выбрать заново (как FreeCAD).
             if (ambiguous) (*ambiguous)[r] = true;

@@ -2909,5 +2909,6 @@
     "Экспорт\nв DXF": "Export\nto DXF",
     "Экспорт в DXF": "Export to DXF",
     "дхф автокад чпу вывод": "dxf autocad cnc output"
-  }
+  },
+    "Это не поверхность полного вращения": "This surface does not span a full revolution"
 }

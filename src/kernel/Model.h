@@ -151,7 +151,8 @@ public:
     std::vector<ProjectedCurve> ProjectSection(const Frame& plane, std::size_t featureIndex) const;
     /// The body of revolution with the face `face` (of the body before
     /// feature `featureIndex`) on `plane`: axis, outline and cut by the plane.
-    Expected<RevolvedProjection> ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex) const;
+    Expected<RevolvedProjection> ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex,
+                                                 bool fullTurnOnly = false) const;
     /// Which side of `frame` the bodies before feature number `featureIndex`
     /// lie on, looking along its normal from `samples` (sketch points inside
     /// a profile): +1 along the normal, -1 against it, 0 on both sides or

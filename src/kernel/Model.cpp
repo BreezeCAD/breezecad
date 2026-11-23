@@ -1100,7 +1100,8 @@ bool UpdateProjections(doc::SketchFeature& sk, const std::vector<Body>& bodies, 
         }
     const TopoDS_Shape body = AllSolids(bodies);
     const std::vector<std::optional<TopoDS_Edge>> found =
-        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, body);
+        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size())
+                                      : occt::ResolveEdges(refs, body, nullptr, nullptr, true);
     std::vector<std::optional<TopoDS_Edge>> edges(sk.projections.size());
     for (std::size_t k = 0; k < byEdge.size(); ++k) edges[byEdge[k]] = found[k];
     std::vector<std::pair<ObjectId, ProjectedCurve>> place;
@@ -1939,7 +1940,7 @@ Expected<ProjectedCurve> Model::ProjectEdge(const doc::EdgeReference& edge, cons
     if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
     const TopoDS_Shape bodies = AllSolids(after[featureIndex - 1]);
     if (bodies.IsNull()) return Error{"Нет тела, с которого проецировать"};
-    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies).front();
+    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies, nullptr, nullptr, true).front();
     if (!found) return Error{"Ребро не найдено"};
     return occt::ProjectEdge(*found, plane);
 }
@@ -1955,21 +1956,28 @@ std::vector<ProjectedCurve> Model::ProjectSection(const Frame& plane, std::size_
     return out;
 }
 
-Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex) const {
+Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex,
+                                                     bool fullTurnOnly) const {
     const auto& after = myImpl->bodiesAfter;
     if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
-    // The body that has the face: ProjectRevolved needs the face's own solid.
+    // Picked points on a curved tessellation can sit slightly off the B-rep.
+    // Keep the nearest face across all bodies in that case.
+    const Body* body = nullptr;
+    std::optional<TopoDS_Face> source;
+    double bestMiss = std::numeric_limits<double>::infinity();
     for (auto it = after[featureIndex - 1].rbegin(); it != after[featureIndex - 1].rend(); ++it) {
         if (it->mesh) continue;
         const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(it->shape, face);
-        if (found && DistanceTo(*found, face.point) < 1e-4) return occt::ProjectRevolved(it->shape, *found, plane);
+        if (!found) continue;
+        const double miss = DistanceTo(*found, face.point);
+        if (miss >= bestMiss) continue;
+        bestMiss = miss;
+        source = found;
+        body = &*it;
+        if (miss < 1e-7) break;
     }
-    const Body* last = LastSolid(after[featureIndex - 1]);
-    if (!last) return Error{"Нет тела, с которого проецировать"};
-    const TopoDS_Shape& body = last->shape;
-    const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(body, face);
-    if (!found) return Error{"Грань не найдена"};
-    return occt::ProjectRevolved(body, *found, plane);
+    if (!source) return Error{"Грань не найдена"};
+    return occt::ProjectRevolved(body->shape, *source, plane, fullTurnOnly);
 }
 
 int Model::MaterialSide(const Frame& frame, const std::vector<Vec2>& samples, std::size_t featureIndex) const {

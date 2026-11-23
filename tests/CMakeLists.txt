@@ -115,6 +115,10 @@ if(TARGET bz_render AND NOT ANDROID AND NOT IOS)   # the app's pieces: desktop o
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchPick.cpp
         ${PROJECT_SOURCE_DIR}/src/app/sketch/SketchText.cpp)
     target_link_libraries(bz_tests PRIVATE bz::render bz::ui bz::imgui glfw OpenGL::GL)
+    if(WIN32)
+        target_sources(bz_tests PRIVATE platform/ClipboardImageTests.cpp)
+        target_link_libraries(bz_tests PRIVATE bz::platform user32)
+    endif()
 endif()
 if(IOS)
     # The tests run on the iOS simulator (scripts/ios/run-tests.sh): it sees

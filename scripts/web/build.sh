@@ -11,5 +11,6 @@ emcmake cmake -S "$root/src/web" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$occt" -DOpenCASCADE_DIR="$occt/lib/cmake/opencascade"
 cmake --build "$build" --parallel "${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 mkdir -p "$output"
-cp "$build/breezecad-web.mjs" "$build/breezecad-web.wasm" "$output/"
+cp "$build/breezecad-web.mjs" "$output/"
+gzip -n -9 -c "$build/breezecad-web.wasm" > "$output/breezecad-web.wasm.gz"
 cp "$root/tests/data/кронштейн.bzc" "$output/bracket.bzc"

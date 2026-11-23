@@ -5,7 +5,7 @@
 
 namespace bz::doc {
 
-void RecomputeModel(Document& doc) {
+void RecomputeModel(Document& doc, bool solveSketches) {
     doc.EvaluateParameters();
 
     for (std::size_t i = 0; i < doc.FeatureCount(); ++i) {
@@ -18,7 +18,7 @@ void RecomputeModel(Document& doc) {
             f.status = {FeatureState::Suppressed, {}};
             continue;
         }
-        if (auto* sk = dynamic_cast<SketchFeature*>(&f)) SolveSketch(*sk);
+        if (auto* sk = dynamic_cast<SketchFeature*>(&f); solveSketches && sk) SolveSketch(*sk);
     }
 }
 

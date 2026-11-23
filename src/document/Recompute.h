@@ -8,7 +8,7 @@ namespace bz::doc {
 /// The document-side part of a rebuild: evaluates all parameters and
 /// solves every active sketch, setting statuses of sketches. Solid
 /// geometry is built afterwards by the kernel (kernel/Rebuild.h).
-void RecomputeModel(Document& doc);
+void RecomputeModel(Document& doc, bool solveSketches = true);
 
 /// Solves one sketch and sets its analysis and status (RecomputeModel does
 /// this for every sketch; the kernel again after moving projected geometry).

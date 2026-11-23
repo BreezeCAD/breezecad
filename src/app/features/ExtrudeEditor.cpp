@@ -221,6 +221,16 @@ void ExtrudeEditor::DrawOptions(AppContext& app, Session& session, doc::SketchSo
             Changed(session);
         }
     }
+    std::string depth;
+    if (f.UsesComputedDepth() && f.computedDepth) {
+        depth = FormatValue(*f.computedDepth, Quantity::Length, session.doc.units) + " " +
+                UnitLabel(Quantity::Length, session.doc.units);
+    }
+    if (f.extent == ExtentType::ThroughAll) {
+        Section(app, Tr("Фактическая глубина"));
+        ImGui::SetNextItemWidth(width);
+        ImGui::InputText("##computedDepth", depth.data(), depth.size() + 1, ImGuiInputTextFlags_ReadOnly);
+    }
     if (f.extent == ExtentType::ToPlane) {
         ImGui::Dummy({0, ui.S(6)});
         std::string target;
@@ -238,6 +248,7 @@ void ExtrudeEditor::DrawOptions(AppContext& app, Session& session, doc::SketchSo
         } else if (f.toFace.IsSet()) {
             target = f.toFace.curved ? Tr("кривая грань") : Tr("плоская грань");
         }
+        if (!target.empty() && !depth.empty()) target = Trf("{} · {}", depth, target);
         if (PickChip(ui, "##to", Tr("До"), target, myPickTarget, width)) myPickTarget = true;
         Caption(app, session.host ? Tr("Щёлкните плоскость или грань — этой детали или плоскую грань другой детали сборки: "
                                        "тогда выдавливание будет следовать за ней.")
@@ -245,6 +256,8 @@ void ExtrudeEditor::DrawOptions(AppContext& app, Session& session, doc::SketchSo
                                        "Если грань меньше выдавливания, её поверхность продолжится за края."),
                 width);
     }
+    if (f.UsesComputedDepth() && !f.distance.name.empty() && !depth.empty())
+        Caption(app, Trf("Параметр для формул: {}", f.distance.name).c_str(), width);
     Gap(app);
 
     if (f.extent == ExtentType::Distance || f.extent == ExtentType::Symmetric) {

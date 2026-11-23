@@ -1,7 +1,9 @@
 #include "document/Document.h"
 
 #include "core/Expression.h"
+#include "core/I18n.h"
 #include "document/Origin.h"
+#include "document/ExtrudeFeature.h"
 
 #include <algorithm>
 #include <charconv>
@@ -148,7 +150,20 @@ std::vector<const Parameter*> Document::AllParameters() const {
 }
 
 int Document::EvaluateParameters() {
-    const std::vector<Parameter*> params = AllParameters();
+    std::vector<Parameter*> params;
+    for (auto& v : variables) params.push_back(&v);
+    std::unordered_map<const Parameter*, std::size_t> owners;
+    std::unordered_map<const Parameter*, const ExtrudeFeature*> computed;
+    for (std::size_t i = 0; i < myFeatures.size(); ++i) {
+        Feature& feature = *myFeatures[i];
+        const std::size_t first = params.size();
+        feature.CollectParameters(params);
+        for (std::size_t k = first; k < params.size(); ++k) owners.emplace(params[k], i);
+        if (auto* extrude = dynamic_cast<ExtrudeFeature*>(&feature); extrude && extrude->UsesComputedDepth()) {
+            if (extrude->distance.name.empty()) extrude->distance.name = NextParameterName();
+            computed.emplace(&extrude->distance, extrude);
+        }
+    }
 
     std::unordered_map<std::string, Parameter*> byName;
     for (Parameter* p : params) {
@@ -159,6 +174,8 @@ int Document::EvaluateParameters() {
 
     enum class Mark : unsigned char { Unvisited, InProgress, Done };
     std::unordered_map<const Parameter*, Mark> marks;
+    // The latest operation whose measured geometry each expression needs, plus one.
+    std::unordered_map<const Parameter*, std::size_t> geometryAfter;
 
     // Evaluates `p` after the parameters it references (depth-first).
     std::function<void(Parameter*)> evaluate = [&](Parameter* p) {
@@ -169,12 +186,25 @@ int Document::EvaluateParameters() {
             return;
         }
         mark = Mark::InProgress;
+        if (auto it = computed.find(p); it != computed.end()) {
+            const ExtrudeFeature& extrude = *it->second;
+            const std::size_t index = owners.at(p);
+            geometryAfter[p] = index + 1;
+            if (extrude.computedDepth && IsActive(index) && !extrude.suppressed) {
+                p->value = *extrude.computedDepth;
+            } else if (p->error.empty()) {
+                p->error = N_("Глубина выдавливания недоступна");
+            }
+            marks[p] = Mark::Done;
+            return;
+        }
 
         // A name that exists but cannot be used here: said as it is, not as
         // "unknown name" (the user would look for a typo that is not there).
         std::string cycle;
         std::string broken;   ///< a name used here whose own expression is wrong
         bool self = false;
+        bool geometryOrder = false;
         const NameLookup lookup = [&](std::string_view name) -> std::optional<NamedValue> {
             const auto it = byName.find(std::string(name));
             if (it == byName.end()) return std::nullopt;
@@ -187,13 +217,21 @@ int Document::EvaluateParameters() {
                 if (cycle.empty()) cycle = it->second->name;
                 return std::nullopt;
             }
+            if (auto needed = geometryAfter.find(it->second); needed != geometryAfter.end()) {
+                std::size_t& after = geometryAfter[p];
+                after = std::max(after, needed->second);
+                if (auto owner = owners.find(p); owner != owners.end() && owner->second < after)
+                    geometryOrder = true;
+            }
             // Its value is the last good one: using it silently would show a
             // model that looks current and is not (as Inventor, the error goes on).
             if (it->second->HasError() && broken.empty()) broken = it->second->name;
             return NamedValue{it->second->value, it->second->quantity};
         };
         Expected<double> result = EvaluateExpression(p->expression, p->quantity, units, lookup);
-        if (result && !broken.empty()) {
+        if (geometryOrder) {
+            if (p->error.empty()) p->error = N_("В формуле можно использовать глубину выдавливания только выше по дереву");
+        } else if (result && !broken.empty()) {
             if (p->error.empty()) p->error = std::format("Ошибка в «{}» — взято его прежнее значение", broken);
         } else if (result) {
             if (p->error.empty()) p->value = *result;

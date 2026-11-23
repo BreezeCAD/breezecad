@@ -367,16 +367,22 @@ std::vector<gp_Pnt> Samples(const TopoDS_Shape& shape, int perEdge) {
 
 } // namespace
 
-Expected<RevolvedProjection> ProjectRevolved(const TopoDS_Shape& body, const TopoDS_Face& face, const Frame& frame) {
+Expected<RevolvedProjection> ProjectRevolved(const TopoDS_Shape& body, const TopoDS_Face& face, const Frame& frame, bool fullTurnOnly) {
     try {
-        std::optional<gp_Ax1> axis = AxisOf(BRepAdaptor_Surface(face));
+        const BRepAdaptor_Surface surface(face);
+        // In automatic projection a trimmed patch, such as a fillet, uses
+        // its own edges. Its underlying cylinder is not the model outline.
+        if (fullTurnOnly && (!surface.IsUPeriodic() ||
+            surface.LastUParameter() - surface.FirstUParameter() < surface.UPeriod() - 1e-6))
+            return Error{"Это не поверхность полного вращения"};
+        std::optional<gp_Ax1> axis = AxisOf(surface);
         if (!axis) return Error{"Это не поверхность вращения"};
 
         // The faces around the same axis, connected to the clicked one.
         TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
         TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
         // A clicked sphere takes its axis from a neighbour of revolution, if any.
-        if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Sphere)
+        if (surface.GetType() == GeomAbs_Sphere)
             for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
                 if (!edgeFaces.Contains(e.Current())) continue;
                 for (const TopoDS_Shape& other : edgeFaces.FindFromKey(e.Current())) {

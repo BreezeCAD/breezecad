@@ -109,6 +109,30 @@ TEST_CASE("edge matching without a context plane reports a tie across planes") {
     CHECK(ambiguous.front());
 }
 
+TEST_CASE("sketch projection prefers a unique identical edge signature") {
+    const TopoDS_Edge picked = HorizontalEdge(0, 0);
+    const TopoDS_Edge nearby = HorizontalEdge(1, 0);
+    const TopoDS_Edge distant = HorizontalEdge(100, 0);
+    const TopoDS_Compound body = EdgeCompound({picked, nearby, distant});
+    const doc::EdgeReference ref = kernel::occt::DescribeEdge(picked, body);
+
+    std::vector<bool> ambiguous;
+    const auto found = kernel::occt::ResolveEdges({ref}, body, &ambiguous, nullptr, true);
+    REQUIRE(found.front());
+    CHECK(found.front()->IsSame(picked));
+    CHECK_FALSE(ambiguous.front());
+
+    const auto moved = kernel::occt::ResolveEdges({ref}, EdgeCompound({HorizontalEdge(-1, 0), nearby, distant}),
+                                                  &ambiguous, nullptr, true);
+    CHECK_FALSE(moved.front());
+    CHECK(ambiguous.front());
+
+    const auto identical = kernel::occt::ResolveEdges({ref}, EdgeCompound({picked, HorizontalEdge(0, 0), distant}),
+                                                      &ambiguous, nullptr, true);
+    CHECK_FALSE(identical.front());
+    CHECK(ambiguous.front());
+}
+
 TEST_CASE("edge matching uses the context plane even when the other edge is closer") {
     const TopoDS_Edge onPlane = HorizontalEdge(0, 0);
     const TopoDS_Edge offPlane = HorizontalEdge(0, 2);

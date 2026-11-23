@@ -80,6 +80,8 @@ TEST_CASE("up to a cylinder made by an extrusion, as a new body and joined") {
         REQUIRE(cyl.status.state == FeatureState::Ok);
         REQUIRE_MESSAGE(post.status.state == FeatureState::Ok, post.status.message);
         CHECK(model.Volume() - cylinder == doctest::Approx(Under(40, 20, -5, 5, 10)).epsilon(1e-3));
+        REQUIRE(post.computedDepth);
+        CHECK(*post.computedDepth == doctest::Approx(40.0 - std::sqrt(375.0)));
     }
 }
 
@@ -238,6 +240,49 @@ TEST_CASE("up to the inside of a funnel: a cone, carried on to its apex and no f
     const auto box = model.BoundingBox();
     REQUIRE(box);
     CHECK(box->min.z == doctest::Approx(-30).epsilon(1e-6));   // the funnel's bottom, nothing below it
+}
+
+TEST_CASE("through-all depth follows the cut material and drives later formulas") {
+    doc::Document d;
+    auto& base = AddSketch(d);
+    AddRect(d, base, {0, 0}, {20, 20});
+    auto& stock = AddExtrude(d, base.id, "15");
+    auto& unrelated = AddSketch(d);
+    AddRect(d, unrelated, {30, 30}, {40, 40});
+    AddExtrude(d, unrelated.id, "100");
+
+    auto& cutSketch = AddSketch(d);
+    cutSketch.placement.frame.origin.z = -5;
+    AddCircle(d, cutSketch, {10, 10}, 2);
+    auto& cut = AddExtrude(d, cutSketch.id, "1", BooleanOp::Cut);
+    cut.extent = doc::ExtentType::ThroughAll;
+    d.variables.push_back({"half_depth", cut.distance.name + " / 2", Quantity::Length, 0.0, {}});
+    auto& groove = AddExtrude(d, cutSketch.id, "half_depth", BooleanOp::NewBody);
+
+    kernel::Model model;
+    model.Rebuild(d);
+    REQUIRE(cut.computedDepth);
+    CHECK(*cut.computedDepth == doctest::Approx(20));
+    CHECK(groove.distance.value == doctest::Approx(10));
+
+    stock.distance.expression = "23";
+    d.MarkChanged(static_cast<std::size_t>(d.IndexOf(stock.id)));
+    model.Rebuild(d);
+    REQUIRE(cut.computedDepth);
+    CHECK(*cut.computedDepth == doctest::Approx(28));
+    CHECK(groove.distance.value == doctest::Approx(14));
+
+    cut.reversed = true;
+    d.MarkChanged(static_cast<std::size_t>(d.IndexOf(cut.id)));
+    model.Rebuild(d);
+    CHECK_FALSE(cut.computedDepth);
+    CHECK(groove.distance.HasError());
+
+    stock.distance.expression = "half_depth";
+    d.MarkChanged(static_cast<std::size_t>(d.IndexOf(stock.id)));
+    model.Rebuild(d);
+    CHECK(stock.distance.HasError());
+    CHECK(stock.status.state == FeatureState::Error);
 }
 
 TEST_SUITE_END();

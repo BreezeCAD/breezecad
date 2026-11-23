@@ -76,6 +76,7 @@
 #include <format>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Ax3.hxx>
 #include <gp_Trsf.hxx>
 
 #include <algorithm>
@@ -199,6 +200,30 @@ TopoDS_Shape AllSolids(const std::vector<Body>& bodies) {
     for (const Body& b : bodies)
         if (!b.mesh && !b.shape.IsNull()) builder.Add(all, b.shape);
     return all;
+}
+
+/// Maximum distance from the sketch plane to the end of the extrusion.
+std::optional<double> MeasureExtrusionDepth(const doc::ExtrudeFeature& extrusion, const TopoDS_Shape& tool,
+                                            const std::vector<Body>& bodies, const Frame& frame) {
+    try {
+        TopoDS_Shape measured = tool;
+        if (extrusion.extent == doc::ExtentType::ThroughAll) {
+            const TopoDS_Shape material = AllSolids(bodies);
+            if (material.IsNull()) return std::nullopt;
+            const auto overlap = occt::ApplyBoolean(material, tool, doc::BooleanOp::Intersect);
+            if (!overlap) return std::nullopt;
+            measured = *overlap;
+        }
+        gp_Trsf toSketch;
+        toSketch.SetTransformation(gp_Ax3(gp_Pnt(frame.origin.x, frame.origin.y, frame.origin.z),
+                                          gp_Dir(frame.normal.x, frame.normal.y, frame.normal.z)));
+        Bnd_Box bounds;
+        BRepBndLib::AddOptimal(measured.Moved(TopLoc_Location(toSketch)), bounds, false, false);
+        if (bounds.IsVoid()) return std::nullopt;
+        return std::max(std::abs(bounds.CornerMin().Z()), std::abs(bounds.CornerMax().Z()));
+    } catch (const Standard_Failure&) {
+        return std::nullopt;
+    }
 }
 
 /// The last step of every operation that makes a solid: keep it as a new
@@ -359,7 +384,7 @@ void ApplyLoft(doc::LoftFeature& f, Model::Impl& impl, std::vector<Body>& bodies
 /// new body or combine it with the most recent body.
 template <class MakeTool>
 void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::vector<Body>& bodies,
-                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool) {
+                      doc::FeatureStatus& status, const doc::Document& doc, MakeTool makeTool, const Parameter* output = nullptr) {
     const auto* sketch = doc.FindAs<doc::SketchFeature>(f.sketch);
     const auto profile = impl.sketches.find(f.sketch);
     if (!sketch || profile == impl.sketches.end()) {
@@ -371,7 +396,7 @@ void ApplySketchSolid(const doc::SketchSolidFeature& f, Model::Impl& impl, std::
         return;
     }
     for (const Parameter* p : f.Parameters())
-        if (p->HasError()) {
+        if (p != output && p->HasError()) {
             status = {FeatureState::Error, p->error};
             return;
         }
@@ -1100,7 +1125,8 @@ bool UpdateProjections(doc::SketchFeature& sk, const std::vector<Body>& bodies, 
         }
     const TopoDS_Shape body = AllSolids(bodies);
     const std::vector<std::optional<TopoDS_Edge>> found =
-        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size()) : occt::ResolveEdges(refs, body);
+        body.IsNull() || refs.empty() ? std::vector<std::optional<TopoDS_Edge>>(refs.size())
+                                      : occt::ResolveEdges(refs, body, nullptr, nullptr, true);
     std::vector<std::optional<TopoDS_Edge>> edges(sk.projections.size());
     for (std::size_t k = 0; k < byEdge.size(); ++k) edges[byEdge[k]] = found[k];
     std::vector<std::pair<ObjectId, ProjectedCurve>> place;
@@ -1526,7 +1552,11 @@ Model::Progress Model::RebuildProgress() const { return {myImpl->sliceDone, myIm
 bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, double budgetMs) {
     Impl& impl = *myImpl;
     const auto sliceStart = std::chrono::steady_clock::now();
-    doc::RecomputeModel(doc);
+    const bool orderedSketches = std::ranges::any_of(doc.Features(), [](const auto& feature) {
+        const auto* extrusion = dynamic_cast<const doc::ExtrudeFeature*>(feature.get());
+        return extrusion && extrusion->UsesComputedDepth();
+    });
+    doc::RecomputeModel(doc, !orderedSketches);
 
     const std::size_t count = doc.FeatureCount();
     const std::size_t start = FirstToRebuild(doc);
@@ -1558,6 +1588,9 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
 
         const auto featureStart = std::chrono::steady_clock::now();
         const bool skip = !doc.IsActive(i) || f.suppressed;
+        auto* extrusion = dynamic_cast<doc::ExtrudeFeature*>(&f);
+        const auto previousDepth = extrusion ? extrusion->computedDepth : std::nullopt;
+        if (extrusion) extrusion->computedDepth.reset();
         // Known long work: the hang guard waits for it, the status bar names it.
         if (!skip) mon::Work("Перестроение", f.name, impl.sliceDone, impl.sliceTotal);
         // One failing operation must not take the program down: whatever OCCT
@@ -1569,6 +1602,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
         std::string fault;
         const bool survived = skip || guard::RunGuarded([&] { try {
             if (auto* sk = dynamic_cast<doc::SketchFeature*>(&f)) {
+                if (orderedSketches) doc::SolveSketch(*sk);
                 const bool placed = FollowSupport(*sk, doc, bodies);
                 const bool projectedFound = UpdateProjections(*sk, bodies, doc, i, impl.sheets);
                 Expected<occt::SketchProfile> profile = occt::BuildProfile(*sk);
@@ -1586,7 +1620,7 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                 // projection that no longer hold: the projection is broken too.
                 if (sk->status.state == FeatureState::Ok && sk->HasBrokenProjections())
                     sk->status = {FeatureState::Warning, N_("Проекция потеряла своё ребро или не сходится с эскизом после изменений выше по дереву")};
-            } else if (auto* ex = dynamic_cast<doc::ExtrudeFeature*>(&f)) {
+            } else if (auto* ex = extrusion) {
                 ApplySketchSolid(*ex, impl, bodies, ex->status, doc,
                                  [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature&, const Frame& frame) {
                                      std::optional<Frame> target;
@@ -1602,8 +1636,11 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
                                              for (auto it = bodies.rbegin(); it != bodies.rend() && !target; ++it)
                                                  target = occt::ResolvePlaneFrame(it->shape, ex->toFace);
                                      }
-                                     return occt::MakeExtrusion(faces, *ex, frame, ThroughAllLength(bodies, frame), target, until);
-                                 });
+                                     auto tool = occt::MakeExtrusion(faces, *ex, frame, ThroughAllLength(bodies, frame), target, until);
+                                     if (tool && ex->UsesComputedDepth())
+                                         ex->computedDepth = MeasureExtrusionDepth(*ex, *tool, bodies, frame);
+                                     return tool;
+                                 }, ex->UsesComputedDepth() ? &ex->distance : nullptr);
             } else if (auto* rev = dynamic_cast<doc::RevolveFeature*>(&f)) {
                 ApplySketchSolid(*rev, impl, bodies, rev->status, doc,
                                  [&](const std::vector<TopoDS_Face>& faces, const doc::SketchFeature& profile, const Frame& frame) {
@@ -1753,6 +1790,10 @@ bool Model::RebuildSlice(doc::Document& doc, std::size_t last, Stopped shown, do
             // pattern or a mirror to copy — "копируются операции без ошибок".
             if (!skip) bodies = before;
             impl.tools.erase(f.id);
+        }
+        if (extrusion) {
+            if (f.status.state == FeatureState::Error) extrusion->computedDepth.reset();
+            if (previousDepth != extrusion->computedDepth) doc.EvaluateParameters();
         }
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - featureStart).count();
         if (!skip) impl.costMs[f.id] = ms;
@@ -1939,7 +1980,7 @@ Expected<ProjectedCurve> Model::ProjectEdge(const doc::EdgeReference& edge, cons
     if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
     const TopoDS_Shape bodies = AllSolids(after[featureIndex - 1]);
     if (bodies.IsNull()) return Error{"Нет тела, с которого проецировать"};
-    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies).front();
+    const std::optional<TopoDS_Edge> found = occt::ResolveEdges({edge}, bodies, nullptr, nullptr, true).front();
     if (!found) return Error{"Ребро не найдено"};
     return occt::ProjectEdge(*found, plane);
 }
@@ -1955,21 +1996,28 @@ std::vector<ProjectedCurve> Model::ProjectSection(const Frame& plane, std::size_
     return out;
 }
 
-Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex) const {
+Expected<RevolvedProjection> Model::ProjectRevolved(const doc::FaceReference& face, const Frame& plane, std::size_t featureIndex,
+                                                     bool fullTurnOnly) const {
     const auto& after = myImpl->bodiesAfter;
     if (featureIndex == 0 || featureIndex > after.size()) return Error{"Нет тела, с которого проецировать"};
-    // The body that has the face: ProjectRevolved needs the face's own solid.
+    // Picked points on a curved tessellation can sit slightly off the B-rep.
+    // Keep the nearest face across all bodies in that case.
+    const Body* body = nullptr;
+    std::optional<TopoDS_Face> source;
+    double bestMiss = std::numeric_limits<double>::infinity();
     for (auto it = after[featureIndex - 1].rbegin(); it != after[featureIndex - 1].rend(); ++it) {
         if (it->mesh) continue;
         const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(it->shape, face);
-        if (found && DistanceTo(*found, face.point) < 1e-4) return occt::ProjectRevolved(it->shape, *found, plane);
+        if (!found) continue;
+        const double miss = DistanceTo(*found, face.point);
+        if (miss >= bestMiss) continue;
+        bestMiss = miss;
+        source = found;
+        body = &*it;
+        if (miss < 1e-7) break;
     }
-    const Body* last = LastSolid(after[featureIndex - 1]);
-    if (!last) return Error{"Нет тела, с которого проецировать"};
-    const TopoDS_Shape& body = last->shape;
-    const std::optional<TopoDS_Face> found = occt::ResolveAnyFace(body, face);
-    if (!found) return Error{"Грань не найдена"};
-    return occt::ProjectRevolved(body, *found, plane);
+    if (!source) return Error{"Грань не найдена"};
+    return occt::ProjectRevolved(body->shape, *source, plane, fullTurnOnly);
 }
 
 int Model::MaterialSide(const Frame& frame, const std::vector<Vec2>& samples, std::size_t featureIndex) const {

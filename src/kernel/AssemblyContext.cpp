@@ -85,7 +85,7 @@ std::optional<doc::EdgeReference> AssemblyModel::SourceEdge(const assembly::Asse
         // on the source in its own coordinates.
         const TopLoc_Location where(ToTrsf(Relative(a, target, source)));
         const TopoDS_Shape placed = part->shape.Moved(where);
-        const std::optional<TopoDS_Edge> edge = occt::ResolveEdges({inTarget}, placed).front();
+        const std::optional<TopoDS_Edge> edge = occt::ResolveEdges({inTarget}, placed, nullptr, nullptr, true).front();
         if (!edge) return std::nullopt;
         const TopoDS_Edge own = TopoDS::Edge(edge->Moved(where.Inverted()));
         return occt::DescribeEdge(own, part->shape);
@@ -134,7 +134,7 @@ Expected<ProjectedCurve> AssemblyModel::ProjectSourceEdge(const assembly::Assemb
         doc::SketchSource source = link.source;
         bool onBody = true;
         const std::optional<TopoDS_Edge> edge = occt::FollowProjection(
-            part->shape, occt::ResolveEdges({link.edge}, part->shape).front(), part->Doc(), static_cast<std::size_t>(-1), ref,
+            part->shape, occt::ResolveEdges({link.edge}, part->shape, nullptr, nullptr, true).front(), part->Doc(), static_cast<std::size_t>(-1), ref,
             source, &onBody);
         if (!edge) return Error{"Ребро детали-источника не найдено"};
         if (now) *now = onBody ? occt::DescribeEdge(*edge, part->shape) : ref;

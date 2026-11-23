@@ -25,10 +25,11 @@ bool IsEdgeInPlane(const doc::EdgeReference& edge, const Frame& plane);
 /// отличается) — nullopt и true в `ambiguous[i]`: ребро просят выбрать
 /// заново, молчаливый перескок запрещён.
 /// A supplied context plane restricts matching to coplanar edges.
+/// With preferExact, a unique identical signature wins over nearby matches.
 std::vector<std::optional<TopoDS_Edge>> ResolveEdges(const std::vector<doc::EdgeReference>& refs,
                                                      const TopoDS_Shape& body,
                                                      std::vector<bool>* ambiguous = nullptr,
-                                                     const Frame* contextPlane = nullptr);
+                                                     const Frame* contextPlane = nullptr, bool preferExact = false);
 
 /// A straight edge as it is on `body` now: a point in its middle and its
 /// unit direction. nullopt when it is gone or not straight.

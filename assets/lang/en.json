@@ -2909,5 +2909,12 @@
     "Экспорт\nв DXF": "Export\nto DXF",
     "Экспорт в DXF": "Export to DXF",
     "дхф автокад чпу вывод": "dxf autocad cnc output"
-  }
+  },
+    "Глубина выдавливания недоступна": "Extrusion depth is unavailable",
+    "В формуле можно использовать глубину выдавливания только выше по дереву": "A formula can only use the depth of an extrusion above it in the tree",
+    "Фактическая глубина": "Actual depth",
+    "Параметр для формул: {}": "Formula parameter: {}",
+    "Из геометрии": "From geometry",
+    "Фактическая глубина берётся из геометрии": "Actual depth is measured from geometry",
+    "Это не поверхность полного вращения": "This surface does not span a full revolution"
 }

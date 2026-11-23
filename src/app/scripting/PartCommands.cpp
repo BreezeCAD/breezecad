@@ -6,6 +6,7 @@
 #include "app/scripting/Commands.h"
 #include "core/I18n.h"
 #include "document/ImportFeature.h"
+#include "document/ExtrudeFeature.h"
 #include "document/Commands.h"
 #include "document/JsonIO.h"
 
@@ -133,6 +134,9 @@ Json SetParameter(AppContext& app, const Json& args) {
     for (const auto& f : s.doc.Features()) {
         for (const Parameter* p : f->Parameters()) {
             if (p->name != name) continue;
+            if (const auto* ex = dynamic_cast<const doc::ExtrudeFeature*>(f.get());
+                ex && ex->UsesComputedDepth() && p == &ex->distance)
+                Fail(Tr("Фактическая глубина берётся из геометрии"));
             std::unique_ptr<doc::Feature> edited = f->Clone();
             std::vector<Parameter*>       params;
             edited->CollectParameters(params);

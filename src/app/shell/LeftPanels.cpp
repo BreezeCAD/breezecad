@@ -10,6 +10,7 @@
 #include "core/Expression.h"
 #include "core/I18n.h"
 #include "document/Commands.h"
+#include "document/ExtrudeFeature.h"
 #include "ui/Menus.h"
 #include "ui/Widgets.h"
 
@@ -133,7 +134,7 @@ void DrawVariablesPanel(AppContext& app, Session& session, float width) {
     };
 
     /// One row; returns the committed new expression, if any.
-    const auto row = [&](const Parameter& p, const char* id, bool nameEditable, std::string* newName) -> std::optional<std::string> {
+    const auto row = [&](const Parameter& p, const char* id, bool nameEditable, std::string* newName, bool measured = false) -> std::optional<std::string> {
         ImGui::PushID(id);
         const ImVec2 rp = ImGui::GetCursorScreenPos();
         std::optional<std::string> result;
@@ -144,7 +145,10 @@ void DrawVariablesPanel(AppContext& app, Session& session, float width) {
             dl->AddText(ui.fonts.mono, ui.S(12), {x0 + ui.S(8), rp.y + ui.S(7)}, ui::ToU32(c.text), p.name.c_str());
         }
         ImGui::SetCursorScreenPos({x0 + colName, rp.y});
-        if (ui::CommitInput(ui, "##expr", p.expression, app.shell.edit, colExpr - ui.S(4), true)) result = app.shell.edit.text;
+        if (measured)
+            dl->AddText(ui.fonts.caption, ui.S(11), {x0 + colName + ui.S(6), rp.y + ui.S(7)}, ui::ToU32(c.textMuted), Tr("Из геометрии"));
+        else if (ui::CommitInput(ui, "##expr", p.expression, app.shell.edit, colExpr - ui.S(4), true))
+            result = app.shell.edit.text;
         const std::string value = p.HasError() ? Tr("ошибка") : FormatValue(p.value, p.quantity, session.doc.units, 3) + " " +
                                                               UnitLabel(p.quantity, session.doc.units);
         const float vw = ui.fonts.mono->CalcTextSizeA(ui.S(12), FLT_MAX, 0, value.c_str()).x;
@@ -237,10 +241,12 @@ void DrawVariablesPanel(AppContext& app, Session& session, float width) {
     std::unique_ptr<doc::Feature> edited;   // applied after the loop: never edit while iterating
     std::string                   label;
     for (const auto& feature : session.doc.Features()) {
+        const auto* extrusion = dynamic_cast<const doc::ExtrudeFeature*>(feature.get());
         for (const Parameter* p : feature->Parameters()) {
             if (p->name.empty()) continue;
             const std::string id = "p" + std::to_string(feature->id.value) + p->name;
-            const auto expr = row(*p, id.c_str(), false, nullptr);
+            const bool measured = extrusion && extrusion->UsesComputedDepth() && p == &extrusion->distance;
+            const auto expr = row(*p, id.c_str(), false, nullptr, measured);
             ui::ItemTooltip(ui, feature->name.c_str());
             if (!expr || edited) continue;
             edited = feature->Clone();

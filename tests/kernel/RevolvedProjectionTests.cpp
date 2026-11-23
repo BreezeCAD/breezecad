@@ -190,6 +190,16 @@ TEST_CASE("an arc seen edge-on covers only the part it spans") {
     CHECK(yhi == doctest::Approx(10.0));
 }
 
+TEST_CASE("automatic face projection leaves a cylindrical patch to its own outline") {
+    const gp_Ax2 axis(gp::Origin(), gp::DZ());
+    const TopoDS_Shape patch = BRepPrimAPI_MakeCylinder(axis, 3, 20, kPi / 2).Shape();
+    const Frame plane;
+    CHECK_FALSE(kernel::occt::ProjectRevolved(patch, FaceOf(patch, GeomAbs_Cylinder, 3), plane, true));
+
+    const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(axis, 3, 20).Shape();
+    CHECK(kernel::occt::ProjectRevolved(cylinder, FaceOf(cylinder, GeomAbs_Cylinder, 3), plane, true));
+}
+
 TEST_CASE("a whole circle at a slant projects to an ellipse") {
     const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(gp_Ax2(gp::Origin(), gp::DZ()), 10, 25).Shape();
     const double a = kPi / 6;   // the sketch plane turned 30° from XY about X

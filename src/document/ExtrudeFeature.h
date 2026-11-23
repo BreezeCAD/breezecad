@@ -41,6 +41,10 @@ public:
     Parameter  taper{.name = "", .expression = "0", .quantity = Quantity::Angle, .value = 0.0, .error = {}};
     /// Asymmetric: the distance on the other side of the sketch.
     Parameter  distance2{.name = "", .expression = "5", .quantity = Quantity::Length, .value = 5.0, .error = {}};
+    /// During a rebuild, measured normal to the sketch for the automatic extents.
+    std::optional<double> computedDepth;
+    bool UsesComputedDepth() const { return extent == ExtentType::ThroughAll || extent == ExtentType::ToPlane; }
+
     ObjectId      toPlane;   ///< ToPlane: an origin plane or a work plane
     FaceReference toFace;    ///< ToPlane: a flat face of the body (when `toPlane` is not set)
     std::optional<ContextPlane> toContext;   ///< ToPlane: a face of another part of an assembly (first when set)

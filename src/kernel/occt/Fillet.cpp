@@ -14,6 +14,7 @@
 #include <Standard_Failure.hxx>
 #include <format>
 
+#include "core/FaultGuard.h"
 #include "core/Log.h"
 #include "kernel/occt/EdgeMatch.h"
 #include "core/Math.h"
@@ -108,7 +109,13 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
     try {
         Builder builder(body);
         for (const TopoDS_Edge& e : edges) add(builder, e);
-        builder.Build();
+        // Leave the builder in this frame so it can be released after a fault.
+        // A failed trial then reaches the same fallbacks as a normal refusal.
+        std::string fault;
+        if (!guard::RunGuarded([&] { builder.Build(); }, &fault)) {
+            log::Warn("{}: OCCT fault during build ({})", what, fault);
+            return Error{tooBig};
+        }
         if (!builder.IsDone() || builder.Shape().IsNull()) {
             // Where it gave up, when OCCT says: the user sees which corner.
             if constexpr (requires { builder.NbFaultyVertices(); }) {

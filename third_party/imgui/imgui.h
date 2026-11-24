@@ -3759,6 +3759,11 @@ namespace ImGui
 
 // Include imgui_user.h at the end of imgui.h
 // May be convenient for some users to only explicitly include vanilla imgui.h and have extra stuff included.
+// BreezeCAD patch: an optional hook that rewrites text before it is measured or drawn (right-to-left scripts, which
+// the glyph renderer does not know). Return NULL to leave the text as it is; otherwise the text to use instead (valid
+// until the next call) with its end in *out_end. `wrap_width` may be set to 0 when the hook did the wrapping itself.
+extern const char* (*GImTextShaper)(ImFont* font, float font_size, const char* text, const char* text_end, float* wrap_width, const char** out_end);
+
 #ifdef IMGUI_INCLUDE_IMGUI_USER_H
 #ifdef IMGUI_USER_H_FILENAME
 #include IMGUI_USER_H_FILENAME

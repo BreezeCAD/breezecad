@@ -5,6 +5,7 @@ add_library(bz_ui STATIC
     Theme.cpp
     ViewCube.cpp
     Menus.cpp
+    TextShaper.cpp
     Widgets.cpp)
 target_link_libraries(bz_ui
     PUBLIC  bz::core bz::imgui

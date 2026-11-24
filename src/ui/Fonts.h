@@ -22,7 +22,7 @@ struct Fonts {
 
     /// Loads fonts from `assets/fonts` at the given UI scale. Replaces the
     /// ImGui font atlas; call before the first frame or when the scale changes.
-    /// `language`: Chinese, Japanese and Korean get their glyphs merged from the
+    /// `language`: Chinese, Japanese, Korean and Arabic get their glyphs merged from the
     /// pack's font (`languagePacks`/<code>.ttf) or the system's.
     bool Load(const std::filesystem::path& assetsDir, float scale, const std::string& language = {},
               const std::filesystem::path& languagePacks = {});

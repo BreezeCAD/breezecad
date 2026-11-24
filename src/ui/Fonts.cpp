@@ -1,8 +1,10 @@
 #include "ui/Fonts.h"
 
+#include "core/ArabicText.h"
 #include "core/I18n.h"
 
 #include "core/Log.h"
+#include "ui/TextShaper.h"
 
 #include <imgui.h>
 
@@ -34,7 +36,18 @@ const ImWchar* GlyphRanges() {
     return ranges;
 }
 
-/// A font with the glyphs of Chinese, Japanese or Korean: the language
+/// Arabic letters and the presentation forms the joined text is made of (core/ArabicText.h).
+const ImWchar* ArabicRanges() {
+    static const ImWchar ranges[] = {
+        0x0600, 0x06FF,   // Arabic
+        0xFB50, 0xFDFF,   // presentation forms A (Persian and Urdu letters)
+        0xFE70, 0xFEFF,   // presentation forms B (the forms of every letter, lam-alef)
+        0,
+    };
+    return ranges;
+}
+
+/// A font with the glyphs of Chinese, Japanese, Korean or Arabic: the language
 /// pack's own (<packs>/<code>.ttf|.otf|.ttc), else the system's. Empty when
 /// there is none (the text then shows "?"). `face`: the font in a collection.
 std::filesystem::path CjkFont(const std::string& code, const std::filesystem::path& packs, int& face) {
@@ -49,10 +62,12 @@ std::filesystem::path CjkFont(const std::string& code, const std::filesystem::pa
     if (code == "zh") candidates = {{fonts / "msyh.ttc", 0}, {fonts / "simsun.ttc", 0}};
     if (code == "ja") candidates = {{fonts / "YuGothM.ttc", 0}, {fonts / "meiryo.ttc", 0}, {fonts / "msgothic.ttc", 0}};
     if (code == "ko") candidates = {{fonts / "malgun.ttf", 0}, {fonts / "gulim.ttc", 0}};
+    if (code == "ar") candidates = {{fonts / "segoeui.ttf", 0}, {fonts / "tahoma.ttf", 0}, {fonts / "arial.ttf", 0}};
 #elif defined(__APPLE__)
     if (code == "zh") candidates = {{"/System/Library/Fonts/PingFang.ttc", 0}, {"/System/Library/Fonts/STHeiti Light.ttc", 0}};
     if (code == "ja") candidates = {{"/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0}, {"/System/Library/Fonts/Hiragino Sans GB.ttc", 0}};
     if (code == "ko") candidates = {{"/System/Library/Fonts/AppleSDGothicNeo.ttc", 0}};
+    if (code == "ar") candidates = {{"/System/Library/Fonts/SFArabic.ttf", 0}, {"/System/Library/Fonts/GeezaPro.ttc", 0}};
 #else
     // Noto Sans CJK: one collection, the face by language (JP 0, KR 1, SC 2).
     const int noto = code == "ja" ? 0 : code == "ko" ? 1 : 2;
@@ -63,6 +78,11 @@ std::filesystem::path CjkFont(const std::string& code, const std::filesystem::pa
         for (const char* wqy : {"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"})
             candidates.push_back({wqy, 0});
 #endif
+    if (code == "ar")
+        for (const char* dir : {"/system/fonts", "/usr/share/fonts/truetype/noto", "/usr/share/fonts/noto", "/usr/share/fonts/opentype/noto",
+                                "/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/TTF"})
+            for (const char* name : {"NotoSansArabic-Regular.ttf", "NotoNaskhArabic-Regular.ttf", "DejaVuSans.ttf"})
+                candidates.push_back({std::filesystem::path(dir) / name, 0});
     for (const auto& [file, f] : candidates)
         if (std::filesystem::exists(file, ec)) {
             face = f;
@@ -83,12 +103,24 @@ ImFont* Add(ImFontAtlas* atlas, const std::filesystem::path& file, float size, f
     return font;
 }
 
+/// The Arabic font that ships with the program (assets/fonts): a build without
+/// language packs (Android) has it too. Empty when there is none.
+std::filesystem::path BundledArabicFont(const std::filesystem::path& fontsDir) {
+    std::error_code ec;
+    const auto file = fontsDir / "NotoSansArabic-Regular.ttf";
+    return std::filesystem::exists(file, ec) ? file : std::filesystem::path();
+}
+
 } // namespace
 
 bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std::string& language,
                  const std::filesystem::path& languagePacks) {
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
     atlas->Clear();
+    // Arabic is joined and put into visual order as it is measured and drawn (ui/TextShaper.h);
+    // text without Arabic letters is not touched. Always on: the language list shows "العربية" in any language.
+    GImTextShaper = &ShapeText;
+    ResetTextShaper();
     const auto dir = assetsDir / "fonts";
     const auto regular = dir / "IBMPlexSans-Regular.ttf";
     const auto med = dir / "IBMPlexSans-Medium.ttf";
@@ -105,13 +137,29 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
     mono      = Add(atlas, monoFile, 12.0f, scale);
     monoLarge = Add(atlas, monoFile, 14.0f, scale);
 
-    // Chinese, Japanese, Korean: their glyphs merged into the text fonts
+    // Chinese, Japanese, Korean, Arabic: their glyphs merged into the text fonts
     // (not the numbers' mono ones), at the size and only for that language
     // — a few thousand glyphs each would weigh on a weak computer otherwise.
     loadedLanguage = language;
-    if (language == "zh" || language == "ja" || language == "ko") {
+    const std::pair<ImFont*, float> targets[] = {{body, 13.0f}, {bodySmall, 12.0f}, {caption, 11.0f}, {medium, 13.0f},
+                                                 {strong, 13.0f}, {title, 14.0f}, {display, 22.0f}};
+    // Glyphs of `file` (the ones in `ranges`) into the text fonts, at their sizes.
+    const auto mergeGlyphs = [&](const std::filesystem::path& file, int face, const ImWchar* ranges, float glyphScale) {
+        const std::u8string path = file.u8string();
+        for (const auto& [font, size] : targets) {
+            if (!font) continue;
+            ImFontConfig merge;
+            merge.MergeMode = true;
+            merge.FontNo = face;
+            merge.OversampleH = merge.OversampleV = 1;
+            merge.DstFont = font;
+            atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale * glyphScale, &merge, ranges);
+        }
+    };
+    if (language == "zh" || language == "ja" || language == "ko" || language == "ar") {
         int face = 0;
-        const std::filesystem::path cjk = CjkFont(language, languagePacks, face);
+        std::filesystem::path cjk = language == "ar" ? BundledArabicFont(dir) : std::filesystem::path();
+        if (cjk.empty()) cjk = CjkFont(language, languagePacks, face);
         if (cjk.empty()) {
             log::Warn("No font with {} glyphs found: text in that language shows question marks", language);
         } else {
@@ -121,23 +169,32 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
             ImFontGlyphRangesBuilder builder;
             builder.AddRanges(language == "zh" ? atlas->GetGlyphRangesChineseSimplifiedCommon()
                               : language == "ja" ? atlas->GetGlyphRangesJapanese()
-                                                 : atlas->GetGlyphRangesKorean());
+                              : language == "ko" ? atlas->GetGlyphRangesKorean()
+                                                 : ArabicRanges());
             builder.AddText(i18n::AllTranslatedText().c_str());
             builder.BuildRanges(&built);
             const ImWchar* ranges = built.Data;
             const std::u8string path = cjk.u8string();
-            const std::pair<ImFont*, float> targets[] = {{body, 13.0f}, {bodySmall, 12.0f}, {caption, 11.0f}, {medium, 13.0f},
-                                                         {strong, 13.0f}, {title, 14.0f}, {display, 22.0f}};
-            for (const auto& [font, size] : targets) {
-                if (!font) continue;
-                ImFontConfig merge;
-                merge.MergeMode = true;
-                merge.FontNo = face;
-                merge.OversampleH = merge.OversampleV = 1;
-                merge.DstFont = font;
-                atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale, &merge, ranges);
-            }
+            // Noto Sans Arabic is drawn smaller than IBM Plex at the same size.
+            mergeGlyphs(cjk, face, ranges, language == "ar" ? 1.12f : 1.0f);
             log::Info("Interface font for {}: {}", language, reinterpret_cast<const char*>(path.c_str()));
+        }
+    }
+
+    // The language list shows every language by its own name: the Arabic one needs its few glyphs in the
+    // other languages too, when the program has the font (assets/fonts or the language pack).
+    if (language != "ar") {
+        std::error_code ec;
+        std::filesystem::path font = BundledArabicFont(dir);
+        if (font.empty() && !languagePacks.empty() && std::filesystem::exists(languagePacks / "ar.ttf", ec))
+            font = languagePacks / "ar.ttf";
+        if (!font.empty()) {
+            static ImVector<ImWchar> nameRanges;
+            nameRanges.clear();
+            ImFontGlyphRangesBuilder builder;
+            builder.AddText(arabic::ToVisual("العربية").c_str());
+            builder.BuildRanges(&nameRanges);
+            mergeGlyphs(font, 0, nameRanges.Data, 1.12f);
         }
     }
 

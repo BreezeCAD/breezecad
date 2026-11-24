@@ -11,6 +11,7 @@ add_custom_target(bz_build_info
     VERBATIM)
 
 add_library(bz_core STATIC
+    ArabicText.cpp
     BuildInfo.cpp
     CrashCode.cpp
     Expression.cpp

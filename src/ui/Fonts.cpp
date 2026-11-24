@@ -1,5 +1,6 @@
 #include "ui/Fonts.h"
 
+#include "core/ArabicText.h"
 #include "core/I18n.h"
 
 #include "core/Log.h"
@@ -102,14 +103,23 @@ ImFont* Add(ImFontAtlas* atlas, const std::filesystem::path& file, float size, f
     return font;
 }
 
+/// The Arabic font that ships with the program (assets/fonts): a build without
+/// language packs (Android) has it too. Empty when there is none.
+std::filesystem::path BundledArabicFont(const std::filesystem::path& fontsDir) {
+    std::error_code ec;
+    const auto file = fontsDir / "NotoSansArabic-Regular.ttf";
+    return std::filesystem::exists(file, ec) ? file : std::filesystem::path();
+}
+
 } // namespace
 
 bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std::string& language,
                  const std::filesystem::path& languagePacks) {
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
     atlas->Clear();
-    // Arabic is joined and put into visual order as it is measured and drawn (ui/TextShaper.h).
-    GImTextShaper = language == "ar" ? &ShapeText : nullptr;
+    // Arabic is joined and put into visual order as it is measured and drawn (ui/TextShaper.h);
+    // text without Arabic letters is not touched. Always on: the language list shows "العربية" in any language.
+    GImTextShaper = &ShapeText;
     ResetTextShaper();
     const auto dir = assetsDir / "fonts";
     const auto regular = dir / "IBMPlexSans-Regular.ttf";
@@ -131,9 +141,25 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
     // (not the numbers' mono ones), at the size and only for that language
     // — a few thousand glyphs each would weigh on a weak computer otherwise.
     loadedLanguage = language;
+    const std::pair<ImFont*, float> targets[] = {{body, 13.0f}, {bodySmall, 12.0f}, {caption, 11.0f}, {medium, 13.0f},
+                                                 {strong, 13.0f}, {title, 14.0f}, {display, 22.0f}};
+    // Glyphs of `file` (the ones in `ranges`) into the text fonts, at their sizes.
+    const auto mergeGlyphs = [&](const std::filesystem::path& file, int face, const ImWchar* ranges, float glyphScale) {
+        const std::u8string path = file.u8string();
+        for (const auto& [font, size] : targets) {
+            if (!font) continue;
+            ImFontConfig merge;
+            merge.MergeMode = true;
+            merge.FontNo = face;
+            merge.OversampleH = merge.OversampleV = 1;
+            merge.DstFont = font;
+            atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale * glyphScale, &merge, ranges);
+        }
+    };
     if (language == "zh" || language == "ja" || language == "ko" || language == "ar") {
         int face = 0;
-        const std::filesystem::path cjk = CjkFont(language, languagePacks, face);
+        std::filesystem::path cjk = language == "ar" ? BundledArabicFont(dir) : std::filesystem::path();
+        if (cjk.empty()) cjk = CjkFont(language, languagePacks, face);
         if (cjk.empty()) {
             log::Warn("No font with {} glyphs found: text in that language shows question marks", language);
         } else {
@@ -149,20 +175,26 @@ bool Fonts::Load(const std::filesystem::path& assetsDir, float scale, const std:
             builder.BuildRanges(&built);
             const ImWchar* ranges = built.Data;
             const std::u8string path = cjk.u8string();
-            const std::pair<ImFont*, float> targets[] = {{body, 13.0f}, {bodySmall, 12.0f}, {caption, 11.0f}, {medium, 13.0f},
-                                                         {strong, 13.0f}, {title, 14.0f}, {display, 22.0f}};
-            for (const auto& [font, size] : targets) {
-                if (!font) continue;
-                ImFontConfig merge;
-                merge.MergeMode = true;
-                merge.FontNo = face;
-                merge.OversampleH = merge.OversampleV = 1;
-                merge.DstFont = font;
-                // Noto Sans Arabic is drawn smaller than IBM Plex at the same size.
-                const float glyphScale = language == "ar" ? 1.12f : 1.0f;
-                atlas->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size * scale * glyphScale, &merge, ranges);
-            }
+            // Noto Sans Arabic is drawn smaller than IBM Plex at the same size.
+            mergeGlyphs(cjk, face, ranges, language == "ar" ? 1.12f : 1.0f);
             log::Info("Interface font for {}: {}", language, reinterpret_cast<const char*>(path.c_str()));
+        }
+    }
+
+    // The language list shows every language by its own name: the Arabic one needs its few glyphs in the
+    // other languages too, when the program has the font (assets/fonts or the language pack).
+    if (language != "ar") {
+        std::error_code ec;
+        std::filesystem::path font = BundledArabicFont(dir);
+        if (font.empty() && !languagePacks.empty() && std::filesystem::exists(languagePacks / "ar.ttf", ec))
+            font = languagePacks / "ar.ttf";
+        if (!font.empty()) {
+            static ImVector<ImWchar> nameRanges;
+            nameRanges.clear();
+            ImFontGlyphRangesBuilder builder;
+            builder.AddText(arabic::ToVisual("العربية").c_str());
+            builder.BuildRanges(&nameRanges);
+            mergeGlyphs(font, 0, nameRanges.Data, 1.12f);
         }
     }
 

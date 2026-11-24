@@ -23,6 +23,7 @@
                  android:hasCode="true"
                  android:extractNativeLibs="true"
                  android:allowBackup="false"
+                 android:supportsRtl="true"
                  android:resizeableActivity="true"
                  android:enableOnBackInvokedCallback="false"
                  android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen">

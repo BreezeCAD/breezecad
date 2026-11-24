@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="channel_problems">الأعطال وتوقف الاستجابة</string>
+    <string name="crash_title">أُغلق BreezeCAD بسبب خطأ</string>
+    <string name="crash_text">اضغط لعرض رمز الخطأ والتقرير</string>
+    <string name="crash_explain">توقف البرنامج عن العمل بشكل مفاجئ. يمكن استعادة العمل غير المحفوظ عند التشغيل التالي: فهو محفوظ في الحفظ التلقائي. الرمز أدناه يساعد في معرفة السبب — انسخه أو شارك التقرير مع المطوّر. لا يُرسل التقرير إلى أي مكان تلقائيًا.</string>
+    <string name="hang_title">BreezeCAD لا يستجيب</string>
+    <string name="hang_text">يمكنك الانتظار أو إغلاق البرنامج وإرسال تقرير</string>
+    <string name="hang_explain">توقف البرنامج عن الاستجابة وتم إغلاقه. يمكن استعادة العمل غير المحفوظ عند التشغيل التالي. الرمز أدناه يساعد في معرفة السبب — انسخه أو شارك التقرير مع المطوّر.</string>
+    <string name="hang_wait">انتظار</string>
+    <string name="hang_close">إغلاق وإرسال تقرير</string>
+    <string name="copy_code">نسخ الرمز</string>
+    <string name="share_report">مشاركة التقرير</string>
+    <string name="restart">تشغيل من جديد</string>
+</resources>

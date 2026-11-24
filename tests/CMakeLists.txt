@@ -33,6 +33,7 @@ add_executable(bz_tests
     assembly/ProjectPackTests.cpp
     assembly/RotationAnglesTests.cpp
     assembly/SolverTests.cpp
+    core/ArabicTextTests.cpp
     core/CrashCodeTests.cpp
     core/MathTests.cpp
     core/ExpressionTests.cpp

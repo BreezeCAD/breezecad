@@ -1302,6 +1302,7 @@ static void             UpdateViewportsNewFrame();
 // - DLL users: read comments above.
 #ifndef GImGui
 ImGuiContext*   GImGui = NULL;
+const char* (*GImTextShaper)(ImFont*, float, const char*, const char*, float*, const char**) = NULL;   // BreezeCAD patch, see imgui.h
 #endif
 
 // Memory Allocator functions. Use SetAllocatorFunctions() to change them.
@@ -5800,6 +5801,15 @@ ImVec2 ImGui::CalcTextSize(const char* text, const char* text_end, bool hide_tex
     const float font_size = g.FontSize;
     if (text == text_display_end)
         return ImVec2(0.0f, font_size);
+    if (GImTextShaper != NULL) // BreezeCAD patch
+    {
+        const char* shaped_end = NULL;
+        if (const char* shaped = GImTextShaper(font, font_size, text, text_display_end, &wrap_width, &shaped_end))
+        {
+            text = shaped;
+            text_display_end = shaped_end;
+        }
+    }
     ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, wrap_width, text, text_display_end, NULL);
 
     // Round

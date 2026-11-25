@@ -4,7 +4,7 @@
 # toolkits, same options — only the toolchain differs.
 #
 # Usage: build-occt.sh <platform> <prefix>
-#   platform  linux | windows | macos | android-arm64-v8a | android-x86_64 |
+#   platform  linux | windows | macos | web | android-arm64-v8a | android-x86_64 |
 #             ios-iphoneos | ios-iphonesimulator
 #   prefix    where to install: <prefix>/lib (+ bin/ on Windows),
 #             <prefix>/include/opencascade, <prefix>/lib/cmake/opencascade
@@ -90,6 +90,13 @@ case "$PLATFORM" in
         # device on iOS 16 and the simulator on Apple Silicon.
         ARGS+=(-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "${PLATFORM#ios-}" --show-sdk-path)"
                -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_MIN")
+        LIBTYPE=Static
+        FREETYPE=build
+        ;;
+    web)
+        : "${EMSDK:?activate emsdk and source emsdk_env.sh}"
+        ARGS+=(-DCMAKE_TOOLCHAIN_FILE="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+               -DCMAKE_CXX_FLAGS=-fexceptions -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG")
         LIBTYPE=Static
         FREETYPE=build
         ;;

@@ -20,8 +20,18 @@
 
 static const BzHostApi* host = NULL;
 
+static int32_t hello_ping(const char* args, const char** reply) {
+    (void)args;
+    *reply = "{\"ok\":true,\"result\":\"pong\"}";
+    return BZ_OK;
+}
+
 static int32_t hello_init(const BzHostApi* h) {
     if (!h || h->abi_version != BZ_MODULE_ABI_VERSION || h->struct_size < offsetof(BzHostApi, request_main)) return BZ_EFAIL;   /* runs on 0.2 hosts too */
+    if (BZ_HAS(h, register_command) &&
+        h->register_command("{\"name\":\"hello.ping\",\"description\":\"Return pong\","
+                            "\"inputSchema\":{\"type\":\"object\"},\"changes\":false}", &hello_ping) != BZ_OK)
+        return BZ_EFAIL;
 #ifdef BZ_HELLO_FAIL
     return BZ_EFAIL;
 #else

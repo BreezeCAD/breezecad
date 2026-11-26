@@ -17,6 +17,7 @@ namespace {
 
 const kernel::AssemblyReader* gReader = nullptr;
 CommandHandler                gCommands;
+BuiltinCommandName            gBuiltinName = nullptr;
 std::function<void()>         gWake;
 std::atomic<bool>             gMainRequested{false};
 std::string                   gReply;   ///< what execute() handed out last
@@ -122,6 +123,8 @@ const char* ConfigDir() { return gConfigDir.c_str(); }
 // --- module windows -----------------------------------------------------------
 
 std::string               gCalling;   ///< the module running now (SetCallingModule)
+bool                      gInitializing = false;
+std::vector<ModuleCommand> gModuleCommands;
 std::vector<ModuleAction> gActions;
 std::vector<ModulePanel>  gPanels;
 std::uint64_t             gUiRevision = 0;
@@ -144,6 +147,28 @@ nlohmann::json Object(const char* text) {
     if (!text) return nullptr;
     nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
     return j.is_object() ? j : nlohmann::json(nullptr);
+}
+
+int32_t RegisterCommand(const char* json, BzCommandFn run) {
+    if (!gInitializing || gCalling.empty()) return BZ_EFAIL;
+    const nlohmann::json descriptor = Object(json);
+    if (descriptor.is_null() || !run) return BZ_EARGUMENT;
+    const std::string name = Text(descriptor, "name");
+    const std::string description = Text(descriptor, "description");
+    const auto schema = descriptor.find("inputSchema");
+    const auto changes = descriptor.find("changes");
+    if (!GoodId(name) || description.empty() || schema == descriptor.end() || !schema->is_object() ||
+        schema->find("type") == schema->end() || (*schema)["type"] != "object" ||
+        changes == descriptor.end() || !changes->is_boolean())
+        return BZ_EARGUMENT;
+
+    const std::string tool = CommandToolName(name);
+    if (tool == "commands_list" || (gBuiltinName && gBuiltinName(tool)) ||
+        std::any_of(gModuleCommands.begin(), gModuleCommands.end(),
+                    [&](const ModuleCommand& command) { return CommandToolName(command.name) == tool; }))
+        return BZ_EARGUMENT;
+    gModuleCommands.push_back({gCalling, name, description, schema->dump(), changes->get<bool>(), run});
+    return BZ_OK;
 }
 
 int32_t AddAction(const char* json) {
@@ -224,13 +249,25 @@ const BzHostApi kHost{
     &EnableAction,
     &ShowPanel,
     &ClosePanel,
+    &RegisterCommand,
 };
 
 } // namespace
 
 const BzHostApi* HostApi() { return &kHost; }
 
-void SetCommandHandler(CommandHandler handler) { gCommands = std::move(handler); }
+void SetCommandHandler(CommandHandler handler, BuiltinCommandName builtinName) {
+    gCommands = std::move(handler);
+    gBuiltinName = builtinName;
+}
+
+std::string CommandToolName(std::string_view name) {
+    std::string tool(name);
+    std::replace(tool.begin(), tool.end(), '.', '_');
+    return tool;
+}
+
+const std::vector<ModuleCommand>& ModuleCommands() { return gModuleCommands; }
 
 void SetWakeHandler(std::function<void()> wake) { gWake = std::move(wake); }
 
@@ -244,7 +281,13 @@ void SetActiveAssembly(const kernel::AssemblyReader* reader) {
     gComponents.clear();
 }
 
-void SetCallingModule(std::string id) { gCalling = std::move(id); }
+void SetCallingModule(std::string id, bool initializing) {
+    gCalling = std::move(id);
+    gInitializing = initializing;
+}
+
+const std::string& CallingModule() { return gCalling; }
+bool ModuleInitializing() { return gInitializing; }
 
 const std::vector<ModuleAction>& ModuleActions() { return gActions; }
 
@@ -259,6 +302,7 @@ void DropPanel(const std::string& module, const std::string& id) {
 }
 
 void ForgetModule(const std::string& module) {
+    std::erase_if(gModuleCommands, [&](const ModuleCommand& command) { return command.module == module; });
     const auto before = gActions.size() + gPanels.size();
     std::erase_if(gActions, [&](const ModuleAction& a) { return a.module == module; });
     std::erase_if(gPanels, [&](const ModulePanel& p) { return p.module == module; });

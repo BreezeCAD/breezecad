@@ -13,7 +13,10 @@
 #include "document/Feature.h"
 #include "document/Origin.h"
 #include "document/WorkPlaneFeature.h"
+#include "modules/ModuleHost.h"
+#include "modules/ModuleManager.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 
@@ -53,6 +56,9 @@ Json List() {
                    {"changes", false}});
     for (const Command& c : Table())
         out.push_back({{"name", c.name}, {"description", c.description}, {"inputSchema", c.schema}, {"changes", c.changes}});
+    for (const modules::ModuleCommand& c : modules::ModuleCommands())
+        out.push_back({{"name", c.name}, {"description", c.description},
+                       {"inputSchema", Json::parse(c.schema)}, {"changes", c.changes}});
     return out;
 }
 
@@ -66,29 +72,61 @@ std::string EditInProgress(AppContext& app) {
     return {};
 }
 
-Json Reply(const Json& request, AppContext& app) {
+Json RunModuleCommand(AppContext& app, const modules::ModuleCommand& command, const Json& args) {
+    const std::string input = args.dump();
+    Json reply;
+    if (!app.modules || !app.modules->Call(command.module, [&](const BzModuleApi&) {
+            const char* response = nullptr;
+            if (command.run(input.c_str(), &response) == BZ_OK && response)
+                reply = Json::parse(response, nullptr, false);
+        }))
+        Fail(Tr("Модуль сейчас недоступен"));
+    if (reply.is_null()) Fail(Tr("Модуль не выполнил команду"));
+    if (reply.is_object() && reply.contains("ok") && reply["ok"].is_boolean()) {
+        if (reply["ok"].get<bool>() && reply.contains("result")) return std::move(reply["result"]);
+        if (!reply["ok"].get<bool>() && reply.contains("error") && reply["error"].is_string())
+            Fail(reply["error"].get<std::string>());
+    }
+    Fail(Tr("Модуль вернул неверный ответ на команду"));
+}
+
+Json Reply(const Json& request, AppContext& app, bool nested) {
     if (!request.is_object()) Fail("Запрос — не JSON-объект");
     const std::string name = Text(request, "command");
     const Json        args = request.contains("args") && !request["args"].is_null() ? request["args"] : Json::object();
     if (!args.is_object()) Fail("«args» — не объект");
     if (name == "commands.list") return List();
-    for (const Command& c : Table()) {
-        if (c.name != name) continue;
-        if (c.changes)
-            if (const std::string busy = EditInProgress(app); !busy.empty()) Fail(busy);
-        // What the program was doing, in words a person reads in a hang
-        // report: the command and what it was asked.
-        std::string asked = args.empty() ? std::string{} : args.dump(-1, ' ', false, Json::error_handler_t::replace);
-        if (asked.size() > 160) asked = asked.substr(0, 160) + "…";
-        mon::Action("module", name);
-        mon::ActionDetail(asked);
-        if (Session* s = app.Doc()) s->SetWaitingFor(name);
-        return c.run(app, args);
-    }
-    Fail(std::format("Нет команды «{}» (список — commands.list)", name));
+    const auto& builtins = Table();
+    const auto builtin = std::find_if(builtins.begin(), builtins.end(), [&](const Command& c) { return c.name == name; });
+    const auto& extensions = modules::ModuleCommands();
+    const auto extension = std::find_if(extensions.begin(), extensions.end(),
+                                        [&](const modules::ModuleCommand& c) { return c.name == name; });
+    if (builtin == builtins.end() && extension == extensions.end())
+        Fail(std::format("Нет команды «{}» (список — commands.list)", name));
+    if (builtin == builtins.end() && nested)
+        Fail(Tr("Из обработчика модуля можно вызывать только встроенные команды"));
+
+    const bool changes = builtin != builtins.end() ? builtin->changes : extension->changes;
+    if (changes)
+        if (const std::string busy = EditInProgress(app); !busy.empty()) Fail(busy);
+    // What the program was doing, in words a person reads in a hang
+    // report: the command and what it was asked.
+    std::string asked = args.empty() ? std::string{} : args.dump(-1, ' ', false, Json::error_handler_t::replace);
+    if (asked.size() > 160) asked = asked.substr(0, 160) + "…";
+    mon::Action("module", name);
+    mon::ActionDetail(asked);
+    if (Session* s = app.Doc()) s->SetWaitingFor(name);
+    if (builtin != builtins.end()) return builtin->run(app, args);
+    return RunModuleCommand(app, *extension, args);
 }
 
 } // namespace
+
+bool HasBuiltinToolName(std::string_view name) {
+    const auto& builtins = Table();
+    return std::any_of(builtins.begin(), builtins.end(),
+                       [&](const Command& c) { return modules::CommandToolName(c.name) == name; });
+}
 
 std::string Run(AppContext& app, std::string_view request) {
     Json reply;
@@ -101,7 +139,7 @@ std::string Run(AppContext& app, std::string_view request) {
     const auto run = [&] {
         try {
             const Json parsed = Json::parse(request);
-            reply = {{"ok", true}, {"result", Reply(parsed, app)}};
+            reply = {{"ok", true}, {"result", Reply(parsed, app, outer != nullptr)}};
         } catch (const Failure& f) {   // refused as asked: nothing was changed
             reply = {{"ok", false}, {"error", f.message}};
         } catch (const Cancelled&) {

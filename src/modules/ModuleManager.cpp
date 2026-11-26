@@ -347,7 +347,10 @@ void ModuleManager::Load(ModuleEntry& m) {
     int32_t            rc  = BZ_EFAIL;
     const bool         fits = api && api->abi_version == BZ_MODULE_ABI_VERSION && api->struct_size >= offsetof(BzModuleApi, main_tick) &&   // 0.2 modules end there
                       api->init && api->shutdown;
-    if (fits) rc = api->init(myHost);
+    if (fits) {
+        SetCallingModule(m.manifest.id, true);
+        rc = api->init(myHost);
+    }
     ClearMarker();
     if (!fits || rc != BZ_OK) ForgetModule(m.manifest.id);   // what init() managed to add
 
@@ -373,7 +376,7 @@ void ModuleManager::Unload(ModuleEntry& m) {
     SetMarker(m.manifest.id);
     m.api->shutdown();
     ClearMarker();
-    ForgetModule(m.manifest.id);   // its menu items and panels
+    ForgetModule(m.manifest.id);   // its commands, menu items and panels
     m.api = nullptr;
     m.library.Close();
     m.state = ModuleState::Found;
@@ -425,10 +428,20 @@ bool ModuleManager::Tick() {
 
 bool ModuleManager::Call(const std::string& id, const std::function<void(const BzModuleApi&)>& call) {
     ModuleEntry* m = FindMutable(id);
-    if (!m || m->state != ModuleState::Loaded) return false;
+    if (!m || m->state != ModuleState::Loaded || ModuleInitializing()) return false;
+    const std::string previous = CallingModule();
+    const auto restore = [&] {
+        if (previous.empty()) ClearMarker();
+        else SetMarker(previous);
+    };
     SetMarker(id);
-    call(*m->api);
-    ClearMarker();
+    try {
+        call(*m->api);
+    } catch (...) {
+        restore();
+        throw;
+    }
+    restore();
     return true;
 }
 

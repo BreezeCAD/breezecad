@@ -19,8 +19,8 @@
  *    execute() (JSON commands, the same undoable steps as the user's own).
  *  - Threads: a module may run its own threads, but calls into the host
  *    (except log and request_main) happen on the program's main thread, in
- *    init/shutdown or in main_tick. A thread asks for a main_tick with
- *    request_main().
+ *    callbacks such as init, main_tick or a command handler. A thread asks
+ *    for a main_tick with request_main().
  *
  * A crash inside a module is noted: the next start of BreezeCAD turns that
  * module off and tells the user why.
@@ -82,6 +82,14 @@ typedef struct BzComponentInfo {
     double      z_axis[3];
 } BzComponentInfo;
 
+/* Command handler: returns BZ_OK with an envelope in reply_json:
+ * {"ok":true,"result":...} or {"ok":false,"error":"..."}.
+ * The host copies the UTF-8 reply after the call. Keep it valid until the
+ * next call to the handler. args_json is borrowed for this call only.
+ * Runs on the main thread. Can use the read API and execute() for built-in
+ * commands. Delegate document changes to the host's undoable operations. */
+typedef int32_t (*BzCommandFn)(const char* args_json, const char** reply_json);
+
 /* What BreezeCAD offers a module. */
 typedef struct BzHostApi {
     uint32_t abi_version; /* BZ_MODULE_ABI_VERSION of the host */
@@ -127,6 +135,7 @@ typedef struct BzHostApi {
      *    "ribbon": {"tab": "model", "group": "BreezCONN"}}
      * Ribbon tab: "model" (the «3D-модель» tab of a part and of an assembly),
      * "part" or "assembly" only; the group goes at the end of it.
+     * Use menu "settings" for the gear beside this module in Settings.
      * The same id again replaces the item. Choosing it calls on_action(id).
      * BZ_EARGUMENT: not JSON, or no id / label. */
     int32_t (*add_action)(const char* action_json);
@@ -154,6 +163,13 @@ typedef struct BzHostApi {
     int32_t (*show_panel)(const char* panel_json);
     /* Closes a panel (no event). BZ_ENOTFOUND: not shown. */
     int32_t (*close_panel)(const char* id);
+
+    /* During init() only, on the main thread. Copies the UTF-8 descriptor:
+     * {"name":"example.inspect","description":"...","inputSchema":{"type":"object"},"changes":false}
+     * Names are unique (also after MCP maps dots to underscores).
+     * BZ_EARGUMENT: invalid descriptor, null handler or conflicting name.
+     * Commands are removed on init failure or module unload. */
+    int32_t (*register_command)(const char* descriptor_json, BzCommandFn handler);
 } BzHostApi;
 
 /* Is `field` of a table there? (A table from an older build is shorter.)

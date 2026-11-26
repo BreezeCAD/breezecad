@@ -29,7 +29,19 @@ void SetActiveAssembly(const kernel::AssemblyReader* reader);
 /// sets it, see app/ModuleCommands). Unset: every request gets an error.
 /// Main thread only.
 using CommandHandler = std::function<std::string(std::string_view request)>;
-void SetCommandHandler(CommandHandler handler);
+using BuiltinCommandName = bool (*)(std::string_view name);
+void SetCommandHandler(CommandHandler handler, BuiltinCommandName builtinName = nullptr);
+
+struct ModuleCommand {
+    std::string module, name, description, schema;
+    bool changes;
+    BzCommandFn run;
+};
+
+const std::vector<ModuleCommand>& ModuleCommands();
+
+/// Command name as exposed by the MCP module.
+std::string CommandToolName(std::string_view name);
 
 /// Called from any thread by request_main(): wake the main loop up
 /// (glfwPostEmptyEvent). Set once at start, before modules load.
@@ -50,7 +62,7 @@ struct ModuleAction {
     std::string module;        ///< the module's id
     std::string id;            ///< the module's own id ("start")
     std::string label, tooltip, icon;
-    std::string menu;          ///< "file" or empty
+    std::string menu;          ///< "file", "settings" or empty
     std::string ribbonTab, ribbonGroup;   ///< empty: not on the ribbon
     bool        enabled = true;
 };
@@ -62,7 +74,9 @@ struct ModulePanel {
 
 /// Which module is running now: what add_action and the rest are filed under.
 /// ModuleManager sets it around every call into a module; empty outside them.
-void SetCallingModule(std::string id);
+void SetCallingModule(std::string id, bool initializing = false);
+const std::string& CallingModule();
+bool ModuleInitializing();
 
 const std::vector<ModuleAction>& ModuleActions();
 const std::vector<ModulePanel>&  ModulePanels();
@@ -71,7 +85,7 @@ std::uint64_t ModuleUiRevision();
 
 /// The user closed a panel: it is gone (the module gets the "close" event).
 void DropPanel(const std::string& module, const std::string& id);
-/// A module stops (unloaded, init failed): its items and panels go.
+/// A module stops (unloaded, init failed): its commands, items and panels go.
 void ForgetModule(const std::string& module);
 
 } // namespace bz::modules

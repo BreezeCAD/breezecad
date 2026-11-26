@@ -58,6 +58,7 @@ struct PanelState {
     std::vector<Vec3> polyline;
     const Session* assembly = nullptr;
     std::string assemblyKey;
+    bool focusRequested = false;
 };
 
 struct State {
@@ -243,6 +244,25 @@ void SyncPanels() {
     }
     st.panels = std::move(fresh);
     DropPictures();
+}
+
+bool BelongsToAssembly(const PanelState& p, const Session* session) {
+    return session && session == p.assembly && session->autosaveKey == p.assemblyKey;
+}
+
+PanelState* AssemblyActionPanel(std::string_view module, std::string_view id) {
+    SyncPanels();
+    for (PanelState& p : St().panels) {
+        if (p.module == module && p.id == id && p.assembly && Flag(p.panel, "assembly_viewport")) return &p;
+    }
+    return nullptr;
+}
+
+PanelState* VisiblePanel(const Session* session) {
+    for (PanelState& p : St().panels) {
+        if (!Flag(p.panel, "assembly_viewport") || BelongsToAssembly(p, session)) return &p;
+    }
+    return nullptr;
 }
 
 void WrappedText(ui::Ui& ui, const std::string& text, const Color& color) {
@@ -444,6 +464,7 @@ bool DrawPanel(AppContext& app, PanelState& p) {
     bool open = true;
     const bool viewport = Flag(p.panel, "assembly_viewport");
     if (viewport) {
+        if (std::exchange(p.focusRequested, false)) ImGui::SetNextWindowFocus();
         ImGui::SetNextWindowSize({ui.S(Number(p.panel, "width", 360)), 0}, ImGuiCond_Appearing);
         const std::string title = Text(p.panel, "title") + "###" + popup;
         if (!ImGui::Begin(title.c_str(), &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -531,12 +552,18 @@ void SyncModuleActions(AppContext& app) {
         a.label   = m.label;   // Tr() gives an unknown text back as it is
         a.icon    = m.icon;
         a.tooltip = m.tooltip;
-        a.enabled = [module = m.module, id = m.id] {
+        a.enabled = [&app, module = m.module, id = m.id] {
             const modules::ModuleAction* now = FindAction(module, id);
-            return now && now->enabled;
+            if (!now || !now->enabled) return false;
+            if (const PanelState* p = AssemblyActionPanel(module, id)) return BelongsToAssembly(*p, app.Doc());
+            return true;
         };
         a.run = [&app, module = m.module, id = m.id] {
             if (!app.modules) return;
+            if (PanelState* p = AssemblyActionPanel(module, id)) {
+                if (BelongsToAssembly(*p, app.Doc())) p->focusRequested = true;
+                return;
+            }
             app.modules->Call(module, [&](const BzModuleApi& api) {
                 if (BZ_HAS(&api, on_action)) api.on_action(id.c_str());
             });
@@ -580,35 +607,39 @@ void FillModuleRibbon(AppContext& app, RibbonSink& sink, bool assembly) {
 
 void DrawModulePanels(AppContext& app) {
     SyncPanels();
-    State& st = St();
-    if (st.panels.empty()) return;
-    PanelState& p = st.panels.front();
-    if (Flag(p.panel, "assembly_viewport")) {
-        const Session* session = app.Doc();
+    const Session* session = app.Doc();
+    bool dropped = false;
+    for (PanelState& p : St().panels) {
+        if (!Flag(p.panel, "assembly_viewport")) continue;
         if (!p.assembly && session && session->IsAssembly()) {
             p.assembly = session;
             p.assemblyKey = session->autosaveKey;
         }
-        if (p.assembly && p.assembly == session && p.assemblyKey == session->autosaveKey && DrawPanel(app, p)) return;
-    } else if (DrawPanel(app, p)) {
-        return;
+        if (!p.assembly || !app.workspace.IsOpen(p.assembly) || !BelongsToAssembly(p, p.assembly)) {
+            SendEvent(app, p, "close");
+            modules::DropPanel(p.module, p.id);
+            dropped = true;
+        }
     }
+    if (dropped) SyncPanels();
+
+    PanelState* p = VisiblePanel(session);
+    if (!p || DrawPanel(app, *p)) return;
     // Closed by the user (Esc, a click beside it): gone here, and the module is told.
-    SendEvent(app, p, "close");
-    modules::DropPanel(p.module, p.id);
+    SendEvent(app, *p, "close");
+    modules::DropPanel(p->module, p->id);
 }
 
 void DrawModuleAssemblyPreview(AppContext& app, const Session& session, const ViewportFrame& vf) {
     SyncPanels();
-    if (St().panels.empty()) return;
-    const PanelState& p = St().panels.front();
-    if (p.assembly != &session || p.assemblyKey != session.autosaveKey || p.polyline.empty()) return;
+    const PanelState* p = VisiblePanel(&session);
+    if (!p || !BelongsToAssembly(*p, &session) || p->polyline.empty()) return;
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const ImU32 color = ui::ToU32(app.ui.C().accent);
     draw->PushClipRect(vf.min, vf.max, true);
     ImVec2 previous{};
     bool previousValid = false;
-    for (const Vec3& point : p.polyline) {
+    for (const Vec3& point : p->polyline) {
         const ImVec2 screen = vf.Project(point);
         const auto& matrix = vf.projection.matrix;
         const double w = matrix[12] * point.x + matrix[13] * point.y + matrix[14] * point.z + matrix[15];

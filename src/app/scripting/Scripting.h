@@ -19,6 +19,9 @@ struct AppContext;
 
 namespace scripting {
 
+/// Whether the given MCP tool name is already used by a built-in command.
+bool HasBuiltinToolName(std::string_view name);
+
 /// Runs one request; never throws. Main thread only.
 std::string Run(AppContext& app, std::string_view request);
 

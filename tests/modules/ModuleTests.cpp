@@ -312,6 +312,46 @@ TEST_CASE("modules run commands on the main thread when they ask") {
     SetWakeHandler({});
 }
 
+TEST_CASE("module commands follow the lifetime of the library") {
+    Fixture f;
+    f.Add("hello", BZ_EXAMPLE_MODULE);
+    ModuleManager manager(f.state, HostApi());
+    manager.Discover(f.mods, Roomy());
+    CHECK(ModuleCommands().empty());
+    manager.LoadAll();
+
+    REQUIRE(ModuleCommands().size() == 1);
+    const auto& command = ModuleCommands().front();
+    CHECK(command.module == "hello");
+    CHECK(command.name == "hello.ping");
+    CHECK(command.description == "Return pong");
+    CHECK(command.schema == R"({"type":"object"})");
+    CHECK_FALSE(command.changes);
+    REQUIRE(manager.Call(command.module, [&](const BzModuleApi&) {
+        const char* reply = nullptr;
+        REQUIRE(command.run("{}", &reply) == BZ_OK);
+        REQUIRE(reply);
+        CHECK(std::string(reply) == R"({"ok":true,"result":"pong"})");
+    }));
+
+    REQUIRE(manager.TurnOff("hello"));
+    CHECK(ModuleCommands().empty());
+    CHECK(manager.TurnOn("hello"));
+    CHECK(ModuleCommands().size() == 1);
+    manager.UnloadAll();
+    CHECK(ModuleCommands().empty());
+}
+
+TEST_CASE("module commands are removed when init fails after registration") {
+    Fixture f;
+    f.Add("hello", BZ_EXAMPLE_MODULE_FAIL);
+    ModuleManager manager(f.state, HostApi());
+    manager.Discover(f.mods, Roomy());
+    manager.LoadAll();
+    CHECK(manager.Find("hello")->state == ModuleState::Failed);
+    CHECK(ModuleCommands().empty());
+}
+
 // --- installing packages (.bzmod) --------------------------------------------------
 
 #include <miniz.h>

@@ -30,6 +30,7 @@
 #include "document/StandardPacks.h"
 #include "document/StandardParts.h"
 #include "core/PathText.h"
+#include "modules/ModuleHost.h"
 #include "modules/ModuleManager.h"
 #include "platform/FileDialogs.h"
 #include "platform/Paths.h"
@@ -877,6 +878,17 @@ void DrawModuleSettings(AppContext& app, float width) {
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(m.manifest.version.c_str());
             ImGui::PopStyleColor();
+        }
+        for (const auto& action : modules::ModuleActions()) {
+            if (action.module != moduleId || action.menu != "settings") continue;
+            ImGui::SameLine(0, ui.S(6));
+            if (ui::IconButton(ui, "##module-settings", "ui-settings", box, ui.S(16), Tr(action.label.c_str()), action.enabled)) {
+                const std::string id = ModuleActionId(moduleId, action.id);
+                app.shell.showSettings = false;
+                ImGui::CloseCurrentPopup();
+                app.Later([&app, id] { app.actions.Run(id); });
+            }
+            break;
         }
         const bool removable = app.modules->Removable(m);
         if (removable && app.shell.moduleToRemove != moduleId) {

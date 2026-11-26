@@ -518,7 +518,8 @@ void Application::StartModules() {
     modules::SetWakeHandler(&platform::Window::PostEmptyEvent);
     const std::u8string generic = config.generic_u8string();
     modules::SetConfigDir(std::string(generic.begin(), generic.end()));
-    modules::SetCommandHandler([this](std::string_view request) { return scripting::Run(*myContext, request); });
+    modules::SetCommandHandler([this](std::string_view request) { return scripting::Run(*myContext, request); },
+                               &scripting::HasBuiltinToolName);
     modules::HostInfo host = modules::HostInfo::Detect();
     host.openGL            = myWindow.OpenGLVersion();
     myModules->Discover(platform::AssetsDir().parent_path() / "modules", host);

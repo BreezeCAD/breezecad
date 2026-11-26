@@ -12,7 +12,9 @@
 namespace bz::app {
 
 struct AppContext;
+struct ViewportFrame;
 class RibbonSink;
+class Session;
 
 /// The id a module's command has among the program's actions ("module.conn.start").
 std::string ModuleActionId(std::string_view module, std::string_view id);
@@ -29,6 +31,9 @@ void ModuleMenuItems(AppContext& app, std::string_view menu);
 void FillModuleRibbon(AppContext& app, RibbonSink& sink, bool assembly);
 
 /// The panel a module shows (one at a time: the first one asked for).
+/// `assembly_viewport: true` makes it nonmodal and ties it to the active assembly.
+/// `number` items report doubles in `values`; `polyline_xyz_mm` is a list of XYZ triples.
 void DrawModulePanels(AppContext& app);
+void DrawModuleAssemblyPreview(AppContext& app, const Session& session, const ViewportFrame& vf);
 
 } // namespace bz::app

@@ -9,6 +9,7 @@
 #include "app/Operations.h"
 #include "app/features/OperationEditors.h"
 #include "app/shell/Shell.h"
+#include "app/shell/ModuleWindows.h"
 #include "app/sketch/SketchEditor.h"
 #include "app/sketch/SketchOverlay.h"
 #include "app/sketch/SketchRepair.h"
@@ -388,7 +389,10 @@ void DrawViewport(AppContext& app, Session& session, ImVec2 pos, ImVec2 size) {
             if (session.assembly) {
                 // An operation open on an assembly (Внешний вид) takes the clicks.
                 if (operation) operation->DrawInViewport(app, session, vf);
-                else DrawAssemblyViewport(app, session, vf);
+                else {
+                    DrawAssemblyViewport(app, session, vf);
+                    DrawModuleAssemblyPreview(app, session, vf);
+                }
                 break;
             }
             // Origin planes only when pointed at in the tree (or in an empty

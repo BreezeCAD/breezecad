@@ -2,6 +2,7 @@
 
 #include "app/Actions.h"
 #include "app/AppContext.h"
+#include "app/Session.h"
 #include "app/shell/FilePreviews.h"
 #include "app/shell/Shell.h"
 #include "core/I18n.h"
@@ -53,6 +54,11 @@ struct PanelState {
     std::string module, id, json;   ///< as in ModuleHost, `json` to see a change
     Json        panel;
     std::map<std::string, Choice> choices;
+    std::map<std::string, double> numbers;
+    std::vector<Vec3> polyline;
+    const Session* assembly = nullptr;
+    std::string assemblyKey;
+    bool focusRequested = false;
 };
 
 struct State {
@@ -117,6 +123,7 @@ void Notify(AppContext& app, std::string module, std::string eventJson) {
 void SendEvent(AppContext& app, const PanelState& p, const std::string& id) {
     Json values = Json::object();
     for (const auto& [key, c] : p.choices) values[key] = c.value;
+    for (const auto& [key, value] : p.numbers) values[key] = value;
     Notify(app, p.module, Json{{"panel", p.id}, {"id", id}, {"values", values}}.dump());
 }
 
@@ -204,22 +211,58 @@ void SyncPanels() {
             if (!p.panel.is_object()) p.panel = Json::object();
             // A choice the module sent anew takes over; one it did not change keeps the user's pick.
             std::map<std::string, Choice> choices;
+            p.numbers.clear();
             if (const auto items = p.panel.find("items"); items != p.panel.end() && items->is_array())
                 for (const Json& item : *items) {
-                    if (Text(item, "type") != "choice") continue;
                     const std::string id = Text(item, "id");
                     if (id.empty()) continue;
+                    const std::string type = Text(item, "type");
+                    if (type == "number") {
+                        const auto value = item.find("value");
+                        p.numbers[id] = value != item.end() && value->is_number() ? value->get<double>() : 0.0;
+                    }
+                    if (type != "choice") continue;
                     const int sent = static_cast<int>(Number(item, "value", 0));
                     Choice c{sent, sent};
                     if (const auto was = p.choices.find(id); was != p.choices.end() && was->second.sent == sent) c.value = was->second.value;
                     choices[id] = c;
                 }
             p.choices = std::move(choices);
+            p.polyline.clear();
+            if (const auto points = p.panel.find("polyline_xyz_mm"); points != p.panel.end() && points->is_array()) {
+                for (const Json& point : *points) {
+                    if (!point.is_array() || point.size() != 3 ||
+                        !std::all_of(point.begin(), point.end(), [](const Json& n) { return n.is_number(); })) {
+                        p.polyline.clear();
+                        break;
+                    }
+                    p.polyline.push_back({point[0].get<double>(), point[1].get<double>(), point[2].get<double>()});
+                }
+            }
         }
         fresh.push_back(std::move(p));
     }
     st.panels = std::move(fresh);
     DropPictures();
+}
+
+bool BelongsToAssembly(const PanelState& p, const Session* session) {
+    return session && session == p.assembly && session->autosaveKey == p.assemblyKey;
+}
+
+PanelState* AssemblyActionPanel(std::string_view module, std::string_view id) {
+    SyncPanels();
+    for (PanelState& p : St().panels) {
+        if (p.module == module && p.id == id && p.assembly && Flag(p.panel, "assembly_viewport")) return &p;
+    }
+    return nullptr;
+}
+
+PanelState* VisiblePanel(const Session* session) {
+    for (PanelState& p : St().panels) {
+        if (!Flag(p.panel, "assembly_viewport") || BelongsToAssembly(p, session)) return &p;
+    }
+    return nullptr;
 }
 
 void WrappedText(ui::Ui& ui, const std::string& text, const Color& color) {
@@ -335,6 +378,16 @@ void DrawChoice(AppContext& app, PanelState& p, const Json& item, int index) {
     for (const std::string& l : labels) names.push_back(l.c_str());
     const int count   = static_cast<int>(names.size());
     const int current = std::clamp(it->second.value, 0, count - 1);
+    if (Flag(item, "dropdown")) {
+        int chosen = current;
+        if (ImGui::Combo("##choice", &chosen, names.data(), count)) {
+            it->second.value = chosen;
+            if (const std::string event = Text(item, "on_change"); !event.empty()) SendEvent(app, p, event);
+        }
+        ImGui::EndGroup();
+        ImGui::PopID();
+        return;
+    }
     const int chosen  = ui::Segmented(ui, "##choice", names, current, count, ImGui::GetContentRegionAvail().x);
     if (chosen >= 0 && chosen < count) it->second.value = chosen;
     ImGui::EndGroup();
@@ -409,8 +462,19 @@ bool DrawPanel(AppContext& app, PanelState& p) {
     const ui::ThemeColors& c = ui.C();
     const std::string popup = "##module-" + p.module + "-" + p.id;
     bool open = true;
-    if (!BeginDialog(ui, popup.c_str(), open, ui.S(Number(p.panel, "width", 440)))) return false;
-    DrawTitle(ui, p.panel);
+    const bool viewport = Flag(p.panel, "assembly_viewport");
+    if (viewport) {
+        if (std::exchange(p.focusRequested, false)) ImGui::SetNextWindowFocus();
+        ImGui::SetNextWindowSize({ui.S(Number(p.panel, "width", 360)), 0}, ImGuiCond_Appearing);
+        const std::string title = Text(p.panel, "title") + "###" + popup;
+        if (!ImGui::Begin(title.c_str(), &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::End();
+            return open;
+        }
+    } else {
+        if (!BeginDialog(ui, popup.c_str(), open, ui.S(Number(p.panel, "width", 440)))) return false;
+        DrawTitle(ui, p.panel);
+    }
     ImGui::Dummy({0, ui.S(2)});
     std::string pressed;
     if (const auto items = p.panel.find("items"); items != p.panel.end() && items->is_array()) {
@@ -445,6 +509,11 @@ bool DrawPanel(AppContext& app, PanelState& p) {
                 DrawImage(ui, item);
             } else if (type == "choice") {
                 DrawChoice(app, p, item, index);
+            } else if (type == "number") {
+                if (const auto field = p.numbers.find(Text(item, "id")); field != p.numbers.end()) {
+                    ImGui::SetNextItemWidth(ui.S(145));
+                    ImGui::InputDouble(Caption(item).c_str(), &field->second, 0, 0, "%.12g");
+                }
             } else if (type == "buttons") {
                 ImGui::Dummy({0, ui.S(4)});
                 if (std::string b = DrawButtons(ui, item, index); !b.empty() && pressed.empty()) pressed = std::move(b);
@@ -456,12 +525,13 @@ bool DrawPanel(AppContext& app, PanelState& p) {
     bool closed = false;
     if (!pressed.empty()) {
         SendEvent(app, p, pressed);
-    } else if (!HasEscButton(p.panel) && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    } else if ((!viewport || ImGui::IsWindowFocused()) && !HasEscButton(p.panel) && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         closed = true;
-        ImGui::CloseCurrentPopup();
+        if (!viewport) ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
-    return !closed;
+    if (viewport) ImGui::End();
+    else ImGui::EndPopup();
+    return !closed && open;
 }
 
 } // namespace
@@ -482,12 +552,18 @@ void SyncModuleActions(AppContext& app) {
         a.label   = m.label;   // Tr() gives an unknown text back as it is
         a.icon    = m.icon;
         a.tooltip = m.tooltip;
-        a.enabled = [module = m.module, id = m.id] {
+        a.enabled = [&app, module = m.module, id = m.id] {
             const modules::ModuleAction* now = FindAction(module, id);
-            return now && now->enabled;
+            if (!now || !now->enabled) return false;
+            if (const PanelState* p = AssemblyActionPanel(module, id)) return BelongsToAssembly(*p, app.Doc());
+            return true;
         };
         a.run = [&app, module = m.module, id = m.id] {
             if (!app.modules) return;
+            if (PanelState* p = AssemblyActionPanel(module, id)) {
+                if (BelongsToAssembly(*p, app.Doc())) p->focusRequested = true;
+                return;
+            }
             app.modules->Call(module, [&](const BzModuleApi& api) {
                 if (BZ_HAS(&api, on_action)) api.on_action(id.c_str());
             });
@@ -531,13 +607,49 @@ void FillModuleRibbon(AppContext& app, RibbonSink& sink, bool assembly) {
 
 void DrawModulePanels(AppContext& app) {
     SyncPanels();
-    State& st = St();
-    if (st.panels.empty()) return;
-    PanelState& p = st.panels.front();
-    if (DrawPanel(app, p)) return;
+    const Session* session = app.Doc();
+    bool dropped = false;
+    for (PanelState& p : St().panels) {
+        if (!Flag(p.panel, "assembly_viewport")) continue;
+        if (!p.assembly && session && session->IsAssembly()) {
+            p.assembly = session;
+            p.assemblyKey = session->autosaveKey;
+        }
+        if (!p.assembly || !app.workspace.IsOpen(p.assembly) || !BelongsToAssembly(p, p.assembly)) {
+            SendEvent(app, p, "close");
+            modules::DropPanel(p.module, p.id);
+            dropped = true;
+        }
+    }
+    if (dropped) SyncPanels();
+
+    PanelState* p = VisiblePanel(session);
+    if (!p || DrawPanel(app, *p)) return;
     // Closed by the user (Esc, a click beside it): gone here, and the module is told.
-    SendEvent(app, p, "close");
-    modules::DropPanel(p.module, p.id);
+    SendEvent(app, *p, "close");
+    modules::DropPanel(p->module, p->id);
+}
+
+void DrawModuleAssemblyPreview(AppContext& app, const Session& session, const ViewportFrame& vf) {
+    SyncPanels();
+    const PanelState* p = VisiblePanel(&session);
+    if (!p || !BelongsToAssembly(*p, &session) || p->polyline.empty()) return;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImU32 color = ui::ToU32(app.ui.C().accent);
+    draw->PushClipRect(vf.min, vf.max, true);
+    ImVec2 previous{};
+    bool previousValid = false;
+    for (const Vec3& point : p->polyline) {
+        const ImVec2 screen = vf.Project(point);
+        const auto& matrix = vf.projection.matrix;
+        const double w = matrix[12] * point.x + matrix[13] * point.y + matrix[14] * point.z + matrix[15];
+        const bool valid = w > 1e-12 && std::isfinite(screen.x) && std::isfinite(screen.y);
+        if (valid && previousValid) draw->AddLine(previous, screen, color, app.ui.S(2.0f));
+        if (valid) draw->AddCircleFilled(screen, app.ui.S(3.0f), color);
+        previous = screen;
+        previousValid = valid;
+    }
+    draw->PopClipRect();
 }
 
 } // namespace bz::app

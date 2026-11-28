@@ -452,13 +452,15 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
     Body* target = LastSolid(bodies);
     std::vector<TopoDS_Edge> edges;
     std::vector<std::size_t> kept;   // index in f.edges of each found edge
+    std::vector<bool> ambiguous;
+    bool targetHasAmbiguousEdges = false;
     double bestMiss = 1e300;
     for (auto it = bodies.rbegin(); it != bodies.rend(); ++it) {
         if (it->mesh) continue;
         std::vector<TopoDS_Edge> found;
         std::vector<std::size_t> which;
         double miss = 0;
-        const auto resolved = occt::ResolveEdges(f.edges, it->shape);
+        const auto resolved = occt::ResolveEdges(f.edges, it->shape, &ambiguous);
         for (std::size_t k = 0; k < resolved.size(); ++k)
             if (resolved[k]) {
                 found.push_back(*resolved[k]);
@@ -471,6 +473,7 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
             kept = std::move(which);
             bestMiss = miss;
             target = &*it;
+            targetHasAmbiguousEdges = std::ranges::any_of(ambiguous, [](bool flag) { return flag; });
         }
     }
     const std::size_t lost = f.edges.size() - edges.size();
@@ -481,14 +484,9 @@ void ApplyEdgeFeature(const doc::EdgeFeature& f, std::vector<Body>& bodies, doc:
     // Молчаливый перескок на похожее ребро запрещён: ссылка, разрешившаяся
     // неоднозначно, — ошибка, а не ближайший кандидат (FreeCAD берёт уехавшую
     // ссылку только при единственном совпадении).
-    {
-        std::vector<bool> ambiguous;
-        occt::ResolveEdges(f.edges, target->shape, &ambiguous);
-        for (std::size_t k = 0; k < f.edges.size(); ++k)
-            if (ambiguous[k]) {
-                status = {FeatureState::Error, "Ребро не найдено однозначно: выберите заново"};
-                return;
-            }
+    if (targetHasAmbiguousEdges) {
+        status = {FeatureState::Error, "Ребро не найдено однозначно: выберите заново"};
+        return;
     }
     Expected<TopoDS_Shape> result = make(target->shape, edges, kept);
     if (!result) {

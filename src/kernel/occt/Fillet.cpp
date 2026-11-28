@@ -108,7 +108,7 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
         }
     try {
         Builder builder(body);
-        for (const TopoDS_Edge& e : edges) add(builder, e);
+        for (const TopoDS_Edge& e : edges) add(builder, e, faces);
         // Leave the builder in this frame so it can be released after a fault.
         // A failed trial then reaches the same fallbacks as a normal refusal.
         std::string fault;
@@ -180,10 +180,7 @@ gp_Dir NormalAlong(const TopoDS_Edge& edge, const TopoDS_Face& face) {
 
 /// The reference face of `edge` for unequal chamfer sizes (see MakeChamfer).
 TopoDS_Face ReferenceFace(const TopoDS_Edge& edge, const TopTools_IndexedDataMapOfShapeListOfShape& faces, bool flipped) {
-    const TopTools_ListOfShape& around = faces.FindFromKey(edge);
-    std::vector<TopoDS_Face> two;
-    for (const TopoDS_Shape& f : around)
-        if (std::ranges::none_of(two, [&](const TopoDS_Face& t) { return t.IsSame(f); })) two.push_back(TopoDS::Face(f));
+    const auto two = FacesOf(edge, faces);
     if (two.size() < 2) return two.empty() ? TopoDS_Face() : two.front();
     const auto key = [&](const TopoDS_Face& f) {
         const gp_Dir n = NormalAlong(edge, f);
@@ -205,7 +202,7 @@ namespace {
 
 Expected<TopoDS_Shape> FilletOnce(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double radius) {
     return Build<BRepFilletAPI_MakeFillet>(
-        body, edges, radius, [radius](BRepFilletAPI_MakeFillet& b, const TopoDS_Edge& e) { b.Add(radius, e); },
+        body, edges, radius, [radius](BRepFilletAPI_MakeFillet& b, const TopoDS_Edge& e, const auto&) { b.Add(radius, e); },
         [radius](const TopoDS_Edge&, const EdgeShape& s) {
             return radius * radius * (1.0 / std::tan(s.opening / 2) - (kPi - s.opening) / 2);
         },
@@ -279,7 +276,7 @@ Expected<TopoDS_Shape> MakeFillet(const TopoDS_Shape& body, const std::vector<To
 
 Expected<TopoDS_Shape> MakeChamfer(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double distance) {
     return Build<BRepFilletAPI_MakeChamfer>(
-        body, edges, distance, [distance](BRepFilletAPI_MakeChamfer& b, const TopoDS_Edge& e) { b.Add(distance, e); },
+        body, edges, distance, [distance](BRepFilletAPI_MakeChamfer& b, const TopoDS_Edge& e, const auto&) { b.Add(distance, e); },
         [distance](const TopoDS_Edge&, const EdgeShape& s) { return distance * distance * std::sin(s.opening) / 2; }, "Фаска",
         "Не удалось построить фаску: расстояние слишком большое для этих рёбер?");
 }
@@ -290,14 +287,11 @@ Expected<TopoDS_Shape> MakeChamfer(const TopoDS_Shape& body, const std::vector<T
     if (size.mode == ChamferMode::TwoDistances && size.distance2 <= 1e-6) return Error{"Размер должен быть больше нуля"};
     if (size.mode == ChamferMode::DistanceAngle && (size.angle <= 1e-6 || size.angle >= kPi / 2 - 1e-6))
         return Error{"Угол фаски должен быть больше 0° и меньше 90°"};
-    TopTools_IndexedDataMapOfShapeListOfShape faces;
-    TopExp::MapShapesAndAncestors(body, TopAbs_EDGE, TopAbs_FACE, faces);
     std::size_t next = 0;   // Build adds the edges in order
     return Build<BRepFilletAPI_MakeChamfer>(
         body, edges, size.distance,
-        [&](BRepFilletAPI_MakeChamfer& b, const TopoDS_Edge& e) {
+        [&](BRepFilletAPI_MakeChamfer& b, const TopoDS_Edge& e, const TopTools_IndexedDataMapOfShapeListOfShape& faces) {
             const std::size_t i = next++;
-            if (!faces.Contains(e)) return;
             const bool own = i < size.flips.size() && size.flips[i];
             const TopoDS_Face face = ReferenceFace(e, faces, size.flipped != own);
             if (face.IsNull()) return;

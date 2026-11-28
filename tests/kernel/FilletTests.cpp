@@ -111,6 +111,21 @@ TEST_CASE("an edge that no longer exists is reported") {
     CHECK(fillet.status.state == FeatureState::Error);
 }
 
+TEST_CASE("an ambiguous edge prevents filleting even when another edge resolves") {
+    Box b;
+    auto& fillet = b.Add<doc::FilletFeature>("2");
+    // A reference with only the top face recorded, midway between the front and back edges.
+    EdgeReference ambiguous = TopFrontEdge(0);
+    ambiguous.faces[0] = {};
+    fillet.edges.push_back(ambiguous);
+
+    kernel::Model model;
+    model.Rebuild(b.d);
+    CHECK(fillet.status.state == FeatureState::Error);
+    CHECK(fillet.status.message == "Ребро не найдено однозначно: выберите заново");
+    CHECK(model.Volume() == doctest::Approx(kBoxVolume));
+}
+
 TEST_CASE("fillet and chamfer survive a json round trip") {
     Box b;
     b.Add<doc::FilletFeature>("4");

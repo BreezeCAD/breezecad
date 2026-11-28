@@ -99,6 +99,7 @@ TEST_CASE("a fillet too big is an error and leaves the body as it was") {
     kernel::Model model;
     model.Rebuild(b.d);
     CHECK(fillet.status.state == FeatureState::Error);
+    CHECK(fillet.status.message.find("Сбой на контуре у точки (0.00; -40.00; 30.00)") != std::string::npos);
     CHECK(model.Volume() == doctest::Approx(kBoxVolume));
 }
 

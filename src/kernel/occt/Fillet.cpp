@@ -126,6 +126,21 @@ Expected<TopoDS_Shape> Build(const TopoDS_Shape& body, const std::vector<TopoDS_
                                              tooBig, p.X(), p.Y(), p.Z())};
                 }
             }
+            if constexpr (requires { builder.NbFaultyContours(); }) {
+                try {
+                    if (builder.NbFaultyContours() > 0) {
+                        const int contour = builder.FaultyContour(1);
+                        if (contour > 0 && contour <= builder.NbContours() && builder.NbEdges(contour) > 0) {
+                            const BRepAdaptor_Curve curve(builder.Edge(contour, 1));
+                            const gp_Pnt p = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2);
+                            return Error{std::format("{} Сбой на контуре у точки ({:.2f}; {:.2f}; {:.2f}).",
+                                                     tooBig, p.X(), p.Y(), p.Z())};
+                        }
+                    }
+                } catch (const Standard_Failure&) {
+                    // The original failure remains useful if OCCT cannot describe the contour.
+                }
+            }
             return Error{tooBig};
         }
         TopoDS_Shape result = builder.Shape();

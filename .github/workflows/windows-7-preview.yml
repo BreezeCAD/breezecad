@@ -27,7 +27,6 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-glfw
             mingw-w64-x86_64-freetype
       - name: Build OpenCASCADE and BreezeCAD
         env:
@@ -38,7 +37,12 @@ jobs:
           export CMAKE_PREFIX_PATH="$(cygpath -m "$MINGW_PREFIX")"
           SRC="$(cygpath -u "$RUNNER_TEMP")/occt-src" bash scripts/deps/build-occt.sh windows .deps/occt
           export OCCT_DIR="$(cygpath -m "$PWD/.deps/occt")/lib/cmake/opencascade"
-          cmake --preset windows-mingw -B build/windows-7 -DBZ_BUILD_INSTALLER=OFF -DBZ_BUILD_TESTS=OFF
+          git clone --depth 1 --branch 3.4 https://github.com/glfw/glfw.git .deps/glfw-src
+          glfw_prefix="$(cygpath -m "$PWD/.deps/glfw")"
+          cmake -S .deps/glfw-src -B build/glfw -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$glfw_prefix" -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_EXAMPLES=OFF
+          cmake --build build/glfw
+          cmake --install build/glfw
+          cmake --preset windows-mingw "-DCMAKE_PREFIX_PATH=$glfw_prefix;$CMAKE_PREFIX_PATH" -B build/windows-7 -DBZ_BUILD_INSTALLER=OFF -DBZ_BUILD_TESTS=OFF
           cmake --build build/windows-7 --target breezecad
       - name: Package preview and record PE imports
         run: |

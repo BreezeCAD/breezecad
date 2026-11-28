@@ -1,0 +1,62 @@
+name: Windows 7 preview
+
+on:
+  push:
+    branches: [ci/windows-7-preview]
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-glfw
+            mingw-w64-x86_64-freetype
+      - name: Build OpenCASCADE and BreezeCAD
+        env:
+          CFLAGS: -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+          CXXFLAGS: -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+        run: |
+          set -euo pipefail
+          export CMAKE_PREFIX_PATH="$(cygpath -m "$MINGW_PREFIX")"
+          SRC="$(cygpath -u "$RUNNER_TEMP")/occt-src" bash scripts/deps/build-occt.sh windows .deps/occt
+          export OCCT_DIR="$(cygpath -m "$PWD/.deps/occt")/lib/cmake/opencascade"
+          cmake --preset windows-mingw -B build/windows-7 -DBZ_BUILD_INSTALLER=OFF -DBZ_BUILD_TESTS=OFF
+          cmake --build build/windows-7 --target breezecad
+      - name: Package preview and record PE imports
+        run: |
+          set -euo pipefail
+          package=dist/BreezeCAD
+          mkdir -p "$package"
+          cp -r build/windows-7/bin/breezecad.exe build/windows-7/bin/assets LICENSE "$package/"
+          bash scripts/deploy-runtime.sh "$package" breezecad.exe "$PWD/.deps/occt/bin"
+          (
+            cd "$package"
+            for binary in breezecad.exe *.dll; do
+              printf '\n== %s ==\n' "$binary"
+              objdump -p "$binary"
+            done
+          ) > dist/pe-imports.txt
+          (cd dist && zip -qr BreezeCAD-windows-7-x64-preview.zip BreezeCAD pe-imports.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BreezeCAD-windows-7-x64-preview
+          path: dist/BreezeCAD-windows-7-x64-preview.zip
+          if-no-files-found: error

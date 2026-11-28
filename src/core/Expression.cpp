@@ -415,18 +415,6 @@ Expected<double> EvaluateExpression(std::string_view text, Quantity expected,
 
 namespace {
 
-std::string_view UnitName(LengthUnit u) {
-    switch (u) {
-        case LengthUnit::Millimeter: return "mm";
-        case LengthUnit::Centimeter: return "cm";
-        case LengthUnit::Meter:      return "m";
-        case LengthUnit::Inch:       return "in";
-    }
-    return "mm";
-}
-
-std::string_view UnitName(AngleUnit u) { return u == AngleUnit::Radian ? "rad" : "deg"; }
-
 /// True when `text` is a single number with nothing after it ("12,5").
 bool PlainNumber(std::string_view text) {
     if (text.empty() || !(std::isdigit(static_cast<unsigned char>(text.front())) || text.front() == '.')) return false;
@@ -460,7 +448,7 @@ std::string ExpressionInUnits(std::string_view text, Quantity expected, const Un
     for (const Adoption& a : parser.myAdopted) {
         const bool length = a.dim == Dim{1, 0};
         if (length ? from.length == to.length : from.angle == to.angle) continue;
-        const std::string_view unit = length ? UnitName(from.length) : UnitName(from.angle);
+        const std::string_view unit = length ? ToId(from.length) : ToId(from.angle);
         const std::string_view part = text.substr(a.from, a.to - a.from);
         const auto size = static_cast<long long>(a.to - a.from);   // shorter = inner
         if (PlainNumber(part)) {
@@ -485,13 +473,17 @@ std::string ExpressionInUnits(std::string_view text, Quantity expected, const Un
     return out;
 }
 
-std::vector<std::string> ReferencedNames(std::string_view text) {
-    std::vector<std::string> names;
+namespace {
+
+// This is a tolerant text scan, not the expression parser: malformed text
+// must remain editable. Both callers use the same identifier boundaries.
+template <class Visitor>
+void VisitIdentifierWords(std::string_view text, Visitor visit) {
     std::size_t i = 0;
     while (i < text.size()) {
         const char c = text[i];
         if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
-            // Skip a number together with an attached unit word ("25mm").
+            // Skip a number together with an attached word ("25mm", "1e3").
             while (i < text.size() && (std::isdigit(static_cast<unsigned char>(text[i])) || text[i] == '.')) ++i;
             while (i < text.size() && IsIdentChar(text[i])) ++i;
             continue;
@@ -502,44 +494,33 @@ std::vector<std::string> ReferencedNames(std::string_view text) {
         }
         const std::size_t start = i;
         while (i < text.size() && IsIdentChar(text[i])) ++i;
-        const std::string word(text.substr(start, i - start));
         std::size_t j = i;
         while (j < text.size() && std::isspace(static_cast<unsigned char>(text[j]))) ++j;
-        const bool isCall = j < text.size() && text[j] == '(';
-        if (isCall || FindUnit(word) || word == "pi" || word == "\xC2\xB0") continue;
-        bool seen = false;
-        for (const auto& n : names) seen = seen || n == word;
-        if (!seen) names.push_back(word);
+        visit(start, text.substr(start, i - start), j < text.size() && text[j] == '(');
     }
+}
+
+} // namespace
+
+std::vector<std::string> ReferencedNames(std::string_view text) {
+    std::vector<std::string> names;
+    VisitIdentifierWords(text, [&](std::size_t, std::string_view word, bool isCall) {
+        if (isCall || FindUnit(word) || word == "pi" || word == "\xC2\xB0") return;
+        if (std::find(names.begin(), names.end(), word) == names.end()) names.emplace_back(word);
+    });
     return names;
 }
 
 std::string RenameInExpression(std::string_view text, std::string_view from, std::string_view to) {
-    // The same scan as ReferencedNames: what it reports as a name is what is renamed.
     std::string out;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        const char c = text[i];
-        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
-            const std::size_t start = i;
-            while (i < text.size() && (std::isdigit(static_cast<unsigned char>(text[i])) || text[i] == '.')) ++i;
-            while (i < text.size() && IsIdentChar(text[i])) ++i;   // "25mm", "1e3"
-            out.append(text.substr(start, i - start));
-            continue;
-        }
-        if (!IsIdentStart(c)) {
-            out.push_back(c);
-            ++i;
-            continue;
-        }
-        const std::size_t start = i;
-        while (i < text.size() && IsIdentChar(text[i])) ++i;
-        const std::string_view word = text.substr(start, i - start);
-        std::size_t j = i;
-        while (j < text.size() && std::isspace(static_cast<unsigned char>(text[j]))) ++j;
-        const bool isCall = j < text.size() && text[j] == '(';
-        out.append(word == from && !isCall ? to : word);
-    }
+    std::size_t pos = 0;
+    VisitIdentifierWords(text, [&](std::size_t start, std::string_view word, bool isCall) {
+        if (isCall || word != from) return;
+        out.append(text.substr(pos, start - pos));
+        out.append(to);
+        pos = start + word.size();
+    });
+    out.append(text.substr(pos));
     return out;
 }
 

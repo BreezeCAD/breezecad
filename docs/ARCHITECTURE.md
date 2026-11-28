@@ -12,18 +12,26 @@ sketch    ← core            эскиз 2D: сущности, связи, ре�
 sheetmetal ← core           листовой металл без ядра: правила гиба, раскладка отбортовок, развёртка,
                             DXF (чтение любого, запись R12 для AutoCAD), проверки для резки (ADR-0007)
 document  ← core, sketch, sheetmetal   дерево операций, параметры, команды undo, файл .bzc
-kernel    ← document, OCCT  перестроение модели (тела, регионы эскизов, экспорт)
-modules   ← kernel          модули: module.json (требования к железу), загрузка/отключение,
+assembly  ← core, document  состав сборки, сопряжения, решатель и файлы сборок
+drawing   ← core, document, sheetmetal  листы, размеры, спецификации, сохранение .bzd и экспорт PDF/DXF
+kernel    ← document, assembly, sheetmetal, OCCT  перестроение деталей, геометрия сборок, расчёт видов
+modules   ← core, kernel    модули: module.json (требования к железу), загрузка/отключение,
                             защита от падений, C-ABI `modules/bz_module.h`, пример `examples/modules/hello`;
                             команды для модулей — `app/scripting` (JSON, ADR-0002); модули ставятся пакетами `.bzmod` (`ModuleManager::Install`)
-render    ← core, kernel    вьюпорт OCCT/OpenGL, выбор (pick), подсветка
+render    ← core, kernel, OCCT  вьюпорт OCCT/OpenGL, выбор (pick), подсветка
 ui        ← core, ImGui     тема, шрифты, иконки, виджеты, видовой куб
 platform  ← core            окна, пути, файловые диалоги, запуск браузера/папки, жесты тачпада
                             (Touchpad: Cocoa / Win32 / XInput 2 — одна модель событий)
 app       ← всё выше        оболочка: лента, панели, редакторы операций и эскиза
 ```
-Правило: стрелки только вниз. `sketch` и `document` не знают про OCCT и ImGui —
-их можно тестировать без окна; `kernel` не знает про интерфейс.
+Стрелка `A ← B` означает, что A использует B. Карта показывает зависимости между
+целями BreezeCAD и основные внешние библиотеки. `sketch`, `document`, `assembly`
+и `drawing` работают без OCCT и ImGui. `kernel/AssemblyModel` добавляет геометрию
+компонентов сборки. `kernel/drawing` рассчитывает проекции и скрытые линии,
+а редактор листа живёт в `app/drawing`. Цели ядра собираются без ImGui.
+
+Сборки CI используют OCCT 8.0.1 из `scripts/deps/build-occt.sh`.
+Набор тулкитов описан в [ADR-0001](ADR/0001-kernel-strategy.md).
 
 ## Поток данных
 

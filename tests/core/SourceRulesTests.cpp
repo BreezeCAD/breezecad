@@ -15,6 +15,7 @@ namespace {
 
 /// Lines of our sources (comments and strings stripped roughly) matching `pattern`.
 std::string Offenders(const std::regex& pattern) {
+    static const std::regex kStringLiteral(R"("([^"\\]|\\.)*")");
     std::string out;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(std::filesystem::path(BZ_SOURCE_DIR) / "src")) {
         const auto ext = entry.path().extension();
@@ -23,7 +24,7 @@ std::string Offenders(const std::regex& pattern) {
         std::string line;
         for (int n = 1; std::getline(in, line); ++n) {
             if (const auto c = line.find("//"); c != std::string::npos) line.erase(c);
-            line = std::regex_replace(line, std::regex(R"("([^"\\]|\\.)*")"), "\"\"");
+            line = std::regex_replace(line, kStringLiteral, "\"\"");
             if (std::regex_search(line, pattern)) out += entry.path().filename().string() + ":" + std::to_string(n) + " " + line + "\n";
         }
     }

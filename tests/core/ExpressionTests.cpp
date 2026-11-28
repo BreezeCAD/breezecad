@@ -126,6 +126,15 @@ TEST_CASE("renaming in an expression touches whole names only") {
     CHECK(RenameInExpression("", "d1", "w").empty());
 }
 
+TEST_CASE("identifier scanning preserves boundaries and non-name text") {
+    CHECK((ReferencedNames("max (a; a) + 3mm + pi + mm + sin + ширина + 5d1") ==
+          std::vector<std::string>{"a", "sin", "ширина"}));
+    CHECK(RenameInExpression(" a\t+max (a; a) + 5a + a1 + a ", "a", "width") ==
+          " width\t+max (width; width) + 5a + a1 + width ");
+    CHECK(RenameInExpression("a + a", "a", "") == " + ");
+    CHECK(RenameInExpression(" 1e3 + 12,5 + (", "missing", "x") == " 1e3 + 12,5 + (");
+}
+
 TEST_CASE("expressions rewritten for other document units mean the same") {
     const UnitSystem mm{};
     UnitSystem inch = mm;

@@ -1,0 +1,11 @@
+# Incremental formatting baseline. Do not reformat the whole tree in one PR.
+# Keep existing code stable; format only the lines touched by a change.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 130
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+SortIncludes: Never
